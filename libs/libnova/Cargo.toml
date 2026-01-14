@@ -1,0 +1,9 @@
+[package]
+name = "libnova"
+version = "0.1.0"
+edition = "2021"
+authors = ["NovaOS Team"]
+description = "Core library for NovaOS native system calls and abstractions"
+
+[dependencies]
+# Future dependencies: sel4-sys, spin, etc.

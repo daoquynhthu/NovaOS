@@ -1,0 +1,19 @@
+[package]
+name = "sel4-sys"
+version = "0.1.0"
+edition = "2021"
+authors = ["NovaOS Team"]
+description = "Raw FFI bindings for seL4 kernel (NovaOS specific)"
+build = "build.rs"
+
+[build-dependencies]
+bindgen = "0.69"
+cmake = "0.1"
+
+[dependencies]
+cty = "0.2"
+
+[features]
+default = ["x86_64"]
+x86_64 = []
+riscv64 = []

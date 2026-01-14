@@ -1,0 +1,12 @@
+[package]
+name = "rootserver"
+version = "0.1.0"
+edition = "2021"
+authors = ["NovaOS Team"]
+description = "NovaOS RootServer - The first user-mode process"
+
+[dependencies]
+libnova = { path = "../../libs/libnova" }
+
+[features]
+default = []

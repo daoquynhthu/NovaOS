@@ -1,0 +1,15 @@
+# Ignore build artifacts
+build/
+target/
+cargo/
+
+# Ignore IDE settings
+.vscode/
+.idea/
+
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+# Ignore generated bindings
+libs/seL4-sys/src/bindings.rs
