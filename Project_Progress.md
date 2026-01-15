@@ -97,18 +97,34 @@
     - 支持解析 ELF Program Headers 并加载 LOAD 段到目标 VSpace。
     - 实现了跨 VSpace 的内存拷贝（RootServer -> Target VSpace）。
 
-### 2026-01-15: 驱动框架与硬件发现 (Driver Foundation)
+### 2026-01-16: 硬件发现与 ACPI 解析 (Hardware Discovery)
+- [x] **ACPI 解析器基础**:
+    - 实现了 `acpi.rs` 模块，解析 RootServer BootInfo 中的 ACPI RSDP。
+    - 实现了 RSDT (Root System Description Table) 的查找与映射。
+    - 解决了物理内存映射中的回溯访问问题 (RevokeFirst)，引入 `MappedCap` 策略。
+- [x] **多表扫描与 MADT 解析**:
+    - 实现了遍历 RSDT 并自动映射所有子表 (FACP, APIC, HPET, WAET)。
+    - 成功解析 MADT (APIC Table) 获取 Local APIC 物理地址。
+    - 验证了跨页表映射的正确性 (Handling unaligned structs and multi-page tables).
+    - 实现了 MADT 记录遍历，成功识别 Local APIC, IOAPIC, ISO (Interrupt Source Override) 条目。
+
+## 🚀 下一步计划 (Next Steps)
 - [x] **ACPI 表解析**:
     - 成功在 BootInfo 中定位 RSDP (Root System Description Pointer)。
     - 验证了 RSDP 签名 ("RSD PTR ") 和校验和。
     - 成功查找到 RSDT (Root System Description Table) 的物理地址。
-    - **关键突破**: 实现了在 Untyped Memory 中反向查找物理地址对应的 Capability (Untyped Cap #48, paddr=0x7fe0000)。
+    - **关键突破**: 实现了在 Untyped Memory 中反向查找物理地址对应的 Capability。
+    - **关键突破**: 成功解析 MADT 并提取 CPU 拓扑和中断控制信息。
 - [x] **压力测试通过**:
     - 解决了测试脚本超时问题 (timeout increased to 60s)。
     - 修复了 IPC Benchmark 中的死锁问题 (Worker now replies to exit signal)。
     - 成功完成了 1000 次 4KB 页帧分配的压力测试，无内存泄漏。
 
 ## 🚧 进行中任务 (In Progress)
+- [ ] **中断控制器初始化**:
+    - [x] 解析 MADT 获取 IOAPIC 地址。
+    - [ ] 尝试映射 IOAPIC 并读取版本信息。
+    - [ ] 探索 seL4 用户态中断管理机制 (IRQControl)。
 - [ ] **进程管理器完善**:
     - [x] 集成 `ElfLoader` 到进程创建流程。
     - [x] 实现 `spawn` 接口，支持从 ELF 镜像启动进程。
@@ -121,12 +137,29 @@
 
 ## 📝 下一步计划 (Next Steps)
 
-### 阶段 0.4: 进程管理器与驱动基础
-1.  **基本驱动框架**:
-    - [x] ACPI 表解析 (RSDP/RSDT Found)。
-    - [ ] 映射 ACPI 表到虚拟地址空间。
-    - [ ] 解析 MADT 表以获取多核 (SMP) 信息。
-    - [ ] 尝试实现简单的串口驱动 (独立于 seL4_DebugPutChar)。
+### Phase 0.4: 驱动框架与硬件发现 (Driver Foundation - Ongoing)
+- [x] **ACPI 基础支持**:
+    - [x] 实现通过 seL4 BootInfo 扫描发现 RSDP。
+    - [x] 验证 RSDP 签名和校验和。
+    - [x] 实现 RSDT 物理地址在 Untyped Memory 中的查找。
+    - [x] 定义 `AcpiTableHeader` 和 `Rsdt` 结构体。
+- [ ] **ACPI 表解析**:
+    - [ ] 将 RSDT 物理内存映射到虚拟地址空间。
+    - [ ] 解析 RSDT 以查找 MADT (APIC), HPET 等表。
+- [ ] **中断控制器**:
+    - [ ] 初始化 Local APIC。
+    - [ ] 初始化 IOAPIC。
+
+### 当前状态 (2026-01-15)
+- **ACPI**: 成功检测到 RSDP 并定位了 RSDT 所在的 Untyped Memory (Cap #48)。
+- **进程管理**: 修复了 IPC 基准测试的死锁问题；验证了 IPC 往返延迟 (约 27k cycles)。
+- **稳定性**: 修复了测试超时问题 (增加到 60s)；添加了压力测试进度日志。
+- **审计**: 解决了 `auditoration1.md` 中的关键问题 (内存泄漏, VSpace 资源追踪, IPC 死锁)。
+
+### 下一步计划
+1. 映射 RSDT 并解析以获取 APIC/IOAPIC 基地址。
+2. 初始化 APIC 定时器以实现抢占式调度。
+3. 继续根据审计日志改进系统。
 
 ## 🛡️ 安全与规范检查记录
 - **Git**: 已添加 `.gitignore` 防止敏感文件泄露。
