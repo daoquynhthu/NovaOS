@@ -1,10 +1,7 @@
 use sel4_sys::*;
 use crate::memory::{ObjectAllocator, SlotAllocator};
 use crate::println;
-
-pub struct VSpace {
-    pub pml4_cap: seL4_CPtr,
-}
+use crate::utils::check_syscall_result;
 
 // x86_64 mapping constants
 const SEL4_MAPPING_LOOKUP_LEVEL: usize = 2;
@@ -30,9 +27,21 @@ const SE_L4_X64_PML4_OBJECT: seL4_Word = 6; // Mode-specific object type for PML
 #[allow(dead_code)]
 const SE_L4_X86_ASID_POOL_OBJECT: seL4_Word = 12; // Generic object type for ASID Pool (if needed)
 
+const MAX_PAGING_CAPS: usize = 32;
+
+pub struct VSpace {
+    pub pml4_cap: seL4_CPtr,
+    pub paging_caps: [seL4_CPtr; MAX_PAGING_CAPS],
+    pub paging_cap_count: usize,
+}
+
 impl VSpace {
     pub fn new(pml4_cap: seL4_CPtr) -> Self {
-        VSpace { pml4_cap }
+        VSpace { 
+            pml4_cap,
+            paging_caps: [0; MAX_PAGING_CAPS],
+            paging_cap_count: 0,
+        }
     }
 
     /// Allocate a new VSpace (PML4) and assign it to an ASID
@@ -55,12 +64,10 @@ impl VSpace {
             seL4_SetCap_My(0, pml4_cap);
             
             let dest_info = seL4_Call(asid_pool, info);
-            let res = seL4_MessageInfo_get_label(dest_info);
-            
-            if res != 0 {
-                 println!("[VSpace] ASID Pool Assign failed: {:?}", seL4_Error::from(res as i32));
-                 return Err(seL4_Error::from(res as i32));
-            }
+            check_syscall_result(dest_info).map_err(|e| {
+                 println!("[VSpace] ASID Pool Assign failed: {:?}", e);
+                 e
+            })?;
         }
         
         println!("[VSpace] Created new VSpace with PML4 cap {}", pml4_cap);
@@ -73,11 +80,7 @@ impl VSpace {
         unsafe {
             let info = seL4_MessageInfo_new(ARCH_INVOCATION_LABEL_X86_PAGE_UNMAP, 0, 0, 0);
             let resp = seL4_Call(frame_cap, info);
-            let label = seL4_MessageInfo_get_label(resp);
-            if label != 0 {
-                return Err(seL4_Error::from(label as i32));
-            }
-            Ok(())
+            check_syscall_result(resp)
         }
     }
 
@@ -85,7 +88,7 @@ impl VSpace {
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::manual_is_multiple_of)]
     pub fn map_page<A: ObjectAllocator>(
-        &self,
+        &mut self,
         allocator: &mut A,
         slots: &mut SlotAllocator,
         boot_info: &seL4_BootInfo,
@@ -96,20 +99,17 @@ impl VSpace {
     ) -> Result<(), seL4_Error> {
         debug_assert!(vaddr % 4096 == 0, "Virtual address must be page aligned");
         loop {
-            let res = self.map_page_syscall(frame_cap, vaddr, rights, attr);
-
-            if res == 0 {
-                return Ok(());
+            match self.map_page_syscall(frame_cap, vaddr, rights, attr) {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    if e != seL4_Error::seL4_FailedLookup {
+                        println!("[VSpace] Map failed with error: {:?}", e);
+                        return Err(e);
+                    }
+                    // Handle failed lookup (missing paging structures)
+                    self.handle_map_error(allocator, slots, boot_info, vaddr)?;
+                }
             }
-
-            let err = seL4_Error::from(res as i32);
-            if err != seL4_Error::seL4_FailedLookup {
-                println!("[VSpace] Map failed with error: {:?}", err);
-                return Err(err);
-            }
-
-            // Handle failed lookup (missing paging structures)
-            self.handle_map_error(allocator, slots, boot_info, vaddr)?;
         }
     }
 
@@ -119,7 +119,7 @@ impl VSpace {
         vaddr: usize,
         rights: seL4_CapRights,
         attr: seL4_X86_VMAttributes,
-    ) -> seL4_Word {
+    ) -> Result<(), seL4_Error> {
         unsafe {
             let info = seL4_MessageInfo_new(ARCH_INVOCATION_LABEL_X86_PAGE_MAP, 0, 1, 3);
             seL4_SetMR(0, vaddr as seL4_Word);
@@ -128,12 +128,12 @@ impl VSpace {
             seL4_SetCap_My(0, self.pml4_cap);
             
             let dest_info = seL4_Call(frame_cap, info);
-            seL4_MessageInfo_get_label(dest_info)
+            check_syscall_result(dest_info)
         }
     }
 
     fn handle_map_error<A: ObjectAllocator>(
-        &self,
+        &mut self,
         allocator: &mut A,
         slots: &mut SlotAllocator,
         boot_info: &seL4_BootInfo,
@@ -159,7 +159,7 @@ impl VSpace {
     }
 
     fn map_paging_structure<A: ObjectAllocator>(
-        &self,
+        &mut self,
         allocator: &mut A,
         slots: &mut SlotAllocator,
         boot_info: &seL4_BootInfo,
@@ -167,6 +167,12 @@ impl VSpace {
         type_: seL4_Word,
         map_label: seL4_Word,
     ) -> Result<(), seL4_Error> {
+        // Check if we have space to track the new cap
+        if self.paging_cap_count >= MAX_PAGING_CAPS {
+            println!("[VSpace] Max paging structures limit reached!");
+            return Err(seL4_Error::seL4_NotEnoughMemory);
+        }
+
         // Retype Untyped Memory to Paging Structure
         // All paging structures are 4KB (12 bits)
         let cap = allocator.allocate(boot_info, type_, 12, slots)?;
@@ -182,14 +188,16 @@ impl VSpace {
             seL4_SetCap_My(0, self.pml4_cap);
 
             let dest_info = seL4_Call(cap, info);
-            let res = seL4_MessageInfo_get_label(dest_info);
-
-            if res != 0 {
-                println!("[VSpace] Failed to map paging structure (type={}): {:?}", type_, seL4_Error::from(res as i32));
-                return Err(seL4_Error::from(res as i32));
-            }
+            check_syscall_result(dest_info).map_err(|e| {
+                println!("[VSpace] Failed to map paging structure (type={}): {:?}", type_, e);
+                e
+            })?;
         }
 
+        // Track the capability
+        self.paging_caps[self.paging_cap_count] = cap;
+        self.paging_cap_count += 1;
+        // println!("[VSpace] Mapped paging structure (type={}) at 0x{:x}, cap={}", type_, vaddr, cap);
         Ok(())
     }
 }

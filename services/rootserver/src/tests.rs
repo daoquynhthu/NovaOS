@@ -25,6 +25,27 @@ pub fn run_all(
     test_vspace_mapping(boot_info, allocator, slot_allocator);
     test_process_management(boot_info, allocator, slot_allocator);
     test_independent_vspace(boot_info, allocator, slot_allocator);
+    stress_test_memory_allocation(boot_info, allocator, slot_allocator);
+}
+
+fn stress_test_memory_allocation(
+    boot_info: &seL4_BootInfo,
+    allocator: &mut UntypedAllocator,
+    slot_allocator: &mut SlotAllocator,
+) {
+    println!("[STRESS] Allocating 1000 frames...");
+    let mut caps = [0; 1000];
+    for i in 0..1000 {
+        match allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator) {
+            Ok(cap) => caps[i] = cap,
+            Err(e) => {
+                println!("[STRESS] Failed at frame {}: {:?}", i, e);
+                break;
+            }
+        }
+    }
+    let count = caps.iter().filter(|&&c| c != 0).count();
+    println!("[STRESS] Successfully allocated {} frames", count);
 }
 
 fn test_allocation(
@@ -48,7 +69,7 @@ fn test_vspace_mapping(
 ) {
     println!("[INFO] Testing VSpace Mapping...");
     let pml4_cap = seL4_RootCNodeCapSlots_seL4_CapInitThreadVSpace as seL4_CPtr;
-    let vspace = VSpace::new(pml4_cap);
+    let mut vspace = VSpace::new(pml4_cap);
     
     println!("[INFO] Allocating frame for mapping...");
     match allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator) {
@@ -222,7 +243,7 @@ fn test_independent_vspace(
              let attr = seL4_X86_VMAttributes_seL4_X86_Default_VMAttributes;
              
              let root_pml4 = seL4_RootCNodeCapSlots_seL4_CapInitThreadVSpace as seL4_CPtr;
-             let root_vspace = VSpace::new(root_pml4);
+             let mut root_vspace = VSpace::new(root_pml4);
              
              if root_vspace.map_page(allocator, slot_allocator, boot_info, code_frame_cap, root_vaddr, rights_all, attr).is_ok() {
                   unsafe {

@@ -11,6 +11,8 @@ pub struct Process {
     pub code_frame_cap: seL4_CPtr,
 }
 
+use crate::utils::check_syscall_result;
+
 impl Process {
     pub fn create<A: ObjectAllocator>(
         allocator: &mut A,
@@ -80,11 +82,7 @@ impl Process {
             seL4_SetCap_My(2, ipc_buffer_cap);
 
             let resp = seL4_Call(self.tcb_cap, info);
-            let label = seL4_MessageInfo_get_label(resp);
-            
-            if label != 0 {
-                return Err(seL4_Error::from(label as i32));
-            }
+            check_syscall_result(resp)?;
             Ok(())
         }
     }
@@ -102,11 +100,7 @@ impl Process {
             seL4_SetCap_My(0, authority);
 
             let resp = seL4_Call(self.tcb_cap, info);
-             let label = seL4_MessageInfo_get_label(resp);
-            
-            if label != 0 {
-                return Err(seL4_Error::from(label as i32));
-            }
+            check_syscall_result(resp)?;
             Ok(())
         }
     }
@@ -150,11 +144,7 @@ impl Process {
             }
 
             let resp = seL4_Call(self.tcb_cap, info);
-             let label = seL4_MessageInfo_get_label(resp);
-            
-            if label != 0 {
-                return Err(seL4_Error::from(label as i32));
-            }
+            check_syscall_result(resp)?;
             Ok(())
         }
     }
@@ -168,11 +158,7 @@ impl Process {
                 0,
             );
             let resp = seL4_Call(self.tcb_cap, info);
-             let label = seL4_MessageInfo_get_label(resp);
-            
-            if label != 0 {
-                return Err(seL4_Error::from(label as i32));
-            }
+            check_syscall_result(resp)?;
             Ok(())
         }
     }
@@ -184,10 +170,7 @@ impl Process {
                 0, 0, 0
             );
             let resp = seL4_Call(self.tcb_cap, info);
-             let label = seL4_MessageInfo_get_label(resp);
-            if label != 0 {
-                return Err(seL4_Error::from(label as i32));
-            }
+            check_syscall_result(resp)?;
             Ok(())
         }
     }

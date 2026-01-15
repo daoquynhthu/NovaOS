@@ -48,6 +48,16 @@ pub unsafe fn copy_cap(
     seL4_Error::from(seL4_MessageInfo_get_label(dest_info) as i32)
 }
 
+// Helper to check syscall result and return unified Result
+pub fn check_syscall_result(msg_info: sel4_sys::seL4_MessageInfo) -> Result<(), seL4_Error> {
+    let label = sel4_sys::seL4_MessageInfo_get_label(msg_info);
+    if label == 0 {
+        Ok(())
+    } else {
+        Err(seL4_Error::from(label as i32))
+    }
+}
+
 // Helper for Deleting Capabilities
 #[allow(non_snake_case)]
 pub unsafe fn seL4_CNode_Delete(

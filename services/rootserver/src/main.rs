@@ -95,12 +95,14 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     println!("[INFO] Empty Slots: {} - {}", boot_info.empty.start, boot_info.empty.end);
     println!("[INFO] Untyped Slots: {} - {}", boot_info.untyped.start, boot_info.untyped.end);
     
-    // Dump raw bootinfo
+    // Dump raw bootinfo (Disabled for production)
+    /*
     let raw_ptr = boot_info as *const seL4_BootInfo as *const usize;
     for i in 0..10 {
-        println!("[DEBUG] BootInfo Word {}: 0x{:x}", i, unsafe { *raw_ptr.add(i) });
+        // println!("[DEBUG] BootInfo Word {}: 0x{:x}", i, unsafe { *raw_ptr.add(i) });
     }
-    println!("[INFO] Untyped Memory: {} slots", 
+    */
+    println!("[INFO] Untyped Memory: {} slots",  
              boot_info.untyped.end - boot_info.untyped.start);
     println!("[INFO] CNode Size: {} bits", boot_info.initThreadCNodeSizeBits);
 

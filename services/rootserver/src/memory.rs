@@ -9,6 +9,7 @@ const SE_L4_CAP_INIT_THREAD_CNODE: seL4_CPtr = 2;
 
 const MAX_CSPACE_SLOTS: usize = 4096;
 const BITMAP_SIZE: usize = MAX_CSPACE_SLOTS / 64;
+const MAX_UNTYPED_CAPS: usize = 256;
 
 /// Allocator for CSpace slots (CNode indices) using a Bitmap
 /// Supports alloc and free operations.
@@ -104,6 +105,8 @@ pub struct UntypedAllocator {
     untyped_end: usize,
     // We keep track of which untyped cap we are currently using
     last_used_idx: usize,
+    // Track usage of each untyped cap to simulate kernel's internal allocator state
+    usage: [usize; MAX_UNTYPED_CAPS],
 }
 
 impl UntypedAllocator {
@@ -115,6 +118,7 @@ impl UntypedAllocator {
             untyped_start: boot_info.untyped.start as usize,
             untyped_end: boot_info.untyped.end as usize,
             last_used_idx: 0,
+            usage: [0; MAX_UNTYPED_CAPS],
         }
     }
 
@@ -151,11 +155,12 @@ impl UntypedAllocator {
         
         let start = self.untyped_start;
         let end = self.untyped_end;
-        let len = end - start;
+        // let len = end - start;
         
         println!("[Alloc] Scanning untyped slots {} to {}", start, end);
         
         // Print all untyped slots, summarizing devices
+        /*
         for i in 0..len {
              let idx = i; 
              let slot = start + i;
@@ -170,6 +175,7 @@ impl UntypedAllocator {
                  }
              }
         }
+        */
     }
 }
 
@@ -183,25 +189,56 @@ impl ObjectAllocator for UntypedAllocator {
     ) -> Result<seL4_CPtr, seL4_Error> {
         let dest_slot = slots.alloc()?; 
 
-        // Iterate through untyped caps starting from last used
+        // Best-fit allocation strategy with usage tracking
         let count = self.untyped_end - self.untyped_start;
-        
-        for i in 0..count {
-            let idx = (self.last_used_idx + i) % count;
-            let untyped_cptr = self.untyped_start + idx;
-            
-            let desc_idx = idx; 
-            if desc_idx >= boot_info.untypedList.len() {
-                continue;
-            }
-            let desc = boot_info.untypedList[desc_idx];
+        let mut best_idx: Option<usize> = None;
+        let mut best_size_diff = u8::MAX;
 
-            if (desc.sizeBits as seL4_Word) < size_bits {
+        // 1. First pass: find the best fitting untyped memory that has enough space
+        for i in 0..count {
+            let idx = i;
+            if idx >= boot_info.untypedList.len() {
                 continue;
             }
-            if desc.isDevice != 0 {
+            // Bounds check for usage array
+            if idx >= MAX_UNTYPED_CAPS {
+                break;
+            }
+
+            let desc = boot_info.untypedList[idx];
+
+            // Skip device memory and too small blocks
+            if desc.isDevice != 0 || (desc.sizeBits as seL4_Word) < size_bits {
                 continue;
             }
+
+            // Check if we have enough space left (accounting for alignment)
+            let current_usage = self.usage[idx];
+            let alignment = 1 << size_bits;
+            // Align up the current usage
+            let start_offset = (current_usage + alignment - 1) & !(alignment - 1);
+            let end_offset = start_offset + (1 << size_bits);
+            
+            if end_offset > (1 << desc.sizeBits) {
+                // Not enough space in this block
+                continue;
+            }
+
+            let size_diff = desc.sizeBits.saturating_sub(size_bits as u8);
+            if size_diff < best_size_diff {
+                best_size_diff = size_diff;
+                best_idx = Some(idx);
+                // Optimization: if exact match, break early
+                if best_size_diff == 0 {
+                    break;
+                }
+            }
+        }
+
+        // 2. Try to allocate from the best candidate
+        if let Some(idx) = best_idx {
+            let untyped_cptr = self.untyped_start + idx;
+            let desc = boot_info.untypedList[idx];
 
             let root = SE_L4_CAP_INIT_THREAD_CNODE;
             let node_index = 0; 
@@ -209,8 +246,8 @@ impl ObjectAllocator for UntypedAllocator {
             let node_offset = dest_slot; 
             let num_objects = 1;
 
-            println!("[Alloc] Attempting retype: Untyped={} (Size={}) -> Slot={} (Type={}, Size={})", 
-               untyped_cptr, desc.sizeBits, dest_slot, type_, size_bits);
+            // println!("[Alloc] Attempting retype (BestFit): Untyped={} (Size={}) -> Slot={} (Type={}, Size={})", 
+            //    untyped_cptr, desc.sizeBits, dest_slot, type_, size_bits);
 
             let err = unsafe {
                 Self::untyped_retype(
@@ -226,15 +263,23 @@ impl ObjectAllocator for UntypedAllocator {
             };
 
             if err == seL4_Error::seL4_NoError {
-                println!("[Alloc] Success: Retyped Untyped={} into Slot {}", untyped_cptr, dest_slot);
-                self.last_used_idx = idx;
+                // println!("[Alloc] Success: Retyped Untyped={} into Slot {}", untyped_cptr, dest_slot);
+                self.last_used_idx = idx; 
+                
+                // Update usage
+                let alignment = 1 << size_bits;
+                let start_offset = (self.usage[idx] + alignment - 1) & !(alignment - 1);
+                self.usage[idx] = start_offset + (1 << size_bits);
+
                 return Ok(dest_slot);
             } else {
-                println!("[Alloc] Retype failed for Untyped Slot {} (Type={}, Size={}): {:?}", 
+                 println!("[Alloc] Retype failed for BestFit Untyped Slot {} (Type={}, Size={}): {:?}", 
                      untyped_cptr, 
                      if desc.isDevice != 0 { "Device" } else { "RAM" },
                      desc.sizeBits,
                      err);
+                 // If failed, we might want to mark it as full or handle it. 
+                 // For now, we just fail.
             }
         }
 

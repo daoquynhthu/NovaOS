@@ -49,5 +49,8 @@ kernel/*.yaml
 kernel/*.lds_pp
 kernel/circular_includes_valid
 
+#artifacts
+auditoration1.md
+
 # Temporary scripts (optional, but let's keep the main ones)
 # build.ps1 and run_qemu.ps1 are kept.
