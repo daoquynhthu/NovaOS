@@ -13,3 +13,41 @@ Thumbs.db
 
 # Ignore generated bindings
 libs/seL4-sys/src/bindings.rs
+
+# Logs
+*.log
+*.iso
+*.img
+
+# Ninja build files
+.ninja_*
+*.ninja
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.cmake
+!gcc.cmake
+!llvm.cmake
+!config.cmake
+
+# Kernel build artifacts (in-source build cleanup)
+kernel/generated/
+kernel/generated_prune/
+kernel/gen_headers/
+kernel/gen_config/
+kernel/autoconf/
+kernel/CMakeFiles/
+kernel/cmake_install.cmake
+kernel/libsel4/
+kernel/*.c
+kernel/*.i
+kernel/*.h
+kernel/*.json
+kernel/*.yaml
+kernel/*.lds_pp
+kernel/circular_includes_valid
+
+# Temporary scripts (optional, but let's keep the main ones)
+# build.ps1 and run_qemu.ps1 are kept.
