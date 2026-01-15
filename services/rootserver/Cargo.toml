@@ -8,6 +8,7 @@ description = "NovaOS RootServer - The first user-mode process"
 [dependencies]
 libnova = { path = "../../libs/libnova" }
 sel4-sys = { path = "../../libs/seL4-sys" }
+xmas-elf = "0.9.1"
 
 # 用于格式化输出 (no_std 环境下需要 core::fmt 的支持，通常不需要额外依赖，但为了方便调试可能需要 log 库)
 # 这里暂时保持极简，后续引入 log 库

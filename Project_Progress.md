@@ -80,12 +80,27 @@
     - 实现了一个简易的二进制加载器，将机器码手动映射到子进程的独立 VSpace 中。
     - 成功运行了隔离的子进程，验证了内存空间互不干扰。
     - 实现了 Capability 的 Copy/Mint 机制，支持共享/独立映射。
-- [x] **运行时形式化断言**:
-    - 在 `memory.rs`, `vspace.rs`, `process.rs` 中添加了 `debug_assert!`。
-    - 验证了关键操作的前置条件和后置条件（如槽位边界、Capability 有效性）。
+### 2026-01-15: 审计与重构 (Refactoring & Audit)
+- [x] **内存管理优化 (Best-Fit Allocator)**:
+    - 重构 `UntypedAllocator`，实现最佳匹配 (Best-Fit) 策略。
+    - 引入 `usage` 跟踪数组，减少内存碎片化。
+    - 添加了内存分配的压力测试 (Stress Test)。
+- [x] **资源防泄漏 (Resource Tracking)**:
+    - 在 `VSpace` 中引入 `paging_caps` 数组，显式追踪分页结构 Capability。
+    - 确保进程销毁时能够正确回收分页资源。
+- [x] **代码质量提升**:
+    - 统一错误处理：全面采用 `check_syscall_result` 处理系统调用返回值。
+    - 日志清理：移除生产环境不必要的调试打印，保留关键 INFO/ERROR。
+    - 修复了 VSpace 重复定义和可变借用等编译错误。
+- [x] **ELF 解析支持 (ElfLoader)**:
+    - 引入 `xmas-elf` 库，实现了 `ElfLoader` 模块。
+    - 支持解析 ELF Program Headers 并加载 LOAD 段到目标 VSpace。
+    - 实现了跨 VSpace 的内存拷贝（RootServer -> Target VSpace）。
 
 ## 🚧 进行中任务 (In Progress)
-- [ ] **完善 ELF 解析**: 目前仅支持原始二进制加载，需引入 `xmas-elf` 或类似库解析标准 ELF。
+- [ ] **进程管理器完善**:
+    - 集成 `ElfLoader` 到进程创建流程。
+    - 实现 `spawn` 接口，支持从 ELF 镜像启动进程。
 
 ## 📝 下一步计划 (Next Steps)
 

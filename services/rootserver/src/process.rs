@@ -87,6 +87,51 @@ impl Process {
         }
     }
 
+    pub fn load_image<A: ObjectAllocator>(
+        &mut self,
+        allocator: &mut A,
+        slots: &mut SlotAllocator,
+        boot_info: &seL4_BootInfo,
+        image_data: &[u8],
+    ) -> Result<usize, seL4_Error> {
+        let loader = crate::elf_loader::ElfLoader::new(boot_info);
+        loader.load_elf(allocator, slots, &mut self.vspace, image_data)
+    }
+
+    pub fn spawn<A: ObjectAllocator>(
+        allocator: &mut A,
+        slots: &mut SlotAllocator,
+        boot_info: &seL4_BootInfo,
+        asid_pool: seL4_CPtr,
+        cspace_root: seL4_CPtr,
+        fault_ep: seL4_CPtr,
+        ipc_buffer_addr: seL4_Word,
+        ipc_buffer_cap: seL4_CPtr,
+        image_data: &[u8],
+        priority: seL4_Word,
+    ) -> Result<Self, seL4_Error> {
+        let mut process = Self::create(allocator, slots, boot_info, asid_pool)?;
+        
+        // Load ELF
+        process.load_image(allocator, slots, boot_info, image_data)?;
+        
+        // Configure TCB
+        process.configure(cspace_root, fault_ep, ipc_buffer_addr, ipc_buffer_cap)?;
+        
+        // Set Priority
+        // Note: Authority should be the caller's TCB (RootServer), which has max priority.
+        // We assume RootServer has enough authority.
+        let authority = seL4_RootCNodeCapSlots_seL4_CapInitThreadTCB as seL4_CPtr;
+        process.set_priority(authority, priority)?;
+        
+        // Resume TCB (Start process)
+        process.resume()?;
+        
+        println!("[Process] Spawned process successfully!");
+        
+        Ok(process)
+    }
+
     pub fn set_priority(&self, authority: seL4_CPtr, priority: seL4_Word) -> Result<(), seL4_Error> {
         unsafe {
             let info = seL4_MessageInfo_new(

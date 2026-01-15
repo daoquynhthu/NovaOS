@@ -10,6 +10,7 @@ mod memory;
 mod vspace;
 mod process;
 mod ipc;
+mod elf_loader;
 mod utils;
 mod tests;
 
