@@ -11,3 +11,20 @@ panic = "abort"
 lto = true
 opt-level = "z"
 codegen-units = 1
+
+[workspace.lints.rust]
+# 生产环境禁止未使用的代码
+dead_code = "deny"
+unused_imports = "deny"
+# 强制 2021 edition 的语义
+rust_2021_compatibility = "deny"
+
+[workspace.lints.clippy]
+# 开启所有正确性检查
+correctness = { level = "deny", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+# 针对微内核开发的特定检查
+unwrap_used = "deny"  # 禁止在内核服务中使用 unwrap()
+panic = "deny"        # 禁止 panic (应使用 Result)

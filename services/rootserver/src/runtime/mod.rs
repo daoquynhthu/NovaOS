@@ -14,15 +14,7 @@ fn panic(info: &PanicInfo) -> ! {
         crate::println!("Location: {}:{}:{}", location.file(), location.line(), location.column());
     }
     
-    // PanicInfo::message() returns &PanicMessage (Display) in recent Rust
-    // or we can just print the info directly which formats nicely.
     crate::println!("Panic Info: {}", info);
-    
-    // Legacy support if needed:
-    // if let Some(message) = info.message() { ... } 
-    // But since 1.81 message() returns &PanicMessage, not Option.
-    // We can just rely on info's Display impl or just use message().
-    // crate::println!("Message: {}", info.message());
     
     // 死循环挂起
     loop {}

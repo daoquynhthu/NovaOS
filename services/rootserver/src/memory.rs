@@ -7,45 +7,111 @@ use crate::println;
 const SE_L4_UNTYPED_RETYPE: seL4_Word = 1;
 const SE_L4_CAP_INIT_THREAD_CNODE: seL4_CPtr = 2;
 
-/// Allocator for CSpace slots (CNode indices)
+const MAX_CSPACE_SLOTS: usize = 4096;
+const BITMAP_SIZE: usize = MAX_CSPACE_SLOTS / 64;
+
+/// Allocator for CSpace slots (CNode indices) using a Bitmap
+/// Supports alloc and free operations.
 pub struct SlotAllocator {
-    pub current: usize,
+    pub start: usize,
     pub end: usize,
+    bitmap: [u64; BITMAP_SIZE],
 }
 
 impl SlotAllocator {
     pub fn new(boot_info: &seL4_BootInfo) -> Self {
-        SlotAllocator {
-            current: boot_info.empty.start as usize,
+        let mut allocator = SlotAllocator {
+            start: boot_info.empty.start as usize,
             end: boot_info.empty.end as usize,
+            bitmap: [0; BITMAP_SIZE],
+        };
+
+        // Mark all slots before 'start' as allocated
+        for i in 0..allocator.start {
+            allocator.mark(i);
+        }
+        
+        // Mark all slots after 'end' as allocated (if any)
+        for i in allocator.end..MAX_CSPACE_SLOTS {
+            allocator.mark(i);
+        }
+
+        allocator
+    }
+
+    fn mark(&mut self, slot: usize) {
+        // Formal verification: Check bounds
+        debug_assert!(slot < MAX_CSPACE_SLOTS, "Slot index out of bounds");
+        if slot < MAX_CSPACE_SLOTS {
+            let idx = slot / 64;
+            let bit = slot % 64;
+            self.bitmap[idx] |= 1 << bit;
         }
     }
 
-    pub fn alloc(&mut self) -> Result<seL4_CPtr, ()> {
-        if self.current >= self.end {
-            return Err(());
+    fn clear(&mut self, slot: usize) {
+        // Formal verification: Check bounds
+        debug_assert!(slot < MAX_CSPACE_SLOTS, "Slot index out of bounds");
+        if slot < MAX_CSPACE_SLOTS {
+            let idx = slot / 64;
+            let bit = slot % 64;
+            self.bitmap[idx] &= !(1 << bit);
         }
-        let slot = self.current;
-        self.current += 1;
-        Ok(slot as seL4_CPtr)
     }
+
+    fn is_allocated(&self, slot: usize) -> bool {
+        if slot >= MAX_CSPACE_SLOTS {
+            return true;
+        }
+        let idx = slot / 64;
+        let bit = slot % 64;
+        (self.bitmap[idx] & (1 << bit)) != 0
+    }
+
+    pub fn alloc(&mut self) -> Result<seL4_CPtr, seL4_Error> {
+        // Search for a free bit starting from self.start
+        for i in self.start..self.end {
+            if !self.is_allocated(i) {
+                self.mark(i);
+                // Post-condition: Slot must be marked allocated
+                debug_assert!(self.is_allocated(i), "Slot should be marked allocated after alloc");
+                return Ok(i as seL4_CPtr);
+            }
+        }
+        Err(seL4_Error::seL4_NotEnoughMemory)
+    }
+
+    pub fn free(&mut self, slot: seL4_CPtr) {
+        self.clear(slot as usize);
+    }
+}
+
+/// Trait for allocating kernel objects from untyped memory
+pub trait ObjectAllocator {
+    fn allocate(
+        &mut self,
+        boot_info: &seL4_BootInfo,
+        type_: seL4_Word,
+        size_bits: seL4_Word,
+        slots: &mut SlotAllocator,
+    ) -> Result<seL4_CPtr, seL4_Error>;
 }
 
 /// Allocator for Physical Memory (Untyped Capabilities)
-pub struct BumpAllocator {
+/// Renamed from BumpAllocator to reflect its nature
+pub struct UntypedAllocator {
     untyped_start: usize,
     untyped_end: usize,
     // We keep track of which untyped cap we are currently using
-    // Note: This is a simple allocator that doesn't backtrack or support free
     last_used_idx: usize,
 }
 
-impl BumpAllocator {
+impl UntypedAllocator {
     pub fn new(boot_info: &seL4_BootInfo) -> Self {
         let len = boot_info.untyped.end - boot_info.untyped.start;
-        println!("[Alloc] Initializing BumpAllocator with {} untyped slots", len);
+        println!("[Alloc] Initializing UntypedAllocator with {} untyped slots", len);
 
-        BumpAllocator {
+        UntypedAllocator {
             untyped_start: boot_info.untyped.start as usize,
             untyped_end: boot_info.untyped.end as usize,
             last_used_idx: 0,
@@ -53,16 +119,7 @@ impl BumpAllocator {
     }
 
     /// Retypes an untyped capability into a new object
-    /// 
-    /// # Arguments
-    /// * `boot_info` - The boot info structure containing untyped list
-    /// * `type_` - The seL4 object type to create
-    /// * `size_bits` - The size of the object (log2)
-    /// * `slots` - The slot allocator to allocate a destination slot
-    /// 
-    /// # Returns
-    /// * `Result<seL4_CPtr, seL4_Error>` - The slot containing the new capability
-    // Helper function for syscall
+    #[allow(clippy::too_many_arguments)]
     unsafe fn untyped_retype(
         service: seL4_CPtr,
         type_: seL4_Word,
@@ -85,98 +142,6 @@ impl BumpAllocator {
         
         let dest_info = seL4_Call(service, info);
         seL4_Error::from(seL4_MessageInfo_get_label(dest_info) as i32)
-    }
-
-    pub fn retype(
-        &mut self,
-        boot_info: &seL4_BootInfo,
-        type_: seL4_Word,
-        size_bits: seL4_Word,
-        slots: &mut SlotAllocator,
-    ) -> Result<seL4_CPtr, seL4_Error> {
-        let dest_slot = slots.alloc().map_err(|_| seL4_Error::from(1))?; // Use a generic error code
-
-        // Iterate through untyped caps starting from last used
-        let count = self.untyped_end - self.untyped_start;
-        
-        for i in 0..count {
-            let idx = (self.last_used_idx + i) % count;
-            let untyped_cptr = self.untyped_start + idx;
-            
-            let desc_idx = idx; 
-            if desc_idx >= boot_info.untypedList.len() {
-                continue;
-            }
-            let desc = boot_info.untypedList[desc_idx];
-
-            if (desc.sizeBits as seL4_Word) < size_bits {
-                continue;
-            }
-            if desc.isDevice != 0 {
-                continue;
-            }
-
-            // let root = SE_L4_CAP_INIT_THREAD_CNODE;
-            let root = SE_L4_CAP_INIT_THREAD_CNODE;
-            let node_index = 0; 
-            let node_depth = 0; 
-            let node_offset = dest_slot; 
-            let num_objects = 1;
-
-            // DEBUG: Check IPC Buffer and Cap
-            /*
-            let ipc_buf = unsafe { sel4_sys::seL4_GetIPCBuffer() };
-             if ipc_buf.is_null() {
-                  println!("[Alloc] ERROR: IPC Buffer is NULL!");
-             } else {
-                  unsafe {
-                      sel4_sys::seL4_SetCap_My(0, root);
-                      let val = (*ipc_buf).caps_or_badges[0];
-                      if val != root {
-                          println!("[Alloc] ERROR: Failed to write to IPC Buffer! val={} expected={}", val, root);
-                      }
-                  }
-             }
-             */
-            
-            // Set the extra cap for the destination CNode
-            unsafe {
-                sel4_sys::seL4_SetCap_My(0, root);
-            }
- 
-             println!("[Alloc] Attempting retype: Untyped={} (Size={}) -> Slot={} (Type={}, Size={})", 
-                untyped_cptr, desc.sizeBits, dest_slot, type_, size_bits);
-
-            let err = unsafe {
-                Self::untyped_retype(
-                    untyped_cptr as seL4_CPtr,
-                    type_,
-                    size_bits,
-                    root,
-                    node_index,
-                    node_depth,
-                    node_offset,
-                    num_objects,
-                )
-            };
-
-            // Assuming seL4_NoError is 0 and seL4_Error implements PartialEq with its variants or we can compare converted values
-            // Since we created it from i32, let's compare with from(0)
-            if err == seL4_Error::from(0) {
-                println!("[Alloc] Success: Retyped Untyped={} into Slot {}", untyped_cptr, dest_slot);
-                self.last_used_idx = idx;
-                return Ok(dest_slot);
-            } else {
-                println!("[Alloc] Retype failed for Untyped Slot {} (Type={}, Size={}): {:?}", 
-                     untyped_cptr, 
-                     if desc.isDevice != 0 { "Device" } else { "RAM" },
-                     desc.sizeBits,
-                     err);
-            }
-        }
-
-        println!("[Alloc] Failed to allocate memory of size_bits {}", size_bits);
-        Err(seL4_Error::from(1))
     }
 
     pub fn print_info(&self, boot_info: &seL4_BootInfo) {
@@ -205,5 +170,78 @@ impl BumpAllocator {
                  }
              }
         }
+    }
+}
+
+impl ObjectAllocator for UntypedAllocator {
+    fn allocate(
+        &mut self,
+        boot_info: &seL4_BootInfo,
+        type_: seL4_Word,
+        size_bits: seL4_Word,
+        slots: &mut SlotAllocator,
+    ) -> Result<seL4_CPtr, seL4_Error> {
+        let dest_slot = slots.alloc()?; 
+
+        // Iterate through untyped caps starting from last used
+        let count = self.untyped_end - self.untyped_start;
+        
+        for i in 0..count {
+            let idx = (self.last_used_idx + i) % count;
+            let untyped_cptr = self.untyped_start + idx;
+            
+            let desc_idx = idx; 
+            if desc_idx >= boot_info.untypedList.len() {
+                continue;
+            }
+            let desc = boot_info.untypedList[desc_idx];
+
+            if (desc.sizeBits as seL4_Word) < size_bits {
+                continue;
+            }
+            if desc.isDevice != 0 {
+                continue;
+            }
+
+            let root = SE_L4_CAP_INIT_THREAD_CNODE;
+            let node_index = 0; 
+            let node_depth = 0; 
+            let node_offset = dest_slot; 
+            let num_objects = 1;
+
+            println!("[Alloc] Attempting retype: Untyped={} (Size={}) -> Slot={} (Type={}, Size={})", 
+               untyped_cptr, desc.sizeBits, dest_slot, type_, size_bits);
+
+            let err = unsafe {
+                Self::untyped_retype(
+                    untyped_cptr as seL4_CPtr,
+                    type_,
+                    size_bits,
+                    root,
+                    node_index,
+                    node_depth,
+                    node_offset,
+                    num_objects,
+                )
+            };
+
+            if err == seL4_Error::seL4_NoError {
+                println!("[Alloc] Success: Retyped Untyped={} into Slot {}", untyped_cptr, dest_slot);
+                self.last_used_idx = idx;
+                return Ok(dest_slot);
+            } else {
+                println!("[Alloc] Retype failed for Untyped Slot {} (Type={}, Size={}): {:?}", 
+                     untyped_cptr, 
+                     if desc.isDevice != 0 { "Device" } else { "RAM" },
+                     desc.sizeBits,
+                     err);
+            }
+        }
+
+        // If we reach here, we failed to allocate. Free the slot.
+        slots.free(dest_slot);
+
+        println!("[Alloc] Failed to allocate memory of size_bits {}", size_bits);
+        Err(seL4_Error::seL4_NotEnoughMemory)
     }
 }

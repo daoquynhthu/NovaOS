@@ -39,32 +39,63 @@
     - 配置了 `bindgen` 以生成安全的 Rust 接口。
     - 更新了 `CMakeLists.txt` 以传递 `SEL4_OUT_DIR` 环境变量。
 
-### 2026-01-15: RootServer 与测试框架集成
-- [x] **RootServer 运行时**:
-    - 实现了 `PanicHandler`，确保崩溃时有迹可循。
-    - 实现了基于 `seL4_DebugPutChar` 的串口输出，支持 `println!` 宏。
-- [x] **系统启动逻辑**:
-    - 在 `_start` 中成功调用 `seL4_GetBootInfo`。
-    - 打印了系统关键参数（Untyped Memory 槽位范围、CNode 大小）。
-- [x] **测试框架集成**:
-    - 引入了 Rust 的 `custom_test_frameworks`。
-    - 实现了 `no_std` 环境下的测试运行器 (`test_runner`)。
+### 2026-01-15: 修复 QEMU 启动与 Rust Nightly 迁移
+- [x] **QEMU 启动修复**:
+    - 解决了 `Huge page not supported` 错误（通过添加 `+pdpe1gb` CPU 标志）。
+    - 解决了 QEMU JIT 内存不足问题（用户清理磁盘 + 调整参数）。
+    - 验证了 `test.ps1` 自动化测试通过，成功捕获 `[TEST] PASSED`。
+- [x] **Rust Nightly 迁移**:
+    - 启用了 `#![feature(custom_test_frameworks)]`。
+    - 恢复了 `cargo test` 单元测试支持。
+    - 修复了 RootServer 中的 warnings (cast error)。
+
+### 2026-01-15: IPC 通信机制
+- [x] **seL4-sys 系统调用补全**:
+    - 手动实现了 `seL4_Recv` 和 `seL4_ReplyRecv` 的内联汇编封装（解决 bindgen 缺失问题）。
+    - 修复了 IPC 调用中的寄存器传递问题。
+- [x] **IPC 抽象层**:
+    - 创建 `ipc.rs` 模块，封装 `Endpoint` 结构体。
+    - 实现了 `call` (Client) 和 `recv/reply_recv` (Server) 方法。
+- [x] **Client-Server 通信验证**:
+    - 在 RootServer 和 Worker 线程之间建立了双向通信。
+    - 成功验证了数据发送与回复流程。
+
+### 2026-01-15: 安全与稳定性增强
+- [x] **Badge 身份认证 (Security)**:
+    - 实现了带 Badge 的 Endpoint Capability Minting。
+    - 验证了服务端通过 Badge 识别 Client 身份（Badge=0xBEEF）。
+- [x] **健壮的 CSpace 管理器 (Robust CNode)**:
+    - 将 `SlotAllocator` 升级为基于 Bitmap 的分配器。
+    - 实现了 `alloc` 和 `free` 操作，确保槽位管理的正确性。
+    - 修复了分配失败时的资源泄漏问题。
+- [x] **形式化验证准备**:
+    - 创建了 `NovaOS_Verification_Spec.md`，定义了关键数据结构的不变量（Invariants）。
+    - 梳理了内存管理、进程管理和 IPC 的验证目标。
+
+### 2026-01-15: 多进程与资源隔离 (Phase 0.3)
+- [x] **独立 VSpace 实现**:
+    - 实现了 `VSpace::new_from_scratch`，支持为新进程分配独立的 PML4 和 ASID。
+    - 解决了 x86_64 下 ASID Pool 分配的 Invocation Label 问题 (Label=44)。
+- [x] **隔离性验证 (Simple Loader)**:
+    - 实现了一个简易的二进制加载器，将机器码手动映射到子进程的独立 VSpace 中。
+    - 成功运行了隔离的子进程，验证了内存空间互不干扰。
+    - 实现了 Capability 的 Copy/Mint 机制，支持共享/独立映射。
+- [x] **运行时形式化断言**:
+    - 在 `memory.rs`, `vspace.rs`, `process.rs` 中添加了 `debug_assert!`。
+    - 验证了关键操作的前置条件和后置条件（如槽位边界、Capability 有效性）。
 
 ## 🚧 进行中任务 (In Progress)
-- [ ] **第一次构建验证**: 尝试编译整个系统并在 QEMU 中运行。
+- [ ] **完善 ELF 解析**: 目前仅支持原始二进制加载，需引入 `xmas-elf` 或类似库解析标准 ELF。
 
 ## 📝 下一步计划 (Next Steps)
 
-### 阶段 0.2: 第一次启动 (First Boot)
-1.  **实现 `seL4-sys` 构建逻辑**:
-    - 从 CMake 构建产物中提取 `kernel_header` 路径。
-    - 使用 `bindgen` 生成 Rust 结构体定义。
-2.  **完善 `RootServer`**:
-    - 读取并解析 `BootInfo`。
-    - 打印系统启动横幅 (Banner) 到串口。
-3.  **QEMU 仿真测试**:
-    - 成功在 QEMU 中加载内核与 RootServer。
-    - 验证串口输出正常。
+### 阶段 0.4: 进程管理器与驱动基础
+1.  **进程管理器 (Process Server)**:
+    - 封装 `Process` 结构体，管理进程生命周期 (Spawn, Kill, Yield)。
+    - 实现简单的调度策略。
+2.  **基本驱动框架**:
+    - 探索设备树或 ACPI 表解析。
+    - 尝试实现简单的串口驱动 (独立于 seL4_DebugPutChar)。
 
 ## 🛡️ 安全与规范检查记录
 - **Git**: 已添加 `.gitignore` 防止敏感文件泄露。

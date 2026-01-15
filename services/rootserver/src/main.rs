@@ -1,24 +1,38 @@
 #![no_std]
 #![no_main]
 
+#![feature(custom_test_frameworks)]
+#![test_runner(crate::test_runner)]
+#![reexport_test_harness_main = "test_main"]
+
 mod runtime;
 mod memory;
+mod vspace;
+mod process;
+mod ipc;
+mod utils;
+mod tests;
 
 use sel4_sys::seL4_BootInfo;
 use core::arch::global_asm;
-use memory::{BumpAllocator, SlotAllocator};
-use sel4_sys::seL4_PageBits;
+use memory::{UntypedAllocator, SlotAllocator};
 
-// Temporary definition if missing in bindings
-#[allow(non_upper_case_globals)]
-// seL4_X86_4K is seL4_ModeObjectTypeCount.
-// On x86_64:
-// seL4_NonArchObjectTypeCount = 5
-// seL4_X86_PDPTObject = 5
-// seL4_X64_PML4Object = 6
-// seL4_X64_HugePageObject = 7 (if CONFIG_HUGE_PAGE, which is default)
-// seL4_ModeObjectTypeCount = 8
-const seL4_X86_4K: sel4_sys::seL4_Word = 8; 
+#[cfg(test)]
+fn test_runner(tests: &[&dyn Fn()]) {
+    println!("Running {} tests", tests.len());
+    for test in tests {
+        test();
+    }
+    println!("[TEST] PASSED");
+    loop {}
+}
+
+#[test_case]
+fn trivial_assertion() {
+    print!("trivial assertion... ");
+    assert_eq!(1, 1);
+    println!("[ok]");
+}
 
 // 定义汇编入口点和栈
 global_asm!(
@@ -50,9 +64,12 @@ global_asm!(
 
 /// RootServer 的 Rust 入口点
 /// 由汇编 _start 调用
-#[cfg(not(test))]
+/// 
+/// # Safety
+/// This function is the entry point called by assembly. The `boot_info_ptr` must be a valid pointer
+/// to `seL4_BootInfo` provided by the kernel/bootloader.
 #[no_mangle]
-pub extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
+pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     // 初始化运行时（例如堆分配器，如果需要）
     
     println!("\n========================================");
@@ -60,17 +77,17 @@ pub extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     println!("   Status: RootServer Started");
     println!("========================================");
 
-    // 1. 获取 boot_info
+    // 1. Get BootInfo
     if boot_info_ptr.is_null() {
         panic!("Failed to get BootInfo! System halted.");
     }
     
-    let boot_info = unsafe { &*boot_info_ptr };
+    // SAFETY: We trust the bootloader provided a valid pointer
+    // The function is unsafe, so dereferencing raw pointer is allowed if we respect safety contracts.
+    let boot_info = &*boot_info_ptr;
     
     // Initialize IPC Buffer
-    unsafe {
-        sel4_sys::seL4_SetIPCBuffer(boot_info.ipcBuffer);
-    }
+    sel4_sys::seL4_SetIPCBuffer(boot_info.ipcBuffer);
 
     println!("[INFO] BootInfo retrieved successfully.");
     println!("[INFO] BootInfo Addr: {:p}", boot_info);
@@ -89,20 +106,17 @@ pub extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
 
     // 2. 初始化内存分配器
     let mut slot_allocator = SlotAllocator::new(boot_info);
-    let mut allocator = BumpAllocator::new(boot_info);
+    let mut allocator = UntypedAllocator::new(boot_info);
     allocator.print_info(boot_info);
 
-    // 3. Test Allocation
-    println!("[INFO] Testing allocation of 5 x 4KB Frames...");
-    for i in 0..5 {
-        match allocator.retype(boot_info, seL4_X86_4K.into(), seL4_PageBits.into(), &mut slot_allocator) {
-           Ok(slot) => println!("[INFO] Allocated 4KB Frame #{} in slot {}", i + 1, slot),
-           Err(e) => println!("[ERROR] Allocation #{} failed with error: {:?}", i + 1, e),
-        }
+    // 3. Run Tests
+    tests::run_all(boot_info, &mut allocator, &mut slot_allocator);
+
+    // 4. End
+    println!("[INFO] System is ready. Main thread yielding...");
+    println!("[TEST] PASSED");
+
+    loop {
+        unsafe { sel4_sys::seL4_Yield(); }
     }
-
-    // 4. 打印欢迎信息
-    println!("[INFO] System is ready. Waiting for instructions...");
-
-    loop {}
 }

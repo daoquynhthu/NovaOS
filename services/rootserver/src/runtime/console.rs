@@ -19,7 +19,7 @@ impl fmt::Write for SerialPort {
                  // We hardcode it here because bindgen didn't export it or it's an enum.
                  const SEL4_SYS_DEBUG_PUT_CHAR: isize = -9;
                  let sys_num: usize = SEL4_SYS_DEBUG_PUT_CHAR as usize;
-                 let dest: usize = c as u8 as usize;
+                 let dest: usize = c as usize;
                  let info: usize = 0;
                  
                  // Save rsp to r12 because syscall might clobber it (or we follow seL4 C stub convention).

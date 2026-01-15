@@ -17,3 +17,10 @@ cc = "1.0"
 
 [features]
 default = []
+test_build = []
+
+[[bin]]
+name = "rootserver"
+path = "src/main.rs"
+harness = false
+
