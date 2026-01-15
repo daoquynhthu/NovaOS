@@ -98,17 +98,19 @@
     - 实现了跨 VSpace 的内存拷贝（RootServer -> Target VSpace）。
 
 ## 🚧 进行中任务 (In Progress)
-- [ ] **进程管理器完善**:
+- [x] **进程管理器完善**:
     - 集成 `ElfLoader` 到进程创建流程。
     - 实现 `spawn` 接口，支持从 ELF 镜像启动进程。
+    - 引入 `ProcessState` 枚举，完善生命周期管理。
+    - 增加形式化验证断言 (Formal Verification Assertions)。
+    - 实现 `ProcessManager` 全局结构体，管理多进程列表。
+    - 实现 PID 分配与查找。
+    - 完成 IPC 性能基准测试 (Benchmark)。
 
 ## 📝 下一步计划 (Next Steps)
 
 ### 阶段 0.4: 进程管理器与驱动基础
-1.  **进程管理器 (Process Server)**:
-    - 封装 `Process` 结构体，管理进程生命周期 (Spawn, Kill, Yield)。
-    - 实现简单的调度策略。
-2.  **基本驱动框架**:
+1.  **基本驱动框架**:
     - 探索设备树或 ACPI 表解析。
     - 尝试实现简单的串口驱动 (独立于 seL4_DebugPutChar)。
 

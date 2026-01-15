@@ -1,6 +1,6 @@
 use sel4_sys::*;
 use xmas_elf::{ElfFile, program};
-use crate::memory::{UntypedAllocator, SlotAllocator, ObjectAllocator};
+use crate::memory::{SlotAllocator, ObjectAllocator};
 use crate::vspace::VSpace;
 use crate::utils::{seL4_CapRights_new, seL4_X86_4K};
 use crate::println;

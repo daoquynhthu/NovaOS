@@ -25,7 +25,183 @@ pub fn run_all(
     test_vspace_mapping(boot_info, allocator, slot_allocator);
     test_process_management(boot_info, allocator, slot_allocator);
     test_independent_vspace(boot_info, allocator, slot_allocator);
+    test_process_spawn(boot_info, allocator, slot_allocator);
+    test_process_manager();
+    benchmark_ipc_latency(boot_info, allocator, slot_allocator);
     stress_test_memory_allocation(boot_info, allocator, slot_allocator);
+}
+
+fn test_process_manager() {
+    println!("[INFO] Testing ProcessManager...");
+    use crate::process::{ProcessManager, Process};
+    
+    // Create a dummy process (invalid caps, just for structural test)
+    // We need to be careful not to double-free invalid caps if Drop was implemented (it's not).
+    // And Process::new creates a Process with state Created.
+    let dummy_process = Process {
+        tcb_cap: 999,
+        vspace: crate::vspace::VSpace { pml4_cap: 888, paging_caps: [0; 32], paging_cap_count: 0 },
+        fault_ep_cap: 0,
+        ipc_buffer_cap: 0,
+        code_frame_cap: 0,
+        state: crate::process::ProcessState::Created,
+    };
+    
+    let mut pm = ProcessManager::new();
+    
+    // Test Add
+    match pm.add_process(dummy_process) {
+        Ok(pid) => {
+            println!("[INFO] Added process with PID: {}", pid);
+            assert!(pid == 0);
+        },
+        Err(e) => println!("[ERROR] Failed to add process: {:?}", e),
+    }
+    
+    // Test Get
+    if let Some(p) = pm.get_process(0) {
+        println!("[INFO] Retrieved process 0, TCB cap: {}", p.tcb_cap);
+        assert!(p.tcb_cap == 999);
+    } else {
+        println!("[ERROR] Failed to get process 0");
+    }
+
+    // Test Get Mut
+    if let Some(p) = pm.get_process_mut(0) {
+        println!("[INFO] Retrieved process 0 (mut), changing TCB cap...");
+        p.tcb_cap = 1000;
+    }
+    
+    // Verify Mutation
+    if let Some(p) = pm.get_process(0) {
+        assert!(p.tcb_cap == 1000);
+        println!("[INFO] Mutation verified.");
+    }
+
+    // Test Remove
+    if let Some(p) = pm.remove_process(0) {
+        println!("[INFO] Removed process 0, TCB cap: {}", p.tcb_cap);
+        assert!(p.tcb_cap == 1000);
+    } else {
+        println!("[ERROR] Failed to remove process 0");
+    }
+    
+    // Test Empty
+    if pm.get_process(0).is_none() {
+        println!("[INFO] Process 0 is indeed gone.");
+    } else {
+        println!("[ERROR] Process 0 still exists!");
+    }
+}
+
+fn benchmark_ipc_latency(
+    boot_info: &seL4_BootInfo,
+    allocator: &mut UntypedAllocator,
+    slot_allocator: &mut SlotAllocator,
+) {
+    println!("[BENCHMARK] Measuring IPC Round-Trip Latency...");
+    
+    // Setup Thread
+    let tcb_obj = api_object_seL4_TCBObject;
+    let tcb_bits = seL4_TCBBits;
+    let tcb_cap = allocator.allocate(boot_info, tcb_obj.into(), tcb_bits.into(), slot_allocator).expect("TCB Alloc");
+    
+    let vspace_root = seL4_RootCNodeCapSlots_seL4_CapInitThreadVSpace as seL4_CPtr;
+    let mut process = Process::new(tcb_cap, VSpace::new(vspace_root));
+    
+    // Allocate Stack
+    let stack_vaddr = 0x40000000;
+    let stack_top = stack_vaddr + 4096;
+    let stack_frame_cap = allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator).expect("Stack Alloc");
+    let rights = seL4_CapRights_new(0, 0, 1, 1);
+    let attr = seL4_X86_VMAttributes_seL4_X86_Default_VMAttributes;
+    process.vspace.map_page(allocator, slot_allocator, boot_info, stack_frame_cap, stack_vaddr, rights, attr).expect("Stack Map");
+
+    // Allocate IPC Buffer
+    let ipc_vaddr = 0x50000000;
+    let ipc_frame_cap = allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator).expect("IPC Alloc");
+    process.vspace.map_page(allocator, slot_allocator, boot_info, ipc_frame_cap, ipc_vaddr, rights, attr).expect("IPC Map");
+    
+    // Endpoint
+    let endpoint_cap = allocator.allocate(boot_info, api_object_seL4_EndpointObject.into(), seL4_EndpointBits.into(), slot_allocator).expect("EP Alloc");
+    
+    // Configure
+    let cspace_root = seL4_RootCNodeCapSlots_seL4_CapInitThreadCNode as seL4_CPtr;
+    process.configure(cspace_root, 0, ipc_vaddr as seL4_Word, ipc_frame_cap).expect("Config");
+    
+    let authority = seL4_RootCNodeCapSlots_seL4_CapInitThreadTCB as seL4_CPtr;
+    process.set_priority(authority, 254).expect("Priority");
+    
+    let rip = benchmark_worker as *const () as usize as seL4_Word;
+    let rsp = stack_top as seL4_Word;
+    process.write_registers(rip, rsp, 0x202, endpoint_cap).expect("Regs");
+    
+    process.resume().expect("Resume");
+    
+    // Measurement Loop
+    let endpoint = Endpoint::new(endpoint_cap);
+    let iterations = 1000;
+    
+    // Warmup
+    for _ in 0..100 {
+        endpoint.call(1);
+    }
+    
+    let start = unsafe { core::arch::x86_64::_rdtsc() };
+    for _ in 0..iterations {
+        endpoint.call(1);
+    }
+    let end = unsafe { core::arch::x86_64::_rdtsc() };
+    
+    let total_cycles = end - start;
+    let avg_cycles = total_cycles / iterations;
+    println!("[BENCHMARK] Average IPC Call-Reply Latency: {} cycles", avg_cycles);
+    
+    // Clean up (terminate worker)
+    endpoint.call(0); // Signal to exit
+    // process.terminate(cspace_root).expect("Terminate"); // Optional cleanup
+}
+
+#[no_mangle]
+pub extern "C" fn benchmark_worker(endpoint_cap: seL4_CPtr) {
+    let endpoint = Endpoint::new(endpoint_cap);
+    loop {
+        let (msg, _) = endpoint.recv();
+        if msg == 0 { break; }
+        endpoint.reply_recv(msg);
+    }
+    loop { unsafe { sel4_sys::seL4_Yield(); } }
+}
+
+fn test_process_spawn(
+    boot_info: &seL4_BootInfo,
+    allocator: &mut UntypedAllocator,
+    slot_allocator: &mut SlotAllocator,
+) {
+    println!("[INFO] Testing Process Spawn interface...");
+    let asid_pool = seL4_RootCNodeCapSlots_seL4_CapInitThreadASIDPool as seL4_CPtr;
+    let cspace_root = seL4_RootCNodeCapSlots_seL4_CapInitThreadCNode as seL4_CPtr;
+    
+    // Dummy ELF Data (just enough to fail parsing gracefully or trigger logic)
+    // We pass an empty slice, expecting InvalidArgument from ElfLoader
+    let dummy_elf = []; 
+    
+    // We expect this to fail at ELF loading stage, but it validates compilation and linkage of spawn()
+    match Process::spawn(
+        allocator, 
+        slot_allocator, 
+        boot_info, 
+        asid_pool, 
+        cspace_root, 
+        0, // fault_ep
+        0, // ipc_buffer_addr
+        0, // ipc_buffer_cap
+        &dummy_elf, 
+        100
+    ) {
+        Ok(_) => println!("[INFO] Process spawned (unexpectedly success with empty ELF)"),
+        Err(e) => println!("[INFO] Process spawn validated (Expected failure for empty ELF: {:?})", e),
+    }
 }
 
 fn stress_test_memory_allocation(

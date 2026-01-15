@@ -3,12 +3,77 @@ use crate::memory::{ObjectAllocator, SlotAllocator};
 use crate::vspace::VSpace;
 use crate::println;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessState {
+    Created,
+    Loaded,
+    Configured,
+    Running,
+    Suspended,
+    Terminated,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct Process {
     pub tcb_cap: seL4_CPtr,
     pub vspace: VSpace,
     pub fault_ep_cap: seL4_CPtr,
     pub ipc_buffer_cap: seL4_CPtr,
     pub code_frame_cap: seL4_CPtr,
+    pub state: ProcessState,
+}
+
+pub const MAX_PROCESSES: usize = 32;
+
+pub struct ProcessManager {
+    pub processes: [Option<Process>; MAX_PROCESSES],
+}
+
+impl ProcessManager {
+    pub const fn new() -> Self {
+        ProcessManager {
+            processes: [None; MAX_PROCESSES],
+        }
+    }
+
+    pub fn allocate_pid(&self) -> Result<usize, seL4_Error> {
+        for (pid, slot) in self.processes.iter().enumerate() {
+            if slot.is_none() {
+                return Ok(pid);
+            }
+        }
+        Err(seL4_Error::seL4_NotEnoughMemory)
+    }
+
+    pub fn add_process(&mut self, process: Process) -> Result<usize, seL4_Error> {
+        let pid = self.allocate_pid()?;
+        self.processes[pid] = Some(process);
+        Ok(pid)
+    }
+
+    pub fn get_process(&self, pid: usize) -> Option<&Process> {
+        if pid < MAX_PROCESSES {
+            self.processes[pid].as_ref()
+        } else {
+            None
+        }
+    }
+
+    pub fn get_process_mut(&mut self, pid: usize) -> Option<&mut Process> {
+        if pid < MAX_PROCESSES {
+            self.processes[pid].as_mut()
+        } else {
+            None
+        }
+    }
+    
+    pub fn remove_process(&mut self, pid: usize) -> Option<Process> {
+        if pid < MAX_PROCESSES {
+            self.processes[pid].take()
+        } else {
+            None
+        }
+    }
 }
 
 use crate::utils::check_syscall_result;
@@ -34,11 +99,19 @@ impl Process {
             fault_ep_cap: 0,
             ipc_buffer_cap: 0,
             code_frame_cap: 0,
+            state: ProcessState::Created,
         })
     }
 
     pub fn new(tcb_cap: seL4_CPtr, vspace: VSpace) -> Self {
-        Process { tcb_cap, vspace, fault_ep_cap: 0, ipc_buffer_cap: 0, code_frame_cap: 0 }
+        Process { 
+            tcb_cap, 
+            vspace, 
+            fault_ep_cap: 0, 
+            ipc_buffer_cap: 0, 
+            code_frame_cap: 0,
+            state: ProcessState::Created, 
+        }
     }
 
     pub fn configure(
@@ -83,6 +156,11 @@ impl Process {
 
             let resp = seL4_Call(self.tcb_cap, info);
             check_syscall_result(resp)?;
+            
+            self.state = ProcessState::Configured;
+            // Invariant: Active TCB must have valid VSpace Root
+            debug_assert!(self.vspace.pml4_cap != 0, "Invariant: VSpace Root Valid");
+            
             Ok(())
         }
     }
@@ -95,7 +173,9 @@ impl Process {
         image_data: &[u8],
     ) -> Result<usize, seL4_Error> {
         let loader = crate::elf_loader::ElfLoader::new(boot_info);
-        loader.load_elf(allocator, slots, &mut self.vspace, image_data)
+        let entry = loader.load_elf(allocator, slots, &mut self.vspace, image_data)?;
+        self.state = ProcessState::Loaded;
+        Ok(entry)
     }
 
     pub fn spawn<A: ObjectAllocator>(
@@ -194,21 +274,27 @@ impl Process {
         }
     }
 
-    pub fn resume(&self) -> Result<(), seL4_Error> {
+    pub fn resume(&mut self) -> Result<(), seL4_Error> {
+        // Pre-condition: Must be Configured or Suspended
+        debug_assert!(
+            self.state == ProcessState::Configured || self.state == ProcessState::Suspended,
+            "Process must be Configured or Suspended to Resume"
+        );
+
         unsafe {
             let info = seL4_MessageInfo_new(
                 invocation_label_TCBResume as seL4_Word,
-                0,
-                0,
-                0,
+                0, 0, 0
             );
             let resp = seL4_Call(self.tcb_cap, info);
             check_syscall_result(resp)?;
+            
+            self.state = ProcessState::Running;
             Ok(())
         }
     }
 
-    pub fn suspend(&self) -> Result<(), seL4_Error> {
+    pub fn suspend(&mut self) -> Result<(), seL4_Error> {
         unsafe {
             let info = seL4_MessageInfo_new(
                 invocation_label_TCBSuspend as seL4_Word,
@@ -216,11 +302,13 @@ impl Process {
             );
             let resp = seL4_Call(self.tcb_cap, info);
             check_syscall_result(resp)?;
+            
+            self.state = ProcessState::Suspended;
             Ok(())
         }
     }
 
-    pub fn terminate(&self, cnode: seL4_CPtr) -> Result<(), seL4_Error> {
+    pub fn terminate(&mut self, cnode: seL4_CPtr) -> Result<(), seL4_Error> {
         unsafe {
             // Suspend first
             let _ = self.suspend();
@@ -260,6 +348,8 @@ impl Process {
                      println!("[WARN] Failed to delete Code Frame Cap: {:?}", err);
                 }
             }
+            
+            self.state = ProcessState::Terminated;
             
             println!("[Process] Terminated (Caps deleted: TCB={}, PML4={}, FaultEP={}, IPCBuf={}, CodeFrame={})", 
                 self.tcb_cap, self.vspace.pml4_cap, self.fault_ep_cap, self.ipc_buffer_cap, self.code_frame_cap);

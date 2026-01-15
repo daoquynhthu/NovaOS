@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![deny(warnings)]
 
 #![feature(custom_test_frameworks)]
 #![test_runner(crate::test_runner)]
@@ -17,6 +18,9 @@ mod tests;
 use sel4_sys::seL4_BootInfo;
 use core::arch::global_asm;
 use memory::{UntypedAllocator, SlotAllocator};
+use process::ProcessManager;
+
+static mut PROCESS_MANAGER: ProcessManager = ProcessManager::new();
 
 #[cfg(test)]
 fn test_runner(tests: &[&dyn Fn()]) {
@@ -112,11 +116,13 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     let mut allocator = UntypedAllocator::new(boot_info);
     allocator.print_info(boot_info);
 
-    // 3. Run Tests
+    // 3. System Self-Test (POST)
+    println!("[KERNEL] Performing Power-On Self-Test (POST)...");
     tests::run_all(boot_info, &mut allocator, &mut slot_allocator);
+    println!("[KERNEL] POST Completed Successfully.");
 
-    // 4. End
-    println!("[INFO] System is ready. Main thread yielding...");
+    // 4. Idle Loop
+    println!("[KERNEL] System Ready. Entering Idle Loop...");
     println!("[TEST] PASSED");
 
     loop {

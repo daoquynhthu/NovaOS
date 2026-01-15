@@ -29,6 +29,7 @@ const SE_L4_X86_ASID_POOL_OBJECT: seL4_Word = 12; // Generic object type for ASI
 
 const MAX_PAGING_CAPS: usize = 32;
 
+#[derive(Debug, Clone, Copy)]
 pub struct VSpace {
     pub pml4_cap: seL4_CPtr,
     pub paging_caps: [seL4_CPtr; MAX_PAGING_CAPS],

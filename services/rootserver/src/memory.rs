@@ -36,6 +36,10 @@ impl SlotAllocator {
         for i in allocator.end..MAX_CSPACE_SLOTS {
             allocator.mark(i);
         }
+        
+        // Invariant: start <= end <= MAX_SLOTS
+        debug_assert!(allocator.start <= allocator.end, "Invariant: start <= end");
+        debug_assert!(allocator.end <= MAX_CSPACE_SLOTS, "Invariant: end <= MAX_SLOTS");
 
         allocator
     }
@@ -270,6 +274,9 @@ impl ObjectAllocator for UntypedAllocator {
                 let alignment = 1 << size_bits;
                 let start_offset = (self.usage[idx] + alignment - 1) & !(alignment - 1);
                 self.usage[idx] = start_offset + (1 << size_bits);
+                
+                // Invariant: Usage should not exceed size
+                debug_assert!(self.usage[idx] <= (1 << desc.sizeBits), "Invariant: Usage <= Capacity");
 
                 return Ok(dest_slot);
             } else {
