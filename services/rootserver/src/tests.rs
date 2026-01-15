@@ -32,12 +32,13 @@ pub fn run_all(
 }
 
 fn test_process_manager() {
-    println!("[INFO] Testing ProcessManager...");
-    use crate::process::{ProcessManager, Process};
+    println!("[INFO] Testing ProcessManager (Global)...");
+    use crate::process::{Process, get_process_manager};
+    
+    // Access the global process manager
+    let pm = get_process_manager();
     
     // Create a dummy process (invalid caps, just for structural test)
-    // We need to be careful not to double-free invalid caps if Drop was implemented (it's not).
-    // And Process::new creates a Process with state Created.
     let dummy_process = Process {
         tcb_cap: 999,
         vspace: crate::vspace::VSpace { pml4_cap: 888, paging_caps: [0; 32], paging_cap_count: 0 },
@@ -46,8 +47,6 @@ fn test_process_manager() {
         code_frame_cap: 0,
         state: crate::process::ProcessState::Created,
     };
-    
-    let mut pm = ProcessManager::new();
     
     // Test Add
     match pm.add_process(dummy_process) {
@@ -165,10 +164,17 @@ fn benchmark_ipc_latency(
 #[no_mangle]
 pub extern "C" fn benchmark_worker(endpoint_cap: seL4_CPtr) {
     let endpoint = Endpoint::new(endpoint_cap);
+    let (mut msg, _) = endpoint.recv();
     loop {
-        let (msg, _) = endpoint.recv();
-        if msg == 0 { break; }
-        endpoint.reply_recv(msg);
+        if msg == 0 { 
+            // Reply to the exit signal to unblock the client
+            // reply_recv replies to the current message (0) and waits for next.
+            // This unblocks the client. We then break and yield/exit.
+            endpoint.reply_recv(0);
+            break; 
+        }
+        let (next_msg, _) = endpoint.reply_recv(msg);
+        msg = next_msg;
     }
     loop { unsafe { sel4_sys::seL4_Yield(); } }
 }
@@ -212,6 +218,9 @@ fn stress_test_memory_allocation(
     println!("[STRESS] Allocating 1000 frames...");
     let mut caps = [0; 1000];
     for i in 0..1000 {
+        if i % 100 == 0 {
+             println!("[STRESS] Progress: {}/1000", i);
+        }
         match allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator) {
             Ok(cap) => caps[i] = cap,
             Err(e) => {

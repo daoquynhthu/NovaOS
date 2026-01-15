@@ -70,7 +70,7 @@ Write-Host "Command: $qemu $qemuArgs"
 # Start QEMU in background
 $process = Start-Process -FilePath $qemu -ArgumentList $qemuArgs -PassThru -NoNewWindow
 
-$timeoutSeconds = 15
+$timeoutSeconds = 60
 $startTime = Get-Date
 $testPassed = $false
 

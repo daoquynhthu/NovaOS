@@ -14,13 +14,11 @@ mod ipc;
 mod elf_loader;
 mod utils;
 mod tests;
+mod acpi;
 
 use sel4_sys::seL4_BootInfo;
 use core::arch::global_asm;
 use memory::{UntypedAllocator, SlotAllocator};
-use process::ProcessManager;
-
-static mut PROCESS_MANAGER: ProcessManager = ProcessManager::new();
 
 #[cfg(test)]
 fn test_runner(tests: &[&dyn Fn()]) {
@@ -100,6 +98,9 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     println!("[INFO] Empty Slots: {} - {}", boot_info.empty.start, boot_info.empty.end);
     println!("[INFO] Untyped Slots: {} - {}", boot_info.untyped.start, boot_info.untyped.end);
     
+    // Initialize ACPI
+    acpi::init(boot_info);
+
     // Dump raw bootinfo (Disabled for production)
     /*
     let raw_ptr = boot_info as *const seL4_BootInfo as *const usize;

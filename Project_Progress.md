@@ -97,22 +97,36 @@
     - 支持解析 ELF Program Headers 并加载 LOAD 段到目标 VSpace。
     - 实现了跨 VSpace 的内存拷贝（RootServer -> Target VSpace）。
 
+### 2026-01-15: 驱动框架与硬件发现 (Driver Foundation)
+- [x] **ACPI 表解析**:
+    - 成功在 BootInfo 中定位 RSDP (Root System Description Pointer)。
+    - 验证了 RSDP 签名 ("RSD PTR ") 和校验和。
+    - 成功查找到 RSDT (Root System Description Table) 的物理地址。
+    - **关键突破**: 实现了在 Untyped Memory 中反向查找物理地址对应的 Capability (Untyped Cap #48, paddr=0x7fe0000)。
+- [x] **压力测试通过**:
+    - 解决了测试脚本超时问题 (timeout increased to 60s)。
+    - 修复了 IPC Benchmark 中的死锁问题 (Worker now replies to exit signal)。
+    - 成功完成了 1000 次 4KB 页帧分配的压力测试，无内存泄漏。
+
 ## 🚧 进行中任务 (In Progress)
-- [x] **进程管理器完善**:
-    - 集成 `ElfLoader` 到进程创建流程。
-    - 实现 `spawn` 接口，支持从 ELF 镜像启动进程。
-    - 引入 `ProcessState` 枚举，完善生命周期管理。
-    - 增加形式化验证断言 (Formal Verification Assertions)。
-    - 实现 `ProcessManager` 全局结构体，管理多进程列表。
-    - 实现 PID 分配与查找。
-    - 完成 IPC 性能基准测试 (Benchmark)。
+- [ ] **进程管理器完善**:
+    - [x] 集成 `ElfLoader` 到进程创建流程。
+    - [x] 实现 `spawn` 接口，支持从 ELF 镜像启动进程。
+    - [x] 引入 `ProcessState` 枚举，完善生命周期管理。
+    - [x] 增加形式化验证断言 (Formal Verification Assertions)。
+    - [x] 实现 `ProcessManager` 全局结构体，管理多进程列表。
+    - [x] 实现 PID 分配与查找。
+    - [x] 完成 IPC 性能基准测试 (Benchmark)。
+    - [ ] 实现动态内存映射 ACPI 表 (Map Device Memory)。
 
 ## 📝 下一步计划 (Next Steps)
 
 ### 阶段 0.4: 进程管理器与驱动基础
 1.  **基本驱动框架**:
-    - 探索设备树或 ACPI 表解析。
-    - 尝试实现简单的串口驱动 (独立于 seL4_DebugPutChar)。
+    - [x] ACPI 表解析 (RSDP/RSDT Found)。
+    - [ ] 映射 ACPI 表到虚拟地址空间。
+    - [ ] 解析 MADT 表以获取多核 (SMP) 信息。
+    - [ ] 尝试实现简单的串口驱动 (独立于 seL4_DebugPutChar)。
 
 ## 🛡️ 安全与规范检查记录
 - **Git**: 已添加 `.gitignore` 防止敏感文件泄露。

@@ -25,6 +25,13 @@ pub struct Process {
 
 pub const MAX_PROCESSES: usize = 32;
 
+static mut PROCESS_MANAGER: ProcessManager = ProcessManager::new();
+
+pub fn get_process_manager() -> &'static mut ProcessManager {
+    #[allow(static_mut_refs)]
+    unsafe { &mut PROCESS_MANAGER }
+}
+
 pub struct ProcessManager {
     pub processes: [Option<Process>; MAX_PROCESSES],
 }
@@ -323,6 +330,17 @@ impl Process {
             err = crate::utils::seL4_CNode_Delete(cnode, self.vspace.pml4_cap, 64);
             if err != 0.into() {
                  return Err(err);
+            }
+
+            // Delete Paging Structures (Resource Leak Fix)
+            for i in 0..self.vspace.paging_cap_count {
+                let cap = self.vspace.paging_caps[i];
+                if cap != 0 {
+                    let err = crate::utils::seL4_CNode_Delete(cnode, cap, 64);
+                    if err != 0.into() {
+                        println!("[WARN] Failed to delete Paging Structure Cap {}: {:?}", cap, err);
+                    }
+                }
             }
 
             // Delete Fault Endpoint if present
