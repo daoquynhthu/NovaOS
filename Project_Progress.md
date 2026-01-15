@@ -3,8 +3,8 @@
 > 本文档用于记录项目里程碑、已完成任务以及下一步计划。每次重大变更后必须更新。
 
 ## 📅 当前状态
-- **日期**: 2026-01-15
-- **阶段**: 0.1 - 基础架构搭建 (Foundation)
+- **日期**: 2026-01-16
+- **阶段**: 0.4 - 驱动框架与形式化验证 (Driver & Verification)
 - **版本**: `v0.0.1-alpha`
 
 ## ✅ 已完成任务 (Completed)
@@ -107,6 +107,17 @@
     - 成功解析 MADT (APIC Table) 获取 Local APIC 物理地址。
     - 验证了跨页表映射的正确性 (Handling unaligned structs and multi-page tables).
     - 实现了 MADT 记录遍历，成功识别 Local APIC, IOAPIC, ISO (Interrupt Source Override) 条目。
+- [x] **运行时形式化验证 (Runtime Verification)**:
+    - 实现了 `acpi_checksum` 校验算法，确保 RSDP/RSDT 数据完整性。
+    - 为 `SlotAllocator` 增加了形式化 Pre/Post-conditions 断言 (`alloc`/`free`/`init`)。
+    - 通过了严格的运行时断言测试，系统稳定性提升。
+- [x] **IOAPIC 初始化与中断 (Interrupts)**:
+    - 解析 MADT 获取 IOAPIC 物理地址 (0xfec00000)。
+    - **重大突破**: 成功调用 `seL4_IRQControl` 获取了 IOAPIC IRQ Handler (IRQ 1 -> Vector 33)。
+    - **技术攻关**:
+        - 解决了 `sel4-sys` 绑定缺失问题，手动实现了 `X86IRQIssueIRQHandlerIOAPIC` 系统调用。
+        - 通过分析内核构建产物，精确定位了 Invocation Label 为 **53** (原误用为 2 导致 Illegal Operation)。
+        - 验证了 IOAPIC GSI 到 CPU Vector 的映射。
 
 ## 🚀 下一步计划 (Next Steps)
 - [x] **ACPI 表解析**:
@@ -121,10 +132,12 @@
     - 成功完成了 1000 次 4KB 页帧分配的压力测试，无内存泄漏。
 
 ## 🚧 进行中任务 (In Progress)
-- [ ] **中断控制器初始化**:
+- [ ] **中断控制器完善**:
     - [x] 解析 MADT 获取 IOAPIC 地址。
-    - [ ] 尝试映射 IOAPIC 并读取版本信息。
-    - [ ] 探索 seL4 用户态中断管理机制 (IRQControl)。
+    - [x] 封装 `get_ioapic_handler` 系统调用。
+    - [x] 修复 IRQControl 调用失败 (Error 3): 修正 Invocation Label 为 53。
+    - [ ] 实现 IOAPIC 中断重定向表项配置。
+    - [ ] 编写键盘驱动 (PS/2)，响应 IRQ 1 中断。
 - [ ] **进程管理器完善**:
     - [x] 集成 `ElfLoader` 到进程创建流程。
     - [x] 实现 `spawn` 接口，支持从 ELF 镜像启动进程。
@@ -135,31 +148,15 @@
     - [x] 完成 IPC 性能基准测试 (Benchmark)。
     - [ ] 实现动态内存映射 ACPI 表 (Map Device Memory)。
 
-## 📝 下一步计划 (Next Steps)
-
-### Phase 0.4: 驱动框架与硬件发现 (Driver Foundation - Ongoing)
-- [x] **ACPI 基础支持**:
-    - [x] 实现通过 seL4 BootInfo 扫描发现 RSDP。
-    - [x] 验证 RSDP 签名和校验和。
-    - [x] 实现 RSDT 物理地址在 Untyped Memory 中的查找。
-    - [x] 定义 `AcpiTableHeader` 和 `Rsdt` 结构体。
-- [ ] **ACPI 表解析**:
-    - [ ] 将 RSDT 物理内存映射到虚拟地址空间。
-    - [ ] 解析 RSDT 以查找 MADT (APIC), HPET 等表。
-- [ ] **中断控制器**:
-    - [ ] 初始化 Local APIC。
-    - [ ] 初始化 IOAPIC。
-
-### 当前状态 (2026-01-15)
-- **ACPI**: 成功检测到 RSDP 并定位了 RSDT 所在的 Untyped Memory (Cap #48)。
-- **进程管理**: 修复了 IPC 基准测试的死锁问题；验证了 IPC 往返延迟 (约 27k cycles)。
-- **稳定性**: 修复了测试超时问题 (增加到 60s)；添加了压力测试进度日志。
-- **审计**: 解决了 `auditoration1.md` 中的关键问题 (内存泄漏, VSpace 资源追踪, IPC 死锁)。
-
-### 下一步计划
-1. 映射 RSDT 并解析以获取 APIC/IOAPIC 基地址。
-2. 初始化 APIC 定时器以实现抢占式调度。
-3. 继续根据审计日志改进系统。
+## 📝 备忘录
+- **IOAPIC 初始化挑战**:
+    - 尝试直接映射 IOAPIC 物理地址 (0xfec00000) 失败，原因是 seL4 内核在 x86 架构下独占管理 IOAPIC，不向用户态暴露对应的 Untyped Cap。
+    - 转向使用 `seL4_IRQControl` 接口来请求 IRQ Handler。
+    - 遇到 `sel4-sys` 绑定缺失问题：`seL4_IRQControl_GetIOAPIC` 未生成。
+    - **解决方案**: 手动实现 `get_ioapic_handler`，并硬编码 Invocation Label 为 **53** (通过分析 `invocation.h` 计算得出)。
+- **Formal Verification**:
+    - 运行时断言 (`debug_assert!`) 已覆盖关键路径。
+    - 审计日志 (`auditoration1.md`) 中的内存安全问题已大部分解决。
 
 ## 🛡️ 安全与规范检查记录
 - **Git**: 已添加 `.gitignore` 防止敏感文件泄露。

@@ -132,6 +132,16 @@ pub struct AcpiInfo {
     pub cap_size_bits: usize,
 }
 
+fn validate_checksum(ptr: *const u8, length: usize) -> bool {
+    let mut sum: u8 = 0;
+    for i in 0..length {
+        unsafe {
+            sum = sum.wrapping_add(*ptr.add(i));
+        }
+    }
+    sum == 0
+}
+
 pub fn init(boot_info: &seL4_BootInfo) -> Option<AcpiInfo> {
     println!("[INFO] Probing ACPI Tables...");
 
@@ -168,6 +178,17 @@ pub fn init(boot_info: &seL4_BootInfo) -> Option<AcpiInfo> {
              if let Ok(sig_str) = str::from_utf8(&rsdp.signature) {
                  println!("[INFO] RSDP Signature: {:?}", sig_str);
                  if sig_str == "RSD PTR " {
+                     // Verify Checksum
+                     let rsdp_u8 = rsdp_ptr as *const u8;
+                     // RSDP 1.0 size is 20 bytes
+                     if validate_checksum(rsdp_u8, 20) {
+                         println!("[INFO] ACPI RSDP Checksum validated.");
+                     } else {
+                         println!("[ERROR] ACPI RSDP Checksum failed!");
+                         // debug_assert!(false, "ACPI RSDP Checksum failed");
+                         return None;
+                     }
+
                      println!("[INFO] ACPI RSDP validated.");
                      let revision = rsdp.revision;
                      let rsdt_address = rsdp.rsdt_address;
@@ -228,7 +249,25 @@ pub fn map_rsdt(
 ) -> Result<*const Rsdt, seL4_Error> {
     // map_phys handles the complexity now
     let vaddr = map_phys(boot_info, info.rsdt_paddr, 0, allocator, slots, context)?;
-    Ok(vaddr as *const Rsdt)
+    let rsdt_ptr = vaddr as *const Rsdt;
+    
+    // Validate RSDT Checksum
+    let rsdt = unsafe { &*rsdt_ptr };
+    let length = rsdt.header.length as usize;
+    
+    // Verify signature
+    if &rsdt.header.signature != b"RSDT" {
+         println!("[ERROR] RSDT Signature mismatch!");
+         return Err(seL4_Error::seL4_InvalidArgument);
+    }
+
+    if !validate_checksum(rsdt_ptr as *const u8, length) {
+        println!("[ERROR] RSDT Checksum failed!");
+        debug_assert!(false, "RSDT Checksum failed");
+        return Err(seL4_Error::seL4_InvalidArgument);
+    }
+    
+    Ok(rsdt_ptr)
 }
 
 fn find_untyped_for_paddr(boot_info: &seL4_BootInfo, paddr: usize) -> Option<(seL4_CPtr, usize, usize, usize)> {
@@ -423,4 +462,39 @@ pub fn walk_madt(madt_ptr: *const Madt) {
         
         offset += record_len;
     }
+}
+
+#[derive(Debug, Copy, Clone)]
+#[allow(dead_code)]
+pub struct IoApicInfo {
+    pub id: u8,
+    pub address: u32,
+    pub gsi_base: u32,
+}
+
+pub fn find_first_ioapic(madt_ptr: *const Madt) -> Option<IoApicInfo> {
+    let madt = unsafe { &*madt_ptr };
+    let length = madt.header.length as usize;
+    let madt_start = madt_ptr as usize;
+    let mut offset = core::mem::size_of::<Madt>();
+    
+    while offset < length {
+        let entry_ptr = (madt_start + offset) as *const MadtEntryHeader;
+        let entry = unsafe { &*entry_ptr };
+        let record_len = entry.record_length as usize;
+        
+        if record_len < 2 { break; }
+
+        if entry.entry_type == 1 { // IO APIC
+             let ioapic = unsafe { &*(entry_ptr as *const MadtIoApic) };
+             return Some(IoApicInfo {
+                 id: ioapic.io_apic_id,
+                 address: ioapic.io_apic_address,
+                 gsi_base: ioapic.global_system_interrupt_base,
+             });
+        }
+        
+        offset += record_len;
+    }
+    None
 }

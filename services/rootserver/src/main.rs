@@ -16,6 +16,7 @@ mod utils;
 mod tests;
 mod acpi;
 mod apic;
+mod ioapic;
 
 use sel4_sys::seL4_BootInfo;
 use core::arch::global_asm;
@@ -182,6 +183,58 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                              println!("[KERNEL] Local APIC Initialized.");
                                          } else {
                                              println!("[KERNEL] Local APIC init skipped (using default configuration).");
+                                         }
+
+                                         // Initialize IO APIC
+                                         if let Some(ioapic_info) = acpi::find_first_ioapic(madt) {
+                                             // IOAPIC is managed by seL4 kernel on x86. We cannot map it directly from user space
+                                             // without violating kernel isolation if the kernel is using it.
+                                             // Instead, we verify we can get an IRQ handler.
+                                             println!("[KERNEL] Found IOAPIC at 0x{:x} (ID: {}).", ioapic_info.address, ioapic_info.id);
+                                             
+                                             // Try to get an IRQ Handler for IRQ 1 (Keyboard)
+                                            if let Ok(irq_slot) = slot_allocator.alloc() {
+                                                println!("[KERNEL] Requesting IRQ Handler for IRQ 1 (Keyboard)...");
+                                                let irq = 1; 
+                                                let pin = irq;
+                                                let level = 0; // Edge
+                                                let polarity = 0; // Active High
+                                                let ioapic_idx = 0; // First IOAPIC
+
+                                                // Use seL4_RootCNodeCapSlots_ prefix for enum constants if short names are missing
+                                                let irq_control_cap = sel4_sys::seL4_RootCNodeCapSlots_seL4_CapIRQControl as usize;
+                                                let root_cnode_cap = sel4_sys::seL4_RootCNodeCapSlots_seL4_CapInitThreadCNode as usize;
+                                                let depth = sel4_sys::seL4_WordBits as usize;
+
+                                                // IRQ 1 is Keyboard. Vector 33 (0x21).
+                                                // GSI 1 maps to Vector 33 usually.
+                                                // Kernel interrupt.c: vector = (word_t)irq + IRQ_INT_OFFSET;
+                                                // On x86, user vectors start at 32 (0x20).
+                                                // We must pass a valid vector > 31.
+                                                let vector = 33; // 0x21
+                                                
+                                                let err = unsafe {
+                                                    ioapic::get_ioapic_handler(
+                                                        irq_control_cap,
+                                                        ioapic_idx as usize,
+                                                        pin as usize,
+                                                        level as usize,
+                                                        polarity as usize,
+                                                        root_cnode_cap,
+                                                        irq_slot as usize,
+                                                        depth,
+                                                        vector as usize // Vector
+                                                    )
+                                                };
+                                                
+                                                match err {
+                                                    Ok(_) => println!("[KERNEL] Successfully obtained IRQ Handler for IRQ 1 at slot {}", irq_slot),
+                                                    Err(e) => println!("[KERNEL] Failed to get IRQ Handler for IRQ 1: Error {}", e),
+                                                }
+                                            }
+                                             
+                                         } else {
+                                             println!("[KERNEL] No IOAPIC found in MADT.");
                                          }
                                      }
                                 }

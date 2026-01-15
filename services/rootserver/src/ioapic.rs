@@ -1,0 +1,129 @@
+#![allow(dead_code)]
+use sel4_sys::{seL4_BootInfo, seL4_GetIPCBuffer, seL4_MessageInfo_new, seL4_Call, seL4_SetMR, seL4_MessageInfo_get_label};
+use crate::memory::{UntypedAllocator, SlotAllocator};
+use crate::acpi::AcpiContext;
+use crate::println;
+
+// Invocation label for X86IRQIssueIRQHandlerIOAPIC
+// Based on typical seL4 x86 generation:
+// 1: IRQIssueIRQHandler (Generic)
+// 2: X86IRQIssueIRQHandlerIOAPIC
+// 3: X86IRQIssueIRQHandlerMSI
+const X86_IRQ_ISSUE_IRQ_HANDLER_IOAPIC: usize = 53;
+
+pub struct IoApic {
+    base_vaddr: usize,
+}
+
+impl IoApic {
+    pub unsafe fn new(base_vaddr: usize) -> Self {
+        Self { base_vaddr }
+    }
+
+    pub unsafe fn read(&self, reg: u32) -> u32 {
+        let volatile_ptr = self.base_vaddr as *mut u32;
+        // IOREGSEL is at offset 0x00
+        core::ptr::write_volatile(volatile_ptr, reg);
+        // IOWIN is at offset 0x10
+        let data_ptr = (self.base_vaddr + 0x10) as *const u32;
+        core::ptr::read_volatile(data_ptr)
+    }
+
+    #[allow(dead_code)]
+    pub unsafe fn write(&mut self, reg: u32, value: u32) {
+        let volatile_ptr = self.base_vaddr as *mut u32;
+        core::ptr::write_volatile(volatile_ptr, reg);
+        let data_ptr = (self.base_vaddr + 0x10) as *mut u32;
+        core::ptr::write_volatile(data_ptr, value);
+    }
+    
+    pub fn id(&self) -> u8 {
+        unsafe { ((self.read(0x00) >> 24) & 0xF) as u8 }
+    }
+    
+    pub fn version(&self) -> u8 {
+        unsafe { (self.read(0x01) & 0xFF) as u8 }
+    }
+    
+    pub fn max_redirection_entry(&self) -> u8 {
+        unsafe { ((self.read(0x01) >> 16) & 0xFF) as u8 }
+    }
+}
+
+/// Manually invoke X86IRQIssueIRQHandlerIOAPIC because bindings are missing
+pub unsafe fn get_ioapic_handler(
+    irq_control: usize,
+    ioapic: usize,
+    pin: usize,
+    level: usize,
+    polarity: usize,
+    root: usize,
+    index: usize,
+    depth: usize,
+    vector: usize,
+) -> Result<(), usize> {
+    let ipc_buffer = seL4_GetIPCBuffer();
+    
+    // Set extra cap (root CNode) at index 0
+    (*ipc_buffer).caps_or_badges[0] = root as u64;
+    
+    // Set Message Registers based on kernel/seL4/src/arch/x86/object/interrupt.c
+    // Arg 0: index
+    seL4_SetMR(0, index as u64);
+    // Arg 1: depth
+    seL4_SetMR(1, depth as u64);
+    // Arg 2: ioapic
+    seL4_SetMR(2, ioapic as u64);
+    // Arg 3: pin
+    seL4_SetMR(3, pin as u64);
+    // Arg 4: level
+    seL4_SetMR(4, level as u64);
+    // Arg 5: polarity
+    seL4_SetMR(5, polarity as u64);
+    // Arg 6: irq (vector)
+    seL4_SetMR(6, vector as u64);
+    
+    let info = seL4_MessageInfo_new(
+        X86_IRQ_ISSUE_IRQ_HANDLER_IOAPIC as u64, // label
+        0, // capsUnwrapped
+        1, // extraCaps
+        7  // length
+    );
+    
+    let resp = seL4_Call(irq_control as u64, info);
+    let label = seL4_MessageInfo_get_label(resp);
+    
+    if label == 0 {
+        Ok(())
+    } else {
+        Err(label as usize)
+    }
+}
+
+pub fn init(
+    boot_info: &seL4_BootInfo,
+    paddr: usize,
+    allocator: &mut UntypedAllocator,
+    slots: &mut SlotAllocator,
+    context: &mut AcpiContext,
+) -> Option<IoApic> {
+    println!("[IOAPIC] Initializing IOAPIC at paddr 0x{:x}...", paddr);
+    
+    match crate::acpi::map_phys(boot_info, paddr, 0, allocator, slots, context) {
+        Ok(vaddr) => {
+            println!("[IOAPIC] Mapped IOAPIC to vaddr 0x{:x}", vaddr);
+            let ioapic = unsafe { IoApic::new(vaddr) };
+            
+            let id = ioapic.id();
+            let ver = ioapic.version();
+            let max_entries = ioapic.max_redirection_entry();
+            
+            println!("[IOAPIC] ID: {}, Version: 0x{:x}, Max Redirection Entries: {}", id, ver, max_entries);
+            Some(ioapic)
+        },
+        Err(e) => {
+            println!("[IOAPIC] Failed to map IOAPIC: {:?}", e);
+            None
+        }
+    }
+}

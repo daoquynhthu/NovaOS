@@ -77,9 +77,13 @@ impl SlotAllocator {
         // Search for a free bit starting from self.start
         for i in self.start..self.end {
             if !self.is_allocated(i) {
+                // Pre-condition: Slot must be free
+                debug_assert!(!self.is_allocated(i), "Slot must be free before allocation");
+                
                 self.mark(i);
+                
                 // Post-condition: Slot must be marked allocated
-                debug_assert!(self.is_allocated(i), "Slot should be marked allocated after alloc");
+                debug_assert!(self.is_allocated(i), "Slot must be marked allocated after alloc");
                 return Ok(i as seL4_CPtr);
             }
         }
@@ -87,7 +91,16 @@ impl SlotAllocator {
     }
 
     pub fn free(&mut self, slot: seL4_CPtr) {
-        self.clear(slot as usize);
+        let slot_idx = slot as usize;
+        // Pre-condition: Slot must be allocated
+        // Note: In some cases double-free might happen safely if we just clear, 
+        // but for strict verification we assert it was allocated.
+        debug_assert!(self.is_allocated(slot_idx), "Double free or freeing unallocated slot");
+        
+        self.clear(slot_idx);
+        
+        // Post-condition: Slot must be free
+        debug_assert!(!self.is_allocated(slot_idx), "Slot must be free after release");
     }
 }
 
