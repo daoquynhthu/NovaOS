@@ -12,7 +12,8 @@ use crate::memory::{UntypedAllocator, SlotAllocator, ObjectAllocator};
 use crate::vspace::VSpace;
 use crate::process::Process;
 use crate::ipc::Endpoint;
-use crate::println;
+use crate::{print, println};
+use crate::shell::USER_HELLO_ELF;
 
 use crate::utils::{seL4_CapRights_new, seL4_X86_4K, copy_cap};
 
@@ -26,9 +27,94 @@ pub fn run_all(
     test_process_management(boot_info, allocator, slot_allocator);
     test_independent_vspace(boot_info, allocator, slot_allocator);
     test_process_spawn(boot_info, allocator, slot_allocator);
+    // test_user_hello_program(boot_info, allocator, slot_allocator); // Moved to main loop
     test_process_manager();
     benchmark_ipc_latency(boot_info, allocator, slot_allocator);
     stress_test_memory_allocation(boot_info, allocator, slot_allocator);
+}
+
+#[allow(dead_code)]
+fn test_user_hello_program(
+    boot_info: &seL4_BootInfo,
+    allocator: &mut UntypedAllocator,
+    slot_allocator: &mut SlotAllocator,
+) {
+    println!("[INFO] Testing user-mode hello ELF...");
+
+    // Allocate Syscall Endpoint
+    let syscall_ep_cap = match allocator.allocate(
+        boot_info,
+        api_object_seL4_EndpointObject.into(),
+        seL4_EndpointBits.into(),
+        slot_allocator,
+    ) {
+        Ok(cap) => cap,
+        Err(e) => {
+            println!("[ERROR] Failed to allocate syscall endpoint: {:?}", e);
+            return;
+        }
+    };
+
+    println!("[INFO] Spawning process with Syscall Endpoint Cap: {}", syscall_ep_cap);
+
+    let mut process = match Process::spawn(allocator, slot_allocator, boot_info, USER_HELLO_ELF, 100, syscall_ep_cap) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("[ERROR] Failed to spawn hello program: {:?}", e);
+            return;
+        }
+    };
+
+    let syscall_ep = Endpoint::new(syscall_ep_cap);
+    println!("[INFO] Process spawned. Entering syscall loop...");
+
+    // First Recv (Client starts with Call, so we must Recv)
+    let (mut info, mut sender_badge, mut mrs) = syscall_ep.recv_with_mrs();
+
+    loop {
+        let label = sel4_sys::seL4_MessageInfo_get_label(info);
+
+        match label {
+            1 => { // sys_write (debug_print)
+                // MR0..MR3 contain string chunks (8 bytes each)
+                let mut bytes = [0u8; 32];
+                unsafe {
+                    let p = bytes.as_mut_ptr() as *mut u64;
+                    *p.add(0) = mrs[0];
+                    *p.add(1) = mrs[1];
+                    *p.add(2) = mrs[2];
+                    *p.add(3) = mrs[3];
+                }
+                for &b in bytes.iter() {
+                    if b == 0 { break; }
+                    print!("{}", b as char);
+                }
+
+                // Reply with success (0) and wait for next
+                let (new_info, new_badge, new_mrs) = syscall_ep.reply_recv_with_mrs(
+                    sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1),
+                    [0, 0, 0, 0]
+                );
+                info = new_info;
+                sender_badge = new_badge;
+                mrs = new_mrs;
+            }
+            2 => { // sys_exit
+                println!("[INFO] Process exited with code: {}", mrs[0]);
+                break;
+            }
+            _ => {
+                println!("[INFO] Unknown syscall label: {}. Badge: {}", label, sender_badge);
+                break;
+            }
+        }
+    }
+
+    let cnode = seL4_RootCNodeCapSlots_seL4_CapInitThreadCNode as seL4_CPtr;
+    match process.terminate(cnode) {
+        Ok(()) => println!("[INFO] Hello process terminated."),
+        Err(e) => println!("[ERROR] Failed to terminate hello process: {:?}", e),
+    }
 }
 
 fn test_process_manager() {
@@ -43,9 +129,13 @@ fn test_process_manager() {
         tcb_cap: 999,
         vspace: crate::vspace::VSpace { pml4_cap: 888, paging_caps: [0; 32], paging_cap_count: 0 },
         fault_ep_cap: 0,
+        syscall_ep_cap: 0,
         ipc_buffer_cap: 0,
         code_frame_cap: 0,
         state: crate::process::ProcessState::Created,
+        heap_brk: 0x4000_0000,
+        heap_frames: [0; 128],
+        heap_frame_count: 0,
     };
     
     // Test Add
@@ -185,8 +275,6 @@ fn test_process_spawn(
     slot_allocator: &mut SlotAllocator,
 ) {
     println!("[INFO] Testing Process Spawn interface...");
-    let asid_pool = seL4_RootCNodeCapSlots_seL4_CapInitThreadASIDPool as seL4_CPtr;
-    let cspace_root = seL4_RootCNodeCapSlots_seL4_CapInitThreadCNode as seL4_CPtr;
     
     // Dummy ELF Data (just enough to fail parsing gracefully or trigger logic)
     // We pass an empty slice, expecting InvalidArgument from ElfLoader
@@ -197,13 +285,9 @@ fn test_process_spawn(
         allocator, 
         slot_allocator, 
         boot_info, 
-        asid_pool, 
-        cspace_root, 
-        0, // fault_ep
-        0, // ipc_buffer_addr
-        0, // ipc_buffer_cap
         &dummy_elf, 
-        100
+        100,
+        0
     ) {
         Ok(_) => println!("[INFO] Process spawned (unexpectedly success with empty ELF)"),
         Err(e) => println!("[INFO] Process spawn validated (Expected failure for empty ELF: {:?})", e),
@@ -217,12 +301,12 @@ fn stress_test_memory_allocation(
 ) {
     println!("[STRESS] Allocating 1000 frames...");
     let mut caps = [0; 1000];
-    for i in 0..1000 {
+    for (i, cap_slot) in caps.iter_mut().enumerate() {
         if i % 100 == 0 {
              println!("[STRESS] Progress: {}/1000", i);
         }
         match allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator) {
-            Ok(cap) => caps[i] = cap,
+            Ok(cap) => *cap_slot = cap,
             Err(e) => {
                 println!("[STRESS] Failed at frame {}: {:?}", i, e);
                 break;

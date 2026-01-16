@@ -7,23 +7,15 @@ pub struct SerialPort;
 impl fmt::Write for SerialPort {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for c in s.bytes() {
-            // 调用 seL4 的调试打印系统调用
-            // seL4_DebugPutChar 仅在 Debug 内核模式下可用
-            // 在 Release 模式下，我们需要实现真正的串口驱动
-            // Manually implement seL4_DebugPutChar because it is static inline
-            // and not exported by bindgen.
-            // Assumes x86_64 architecture.
+            // 1. Send to Debug Output (Syscall) - Safe and always works in debug build
             #[cfg(target_arch = "x86_64")]
             unsafe {
-                 // seL4_SysDebugPutChar = -9 (defined in seL4/syscall.h)
-                 // We hardcode it here because bindgen didn't export it or it's an enum.
+                 // seL4_SysDebugPutChar = -9
                  const SEL4_SYS_DEBUG_PUT_CHAR: isize = -9;
                  let sys_num: usize = SEL4_SYS_DEBUG_PUT_CHAR as usize;
                  let dest: usize = c as usize;
                  let info: usize = 0;
                  
-                 // Save rsp to r12 because syscall might clobber it (or we follow seL4 C stub convention).
-                 // We use r12 instead of rbx because LLVM reserves rbx.
                  core::arch::asm!(
                     "mov r12, rsp",
                     "syscall",
@@ -36,6 +28,9 @@ impl fmt::Write for SerialPort {
                     out("r12") _,
                  );
             }
+
+            // 2. Send to Serial Port - Might fail if Port IO not ready
+            // crate::serial::send_char(c as char);
         }
         Ok(())
     }

@@ -14,13 +14,20 @@ mod ipc;
 mod elf_loader;
 mod utils;
 mod tests;
+mod ioapic;
 mod acpi;
 mod apic;
-mod ioapic;
+mod port_io;
+mod keyboard;
+mod serial;
+mod shell;
 
-use sel4_sys::seL4_BootInfo;
+use sel4_sys::*;
 use core::arch::global_asm;
-use memory::{UntypedAllocator, SlotAllocator};
+use memory::{SlotAllocator, UntypedAllocator, ObjectAllocator};
+use crate::process::{Process, get_process_manager};
+use crate::ipc::Endpoint;
+use crate::shell::USER_HELLO_ELF;
 
 #[cfg(test)]
 fn test_runner(tests: &[&dyn Fn()]) {
@@ -77,22 +84,72 @@ global_asm!(
 pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     // 初始化运行时（例如堆分配器，如果需要）
     
+    // 1. Get BootInfo
+    if boot_info_ptr.is_null() {
+        // We can't print safely yet, so just hang or rely on DebugPutChar if we had it separately.
+        // panic!("Failed to get BootInfo! System halted."); 
+        // For now, let's just assume it's good or crash.
+        loop {
+            sel4_sys::seL4_Yield();
+        }
+    }
+    
+    // SAFETY: We trust the bootloader provided a valid pointer
+    let boot_info = &*boot_info_ptr;
+
+    // Initialize IPC Buffer
+    sel4_sys::seL4_SetIPCBuffer(boot_info.ipcBuffer);
+
+    // 2. 初始化内存分配器
+    let mut slot_allocator = SlotAllocator::new(boot_info);
+    let mut allocator = UntypedAllocator::new(boot_info);
+
+    println!("Initializing IO Port Capability...");
+    
+    // 1. Allocate a slot in the Root CNode for the IO Port Cap
+    let io_port_slot = slot_allocator.alloc().expect("Failed to allocate slot for IO Port Cap");
+
+    // 2. Issue IO Port Cap directly into Root CNode
+    // Extra Cap: Root CNode (Cap 2)
+    // We need to provide the CPtr to the Root CNode so the kernel can look it up.
+    let root_cnode_cptr = sel4_sys::seL4_RootCNodeCapSlots_seL4_CapInitThreadCNode as u64;
+
+    match port_io::issue_ioport_cap(
+        sel4_sys::seL4_RootCNodeCapSlots_seL4_CapIOPortControl as u64,
+        0x0000,
+        0xFFFF,
+        root_cnode_cptr,   // Extra Cap: Root CNode
+        io_port_slot, // Slot in Root CNode
+        sel4_sys::seL4_WordBits as u64,
+    ) {
+        Ok(_) => {
+            println!("IO Port Capability issued successfully to Root CNode.");
+        },
+        Err(e) => {
+            println!("Failed to issue IO Port Capability. Error: {:?}", e);
+            loop {
+                sel4_sys::seL4_Yield();
+            }
+        }
+    }
+    
+    // 3. Use the cap
+    port_io::init(io_port_slot);
+
+    // Initialize Serial Port
+    serial::init();
+    serial::send_char('S'); // Test Serial
+    serial::send_char('e');
+    serial::send_char('r');
+    serial::send_char('i');
+    serial::send_char('a');
+    serial::send_char('l');
+    serial::send_char('\n');
+
     println!("\n========================================");
     println!("   NovaOS: The Future Secure OS");
     println!("   Status: RootServer Started");
     println!("========================================");
-
-    // 1. Get BootInfo
-    if boot_info_ptr.is_null() {
-        panic!("Failed to get BootInfo! System halted.");
-    }
-    
-    // SAFETY: We trust the bootloader provided a valid pointer
-    // The function is unsafe, so dereferencing raw pointer is allowed if we respect safety contracts.
-    let boot_info = &*boot_info_ptr;
-    
-    // Initialize IPC Buffer
-    sel4_sys::seL4_SetIPCBuffer(boot_info.ipcBuffer);
 
     println!("[INFO] BootInfo retrieved successfully.");
     println!("[INFO] BootInfo Addr: {:p}", boot_info);
@@ -100,21 +157,13 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     println!("[INFO] Empty Slots: {} - {}", boot_info.empty.start, boot_info.empty.end);
     println!("[INFO] Untyped Slots: {} - {}", boot_info.untyped.start, boot_info.untyped.end);
     
-    // Dump raw bootinfo (Disabled for production)
-    /*
-    let raw_ptr = boot_info as *const seL4_BootInfo as *const usize;
-    for i in 0..10 {
-        // println!("[DEBUG] BootInfo Word {}: 0x{:x}", i, unsafe { *raw_ptr.add(i) });
-    }
-    */
     println!("[INFO] Untyped Memory: {} slots",  
              boot_info.untyped.end - boot_info.untyped.start);
     println!("[INFO] CNode Size: {} bits", boot_info.initThreadCNodeSizeBits);
 
-    // 2. 初始化内存分配器
-    let mut slot_allocator = SlotAllocator::new(boot_info);
-    let mut allocator = UntypedAllocator::new(boot_info);
     allocator.print_info(boot_info);
+
+    let mut irq_handler_cap: usize = 0;
 
     // Initialize ACPI
     let mut acpi_context = acpi::AcpiContext::new();
@@ -141,17 +190,13 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     let entry_start = (rsdt_ptr as usize + header_size) as *const u32;
                     for i in 0..entries_count {
                         let table_paddr = unsafe { *entry_start.add(i) } as usize;
-                        // println!("[ACPI] Entry {}: paddr 0x{:x}", i, table_paddr);
                         
                         // Map table to check signature
-                        // We use a simple incrementing vaddr. 
-                        // WARNING: This is temporary. Real OS should have a proper VM allocator.
                         let vaddr_base = 0x8001_0000 + (i * 0x10000); // 64KB spacing to be safe
                         
                         match acpi::map_phys(boot_info, table_paddr, vaddr_base, &mut allocator, &mut slot_allocator, &mut acpi_context) {
                             Ok(ptr_val) => {
                                 let header = unsafe { &*(ptr_val as *const acpi::AcpiTableHeader) };
-                                 println!("[ACPI] Table [{}] Paddr: 0x{:x} Vaddr: 0x{:x} SigBytes: {:?}", i, table_paddr, ptr_val, header.signature);
                                  if let Ok(sig) = core::str::from_utf8(&header.signature) {
                                      println!("[ACPI] Table [{}] Signature: {}", i, sig);
                                     if sig == "APIC" {
@@ -159,7 +204,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                          // Check length and map remaining pages if needed
                                          let length = header.length as usize;
                                          if length > 4096 {
-                                             let pages_needed = (length + 4095) / 4096;
+                                             let pages_needed = length.div_ceil(4096);
                                              println!("[ACPI] MADT size {} bytes, mapping {} extra pages...", length, pages_needed - 1);
                                              for p in 1..pages_needed {
                                                  let p_paddr = table_paddr + p * 4096;
@@ -187,9 +232,6 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
 
                                          // Initialize IO APIC
                                          if let Some(ioapic_info) = acpi::find_first_ioapic(madt) {
-                                             // IOAPIC is managed by seL4 kernel on x86. We cannot map it directly from user space
-                                             // without violating kernel isolation if the kernel is using it.
-                                             // Instead, we verify we can get an IRQ handler.
                                              println!("[KERNEL] Found IOAPIC at 0x{:x} (ID: {}).", ioapic_info.address, ioapic_info.id);
                                              
                                              // Try to get an IRQ Handler for IRQ 1 (Keyboard)
@@ -201,16 +243,10 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                                 let polarity = 0; // Active High
                                                 let ioapic_idx = 0; // First IOAPIC
 
-                                                // Use seL4_RootCNodeCapSlots_ prefix for enum constants if short names are missing
                                                 let irq_control_cap = sel4_sys::seL4_RootCNodeCapSlots_seL4_CapIRQControl as usize;
                                                 let root_cnode_cap = sel4_sys::seL4_RootCNodeCapSlots_seL4_CapInitThreadCNode as usize;
                                                 let depth = sel4_sys::seL4_WordBits as usize;
 
-                                                // IRQ 1 is Keyboard. Vector 33 (0x21).
-                                                // GSI 1 maps to Vector 33 usually.
-                                                // Kernel interrupt.c: vector = (word_t)irq + IRQ_INT_OFFSET;
-                                                // On x86, user vectors start at 32 (0x20).
-                                                // We must pass a valid vector > 31.
                                                 let vector = 33; // 0x21
                                                 
                                                 let err = unsafe {
@@ -223,12 +259,15 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                                         root_cnode_cap,
                                                         irq_slot as usize,
                                                         depth,
-                                                        vector as usize // Vector
+                                                        vector as usize
                                                     )
                                                 };
                                                 
                                                 match err {
-                                                    Ok(_) => println!("[KERNEL] Successfully obtained IRQ Handler for IRQ 1 at slot {}", irq_slot),
+                                                    Ok(_) => {
+                                                        println!("[KERNEL] Successfully obtained IRQ Handler for IRQ 1 at slot {}", irq_slot);
+                                                        irq_handler_cap = irq_slot as usize;
+                                                    },
                                                     Err(e) => println!("[KERNEL] Failed to get IRQ Handler for IRQ 1: Error {}", e),
                                                 }
                                             }
@@ -260,11 +299,206 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     tests::run_all(boot_info, &mut allocator, &mut slot_allocator);
     println!("[KERNEL] POST Completed Successfully.");
 
-    // 4. Idle Loop
-    println!("[KERNEL] System Ready. Entering Idle Loop...");
-    println!("[TEST] PASSED");
+    // 4. Initialize Syscall Endpoint and Processes
+    println!("[KERNEL] Initializing Process Manager...");
+    
+    // Allocate Syscall Endpoint
+    let syscall_ep_cap = allocator.allocate(boot_info, api_object_seL4_EndpointObject.into(), seL4_EndpointBits.into(), &mut slot_allocator).expect("Failed to alloc EP");
+    
+    // Mint Badged Endpoint for Process 1
+    let badged_ep_slot = slot_allocator.alloc().expect("Failed to alloc slot for badged EP");
+    let root_cnode = seL4_RootCNodeCapSlots_seL4_CapInitThreadCNode as seL4_CPtr;
+    let cnode_depth = seL4_WordBits; 
+    
+    let err = unsafe {
+        sel4_sys::seL4_CNode_Mint(
+            root_cnode,
+            badged_ep_slot,
+            cnode_depth as u8,
+            root_cnode,
+            syscall_ep_cap,
+            cnode_depth as u8,
+            crate::utils::seL4_CapRights_new(0, 1, 1, 1),
+            100 // Badge for Process 1
+        )
+    };
+    if err != 0.into() {
+        println!("[KERNEL] Failed to mint badged endpoint: {:?}", err);
+    }
+    
+    // Spawn Hello Process
+    println!("[KERNEL] Spawning Hello Process...");
+    let process = Process::spawn(
+        &mut allocator,
+        &mut slot_allocator,
+        boot_info,
+        USER_HELLO_ELF,
+        100, // Priority
+        badged_ep_slot // Give badged cap
+    ).expect("Failed to spawn process");
+    
+    get_process_manager().add_process(process).expect("Failed to add process");
+
+
+    // 5. Setup Keyboard Interrupt
+    let mut notification_cap = 0;
+    let mut keyboard_driver = keyboard::Keyboard::new();
+    let mut shell = shell::Shell::new();
+    
+    if irq_handler_cap != 0 {
+        match allocator.allocate(boot_info, api_object_seL4_NotificationObject as u64, seL4_NotificationBits as u64, &mut slot_allocator) {
+            Ok(cap) => {
+                notification_cap = cap;
+                println!("[KERNEL] Allocated Notification for Keyboard at slot {}", cap);
+                unsafe {
+                    if let Err(e) = ioapic::set_irq_handler(irq_handler_cap, notification_cap as usize) {
+                            println!("[KERNEL] Failed to SetIRQHandler: {}", e);
+                    } else {
+                            println!("[KERNEL] IRQ Handler connected to Notification.");
+                            
+                            // Bind Notification to RootServer TCB
+                            let tcb_cap = seL4_RootCNodeCapSlots_seL4_CapInitThreadTCB as usize;
+                            
+                            // seL4_TCB_BindNotification implementation using seL4_Call
+                            // Method ID for TCBBindNotification is in invocation_label
+                            let info = seL4_MessageInfo_new(
+                                invocation_label_TCBBindNotification as seL4_Word,
+                                0,
+                                1, // ExtraCaps: 1
+                                0
+                            );
+                            
+                            seL4_SetCap_My(0, notification_cap);
+                            
+                            let resp = seL4_Call(tcb_cap.try_into().unwrap(), info);
+                            let err_label = seL4_MessageInfo_get_label(resp);
+                            
+                            if err_label != 0 {
+                                println!("[KERNEL] Failed to Bind Notification to TCB: {}", err_label);
+                            } else {
+                                println!("[KERNEL] Notification Bound to RootServer TCB.");
+                            }
+                            
+                            if let Err(e) = ioapic::ack_irq(irq_handler_cap) {
+                                println!("[KERNEL] Failed to Ack IRQ: {}", e);
+                            } else {
+                                println!("[KERNEL] IRQ Acked.");
+                                
+                                // Init Shell with Syscall EP
+                                shell.init(boot_info, &mut allocator, &mut slot_allocator, syscall_ep_cap);
+                            }
+                    }
+                }
+            },
+            Err(e) => println!("[KERNEL] Failed to allocate Notification: {:?}", e),
+        }
+    }
+
+    // 6. Unified Event Loop
+    println!("[KERNEL] Entering Unified Event Loop...");
+    
+    let syscall_ep = Endpoint::new(syscall_ep_cap);
+    let mut reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 0);
+    let mut need_reply = false;
+    let mut reply_mrs = [0u64; 4];
 
     loop {
-        unsafe { sel4_sys::seL4_Yield(); }
+        let (info, badge, mrs) = if need_reply {
+            syscall_ep.reply_recv_with_mrs(reply_info, reply_mrs)
+        } else {
+            syscall_ep.recv_with_mrs()
+        };
+        
+        // Reset reply flag
+        need_reply = false;
+        
+        if badge == 0 {
+            // Interrupt (assuming Badge 0)
+            if notification_cap != 0 {
+                 for _ in 0..32 {
+                        if port_io::inb(0x64) & 0x01 == 0 {
+                            break;
+                        }
+
+                        let scancode = port_io::inb(0x60);
+                        if let Some(k) = keyboard_driver.process_scancode(scancode) {
+                            shell.on_key(k);
+                        }
+                }
+                if let Err(e) = ioapic::ack_irq(irq_handler_cap) {
+                     println!("[KERNEL] Failed to Ack IRQ in loop: {}", e);
+                }
+            }
+        } else if badge >= 100 {
+            let pid = (badge - 100) as usize;
+            // Syscall from Process
+             let label = sel4_sys::seL4_MessageInfo_get_label(info);
+
+            match label {
+                1 => { // sys_write (debug_print)
+                    let mut bytes = [0u8; 32];
+                    unsafe {
+                        let p = bytes.as_mut_ptr() as *mut u64;
+                        *p.add(0) = mrs[0];
+                        *p.add(1) = mrs[1];
+                        *p.add(2) = mrs[2];
+                        *p.add(3) = mrs[3];
+                    }
+                    for &b in bytes.iter() {
+                        if b == 0 { break; }
+                        print!("{}", b as char);
+                    }
+                    reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                2 => { // sys_exit
+                    println!("[INFO] Process {} exited with code: {}", pid, mrs[0]);
+                    
+                    // Check if the test process (PID 0) exited successfully
+                    if pid == 0 && mrs[0] == 0 {
+                        println!("[TEST] PASSED");
+                    }
+
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                         let cnode = seL4_RootCNodeCapSlots_seL4_CapInitThreadCNode as seL4_CPtr;
+                         let _ = p.terminate(cnode);
+                    }
+                    // Remove process from manager
+                    get_process_manager().remove_process(pid);
+                    
+                    need_reply = false; 
+                }
+                3 => { // sys_brk
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                         match p.brk(&mut allocator, &mut slot_allocator, boot_info, mrs[0] as usize) {
+                             Ok(new_brk) => {
+                                 reply_mrs[0] = new_brk as u64;
+                                 reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                                 need_reply = true;
+                             },
+                             Err(e) => {
+                                 println!("[KERNEL] sys_brk failed for pid {}: {:?}", pid, e);
+                                 // Return 0 or old break on error? Linux returns current break on failure sometimes or -1.
+                                 // Here we just return 0 to indicate failure if we want, or handle it in user lib.
+                                 // But usually sbrk(0) returns current. sbrk(inc) returns old.
+                                 // brk(addr) returns new addr on success.
+                                 reply_mrs[0] = 0; 
+                                 reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                                 need_reply = true;
+                             }
+                         }
+                    } else {
+                         println!("[KERNEL] Process {} not found for sys_brk", pid);
+                         need_reply = true;
+                    }
+                }
+                _ => {
+                    println!("[INFO] Unknown syscall label: {}. Badge: {}", label, badge);
+                    need_reply = true;
+                }
+            }
+        } else {
+            println!("[KERNEL] Unexpected badge: {}", badge);
+        }
     }
 }

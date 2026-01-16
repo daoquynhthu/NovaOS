@@ -2,7 +2,7 @@
 members = [
     "services/rootserver",
     "libs/libnova",
-    "libs/seL4-sys",
+    "libs/seL4-sys", "services/user_app",
 ]
 resolver = "2"
 

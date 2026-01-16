@@ -59,26 +59,45 @@ pub fn seL4_MessageInfo_get_length(info: seL4_MessageInfo) -> seL4_Word {
 }
 
 #[inline(always)]
+/// # Safety
+/// `__sel4_ipc_buffer` must be initialized to a valid seL4 IPC buffer pointer
+/// for the current thread, as required by the seL4 ABI.
 pub unsafe fn seL4_GetIPCBuffer() -> *mut seL4_IPCBuffer {
     __sel4_ipc_buffer
 }
 
+/// # Safety
+/// `ptr` must either be null (to disable IPC-buffer-backed operations) or a
+/// valid seL4 IPC buffer pointer for the current thread, as required by the
+/// seL4 ABI.
 pub unsafe fn seL4_SetIPCBuffer(ptr: *mut seL4_IPCBuffer) {
     __sel4_ipc_buffer = ptr;
 }
 
+/// # Safety
+/// - `__sel4_ipc_buffer` must be null or a valid seL4 IPC buffer pointer.
+/// - If `__sel4_ipc_buffer` is non-null, `i` must be in-bounds for the IPC
+///   buffer message register array.
 pub unsafe fn seL4_SetMR(i: usize, v: seL4_Word) {
     if !__sel4_ipc_buffer.is_null() {
         (*__sel4_ipc_buffer).msg[i] = v;
     }
 }
 
+/// # Safety
+/// - `__sel4_ipc_buffer` must be null or a valid seL4 IPC buffer pointer.
+/// - If `__sel4_ipc_buffer` is non-null, `i` must be in-bounds for the IPC
+///   buffer capability slot array.
 pub unsafe fn seL4_SetCap_My(i: usize, cptr: seL4_CPtr) {
     if !__sel4_ipc_buffer.is_null() {
         (*__sel4_ipc_buffer).caps_or_badges[i] = cptr;
     }
 }
 
+/// # Safety
+/// - `__sel4_ipc_buffer` must be null or a valid seL4 IPC buffer pointer.
+/// - If `__sel4_ipc_buffer` is non-null, `i` must be in-bounds for the IPC
+///   buffer message register array.
 pub unsafe fn seL4_GetMR(i: usize) -> seL4_Word {
     if !__sel4_ipc_buffer.is_null() {
         (*__sel4_ipc_buffer).msg[i]
@@ -87,6 +106,11 @@ pub unsafe fn seL4_GetMR(i: usize) -> seL4_Word {
     }
 }
 
+/// # Safety
+/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - `dest` must be a valid capability pointer for the expected invocation.
+/// - If this call expects to read/write message registers or extra caps, the
+///   IPC buffer must be initialized appropriately via `seL4_SetIPCBuffer`.
 pub unsafe fn seL4_Call(dest: seL4_CPtr, msgInfo: seL4_MessageInfo) -> seL4_MessageInfo {
     let mut info_val = msgInfo.words[0];
     let mut mr0 = seL4_GetMR(0);
@@ -124,6 +148,9 @@ pub unsafe fn seL4_Call(dest: seL4_CPtr, msgInfo: seL4_MessageInfo) -> seL4_Mess
     seL4_MessageInfo { words: [info_val] }
 }
 
+/// # Safety
+/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - `dest` must be a valid capability pointer for the expected invocation.
 pub unsafe fn seL4_CallWithMRs(
     dest: seL4_CPtr,
     msgInfo: seL4_MessageInfo,
@@ -167,6 +194,10 @@ pub unsafe fn seL4_CallWithMRs(
     )
 }
 
+/// # Safety
+/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - `src` must be a valid capability pointer for a receive endpoint.
+/// - `sender` must be null or point to valid writable memory for a `seL4_Word`.
 pub unsafe fn seL4_RecvWithMRs(
     src: seL4_CPtr,
     sender: *mut seL4_Word,
@@ -209,6 +240,16 @@ pub unsafe fn seL4_RecvWithMRs(
     )
 }
 
+/// # Safety
+/// Same requirements as `seL4_RecvWithMRs`.
+pub unsafe fn seL4_Wait(src: seL4_CPtr, sender: *mut seL4_Word) {
+    let _ = seL4_RecvWithMRs(src, sender);
+}
+
+/// # Safety
+/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - `src` must be a valid capability pointer for a receive endpoint.
+/// - `sender` must be null or point to valid writable memory for a `seL4_Word`.
 pub unsafe fn seL4_ReplyRecvWithMRs(
     src: seL4_CPtr,
     msgInfo: seL4_MessageInfo,
@@ -256,6 +297,10 @@ pub unsafe fn seL4_ReplyRecvWithMRs(
     )
 }
 
+/// # Safety
+/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - `src` must be a valid capability pointer for a receive endpoint.
+/// - `sender` must be null or point to valid writable memory for a `seL4_Word`.
 pub unsafe fn seL4_Recv(src: seL4_CPtr, sender: *mut seL4_Word) -> seL4_MessageInfo {
     let mut info_val: seL4_Word = 0;
     let mut badge: seL4_Word;
@@ -294,6 +339,12 @@ pub unsafe fn seL4_Recv(src: seL4_CPtr, sender: *mut seL4_Word) -> seL4_MessageI
     seL4_MessageInfo { words: [info_val] }
 }
 
+/// # Safety
+/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - `src` must be a valid capability pointer for a receive endpoint.
+/// - `sender` must be null or point to valid writable memory for a `seL4_Word`.
+/// - If this call expects to read/write message registers or extra caps, the
+///   IPC buffer must be initialized appropriately via `seL4_SetIPCBuffer`.
 pub unsafe fn seL4_ReplyRecv(src: seL4_CPtr, msgInfo: seL4_MessageInfo, sender: *mut seL4_Word) -> seL4_MessageInfo {
     let mut info_val = msgInfo.words[0];
     let mut badge: seL4_Word;
@@ -333,6 +384,13 @@ pub unsafe fn seL4_ReplyRecv(src: seL4_CPtr, msgInfo: seL4_MessageInfo, sender: 
     seL4_MessageInfo { words: [info_val] }
 }
 
+#[allow(clippy::too_many_arguments)]
+/// # Safety
+/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - `service` must be a valid CNode capability pointer.
+/// - `src_root` must be a valid capability pointer for the source CNode.
+/// - All indices and depths must follow seL4 CSpace addressing rules for the
+///   provided CNodes.
 pub unsafe fn seL4_CNode_Mint(
     service: seL4_CPtr,
     dest_index: seL4_Word,
@@ -367,6 +425,8 @@ pub unsafe fn seL4_CNode_Mint(
     seL4_Error::from(seL4_MessageInfo_get_label(dest_info) as i32)
 }
 
+/// # Safety
+/// Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
 pub unsafe fn seL4_Yield() {
     core::arch::asm!(
         "syscall",

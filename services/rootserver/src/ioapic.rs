@@ -9,7 +9,26 @@ use crate::println;
 // 1: IRQIssueIRQHandler (Generic)
 // 2: X86IRQIssueIRQHandlerIOAPIC
 // 3: X86IRQIssueIRQHandlerMSI
-const X86_IRQ_ISSUE_IRQ_HANDLER_IOAPIC: usize = 53;
+pub const X86_IRQ_ISSUE_IRQ_HANDLER_IOAPIC: usize = 53;
+pub const IRQ_ACK_IRQ: usize = 27;
+pub const IRQ_SET_IRQ_HANDLER: usize = 28;
+
+pub unsafe fn ack_irq(irq_handler: usize) -> Result<(), usize> {
+    let info = seL4_MessageInfo_new(IRQ_ACK_IRQ as u64, 0, 0, 0);
+    let resp = seL4_Call(irq_handler as u64, info);
+    let label = seL4_MessageInfo_get_label(resp);
+    if label == 0 { Ok(()) } else { Err(label as usize) }
+}
+
+pub unsafe fn set_irq_handler(irq_handler: usize, notification: usize) -> Result<(), usize> {
+    let ipc_buffer = seL4_GetIPCBuffer();
+    (*ipc_buffer).caps_or_badges[0] = notification as u64;
+    
+    let info = seL4_MessageInfo_new(IRQ_SET_IRQ_HANDLER as u64, 0, 1, 0);
+    let resp = seL4_Call(irq_handler as u64, info);
+    let label = seL4_MessageInfo_get_label(resp);
+    if label == 0 { Ok(()) } else { Err(label as usize) }
+}
 
 pub struct IoApic {
     base_vaddr: usize,
@@ -51,6 +70,7 @@ impl IoApic {
 }
 
 /// Manually invoke X86IRQIssueIRQHandlerIOAPIC because bindings are missing
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn get_ioapic_handler(
     irq_control: usize,
     ioapic: usize,

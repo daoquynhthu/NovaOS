@@ -65,10 +65,10 @@ impl VSpace {
             seL4_SetCap_My(0, pml4_cap);
             
             let dest_info = seL4_Call(asid_pool, info);
-            check_syscall_result(dest_info).map_err(|e| {
-                 println!("[VSpace] ASID Pool Assign failed: {:?}", e);
-                 e
-            })?;
+            if let Err(e) = check_syscall_result(dest_info) {
+                println!("[VSpace] ASID Pool Assign failed: {:?}", e);
+                return Err(e);
+            }
         }
         
         println!("[VSpace] Created new VSpace with PML4 cap {}", pml4_cap);
@@ -189,10 +189,10 @@ impl VSpace {
             seL4_SetCap_My(0, self.pml4_cap);
 
             let dest_info = seL4_Call(cap, info);
-            check_syscall_result(dest_info).map_err(|e| {
+            if let Err(e) = check_syscall_result(dest_info) {
                 println!("[VSpace] Failed to map paging structure (type={}): {:?}", type_, e);
-                e
-            })?;
+                return Err(e);
+            }
         }
 
         // Track the capability

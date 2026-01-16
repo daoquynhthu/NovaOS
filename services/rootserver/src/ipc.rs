@@ -10,6 +10,19 @@ impl Endpoint {
         Endpoint { cptr }
     }
 
+    pub fn reply_recv_with_mrs(&self, info: seL4_MessageInfo, mrs: [u64; 4]) -> (seL4_MessageInfo, seL4_Word, [u64; 4]) {
+        unsafe {
+            let mut sender_badge: seL4_Word = 0;
+            let (resp_info, mr0, mr1, mr2, mr3) = sel4_sys::seL4_ReplyRecvWithMRs(
+                self.cptr,
+                info,
+                &mut sender_badge,
+                mrs[0], mrs[1], mrs[2], mrs[3]
+            );
+            (resp_info, sender_badge, [mr0, mr1, mr2, mr3])
+        }
+    }
+
     /// 发送消息并等待回复 (Client Side)
     /// 
     /// # Arguments
@@ -61,6 +74,17 @@ impl Endpoint {
             let msg = if len > 0 { mr0 } else { 0 };
             
             (msg, sender_badge)
+        }
+    }
+
+    pub fn recv_with_mrs(&self) -> (seL4_MessageInfo, seL4_Word, [u64; 4]) {
+        unsafe {
+            let mut sender_badge: seL4_Word = 0;
+            let (info, mr0, mr1, mr2, mr3) = sel4_sys::seL4_RecvWithMRs(
+                self.cptr, 
+                &mut sender_badge
+            );
+            (info, sender_badge, [mr0, mr1, mr2, mr3])
         }
     }
 

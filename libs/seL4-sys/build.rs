@@ -41,6 +41,11 @@ fn main() {
         // 显式指定目标架构，防止 bindgen 默认使用宿主机架构
         .clang_arg(format!("--target={}", target));
 
+    // Fix for Windows host compiling for x86_64: force 64-bit enums
+    if target.contains("x86_64") && cfg!(windows) {
+        builder = builder.clang_arg("-D_WIN32");
+    }
+
     for dir in include_dirs {
         builder = builder.clang_arg(format!("-I{}", dir.display()));
     }

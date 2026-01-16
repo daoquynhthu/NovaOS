@@ -8,15 +8,15 @@ $env:SEL4_KERNEL_DIR = "$root\kernel\seL4"
 Write-Host "Building RootServer..." -ForegroundColor Cyan
 Set-Location "services/rootserver"
 
-# Build Release
-cargo build --target x86_64-unknown-none --release
+# Build Debug (to enable runtime assertions)
+cargo build --target x86_64-unknown-none
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Cargo build failed"
     exit 1
 }
 
 Set-Location "../.."
-$executable = "$PWD/target/x86_64-unknown-none/release/rootserver"
+$executable = "$PWD/target/x86_64-unknown-none/debug/rootserver"
 
 # Verify Kernel exists
 if (-not (Test-Path "build/kernel/kernel32.elf")) {
@@ -60,9 +60,8 @@ $qemuArgs = @(
     "-display", "none",
     "-m", "128M",
     "-cpu", "Haswell,+pdpe1gb",
-    "-accel", "tcg,tb-size=64",
-    # "-accel", "whpx",
-    "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"
+    "-accel", "tcg,tb-size=64"
+    # "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"
 )
 
 Write-Host "Command: $qemu $qemuArgs"
@@ -73,6 +72,7 @@ $process = Start-Process -FilePath $qemu -ArgumentList $qemuArgs -PassThru -NoNe
 $timeoutSeconds = 60
 $startTime = Get-Date
 $testPassed = $false
+$sawUserHello = $false
 
 try {
     while (-not $process.HasExited) {
@@ -85,14 +85,15 @@ try {
             try {
                 $content = Get-Content $outputFile -Raw -ErrorAction SilentlyContinue
                 if ($content) {
-                    if ($content -match "\[TEST\] PASSED") {
-                        Write-Host "Found success marker!" -ForegroundColor Green
-                        $testPassed = $true
-                        break
-                    }
+                    if ($content -match "Hello from Rust User App") { $sawUserHello = $true }
+                    if ($content -match "\[TEST\] PASSED") { $testPassed = $true }
                     if ($content -match "PANIC") {
                          Write-Host "Panic detected!" -ForegroundColor Red
                          break
+                    }
+                    if ($testPassed -and $sawUserHello) {
+                        Write-Host "Found success marker and user-mode output!" -ForegroundColor Green
+                        break
                     }
                 }
             } catch {}
@@ -114,10 +115,13 @@ if (Test-Path $outputFile) {
 }
 Write-Host "-------------------`n"
 
-if ($testPassed) {
+if ($testPassed -and $sawUserHello) {
     Write-Host "TEST RESULT: PASSED" -ForegroundColor Green
     exit 0
 } else {
+    if ($testPassed -and -not $sawUserHello) {
+        Write-Host "Missing user-mode output: 'Hello user'" -ForegroundColor Red
+    }
     Write-Host "TEST RESULT: FAILED" -ForegroundColor Red
     exit 1
 }

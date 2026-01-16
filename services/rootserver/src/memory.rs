@@ -102,6 +102,17 @@ impl SlotAllocator {
         // Post-condition: Slot must be free
         debug_assert!(!self.is_allocated(slot_idx), "Slot must be free after release");
     }
+
+    pub fn stats(&self) -> (usize, usize, usize) {
+        let total = self.end.saturating_sub(self.start);
+        let mut free = 0usize;
+        for i in self.start..self.end {
+            if !self.is_allocated(i) {
+                free += 1;
+            }
+        }
+        (total, total - free, free)
+    }
 }
 
 /// Trait for allocating kernel objects from untyped memory
@@ -128,8 +139,8 @@ pub struct UntypedAllocator {
 
 impl UntypedAllocator {
     pub fn new(boot_info: &seL4_BootInfo) -> Self {
-        let len = boot_info.untyped.end - boot_info.untyped.start;
-        println!("[Alloc] Initializing UntypedAllocator with {} untyped slots", len);
+        // let len = boot_info.untyped.end - boot_info.untyped.start;
+        // println!("[Alloc] Initializing UntypedAllocator with {} untyped slots", len);
 
         UntypedAllocator {
             untyped_start: boot_info.untyped.start as usize,
@@ -193,6 +204,30 @@ impl UntypedAllocator {
              }
         }
         */
+    }
+
+    pub fn stats(&self, boot_info: &seL4_BootInfo) -> (usize, usize, u64, u64, usize) {
+        let mut total_caps = self.untyped_end.saturating_sub(self.untyped_start);
+        let max = core::cmp::min(boot_info.untypedList.len(), MAX_UNTYPED_CAPS);
+        total_caps = core::cmp::min(total_caps, max);
+
+        let mut ram_caps = 0usize;
+        let mut ram_total_bytes = 0u64;
+        let mut ram_used_bytes = 0u64;
+
+        for idx in 0..total_caps {
+            let desc = boot_info.untypedList[idx];
+            if desc.isDevice != 0 {
+                continue;
+            }
+            ram_caps += 1;
+            if desc.sizeBits < 63 {
+                ram_total_bytes = ram_total_bytes.saturating_add(1u64 << desc.sizeBits);
+            }
+            ram_used_bytes = ram_used_bytes.saturating_add(self.usage[idx] as u64);
+        }
+
+        (total_caps, ram_caps, ram_used_bytes, ram_total_bytes, self.last_used_idx)
     }
 }
 

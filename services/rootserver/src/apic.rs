@@ -66,7 +66,7 @@ pub fn init(
             Some(apic)
         },
         Err(e) => {
-            println!("[APIC] Note: Local APIC mapping failed ({:?}). It might be reserved by seL4 kernel.", e);
+            println!("[APIC] Local APIC mapping unavailable in user space on seL4 x86 ({:?}); continuing.", e);
             None
         }
     }
