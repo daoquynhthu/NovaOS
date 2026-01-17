@@ -32,16 +32,24 @@ const STATUS_ERR: u8 = 0x01;
 
 pub struct AtaDriver {
     pub port_base: u16,
+    pub sector_count: u64, // Detected via IDENTIFY
+    pub model: [u8; 40],
 }
 
 use crate::drivers::block::BlockDevice;
 
 impl BlockDevice for AtaDriver {
     fn read_block(&self, block_id: u32, buf: &mut [u8]) -> Result<(), &'static str> {
+        if block_id as u64 >= self.sector_count && self.sector_count > 0 {
+             return Err("Block ID out of range");
+        }
         self.read_sectors_into(block_id, 1, buf)
     }
 
     fn write_block(&self, block_id: u32, buf: &[u8]) -> Result<(), &'static str> {
+        if block_id as u64 >= self.sector_count && self.sector_count > 0 {
+             return Err("Block ID out of range");
+        }
         if buf.len() != 512 {
             return Err("Buffer size must be 512 bytes");
         }
@@ -51,12 +59,78 @@ impl BlockDevice for AtaDriver {
 
 impl AtaDriver {
     pub fn new(port_base: u16) -> Self {
-        AtaDriver { port_base }
+        AtaDriver { 
+            port_base,
+            sector_count: 0,
+            model: [0; 40],
+        }
     }
     
-    #[allow(dead_code)]
     pub fn init(&mut self) -> Result<(), &'static str> {
-        // Identify check could go here
+        self.identify()
+    }
+
+    fn identify(&mut self) -> Result<(), &'static str> {
+        // Select Drive (Master)
+        outb(self.port_base + 6, 0xA0);
+        // Zero Sector Count and LBA
+        outb(self.port_base + 2, 0);
+        outb(self.port_base + 3, 0);
+        outb(self.port_base + 4, 0);
+        outb(self.port_base + 5, 0);
+        
+        // Send IDENTIFY
+        outb(self.port_base + 7, ATA_CMD_IDENTIFY);
+        
+        let status = inb(self.port_base + 7);
+        if status == 0 {
+            return Err("Drive does not exist");
+        }
+        
+        self.wait_bsy()?;
+        
+        let status2 = inb(self.port_base + 7);
+        if status2 & STATUS_ERR != 0 {
+             return Err("Drive Error after IDENTIFY");
+        }
+        
+        self.wait_drq()?;
+        
+        // Read 256 words
+        let mut data = [0u16; 256];
+        for i in 0..256 {
+            data[i] = inw(self.port_base);
+        }
+        
+        // Extract Model (words 27-46)
+        for i in 0..20 {
+            let word = data[27 + i];
+            // Swap bytes for ASCII string
+            self.model[i * 2] = (word >> 8) as u8;
+            self.model[i * 2 + 1] = (word & 0xFF) as u8;
+        }
+        
+        // Extract LBA28 sectors (word 60-61)
+        let lba28_sectors = (data[60] as u32) | ((data[61] as u32) << 16);
+        // Extract LBA48 sectors (word 100-103) if supported
+        let supports_lba48 = (data[83] & (1 << 10)) != 0;
+        
+        if supports_lba48 {
+            let lba48_sectors = (data[100] as u64) | 
+                                ((data[101] as u64) << 16) | 
+                                ((data[102] as u64) << 32) | 
+                                ((data[103] as u64) << 48);
+            self.sector_count = lba48_sectors;
+        } else {
+            self.sector_count = lba28_sectors as u64;
+        }
+        
+        println!("[ATA] Drive Identified: Model='{}', Sectors={}, Size={}MB", 
+            core::str::from_utf8(&self.model).unwrap_or("Unknown").trim(),
+            self.sector_count,
+            (self.sector_count * 512) / 1024 / 1024
+        );
+        
         Ok(())
     }
 

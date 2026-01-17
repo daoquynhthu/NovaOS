@@ -46,24 +46,22 @@ pub struct NovaFS<D: BlockDevice + Send + Sync + 'static> {
 }
 
 impl<D: BlockDevice + Send + Sync + 'static> NovaFS<D> {
-    pub fn new(device: Arc<D>, block_offset: u32) -> Arc<Self> {
+    pub fn new(device: Arc<D>, block_offset: u32) -> Result<Arc<Self>, &'static str> {
         let mut buf = [0u8; BLOCK_SIZE];
-        device.read_block(block_offset, &mut buf).expect("Failed to read SuperBlock");
+        if device.read_block(block_offset, &mut buf).is_err() {
+            return Err("Failed to read SuperBlock");
+        }
         let sb = unsafe { *(buf.as_ptr() as *const SuperBlock) };
         
         if sb.magic != MAGIC {
-            // Auto-format if magic doesn't match (for dev convenience)
-            // Realistically we should return Error, but for "one step" dev we init.
-            // println!("Invalid Magic, Formatting...");
-            // Self::format(device.clone(), block_offset, 1024 * 10); // 5MB
-            // For now, assume formatted or panic
+            return Err("Invalid SuperBlock Magic");
         }
 
-        Arc::new(NovaFS {
+        Ok(Arc::new(NovaFS {
             device,
             sb,
             block_offset,
-        })
+        }))
     }
 
     pub fn format(device: Arc<D>, block_offset: u32, total_blocks: u32) -> Arc<Self> {
@@ -481,8 +479,42 @@ impl<D: BlockDevice + Send + Sync + 'static> Inode for NovaInode<D> {
             return Err("Not a directory");
         }
         
-        // Check existence (simplified: skip for now)
+        // Check existence and find free slot
+        let size = parent_inode.size as usize;
+        let entry_size = size_of::<DirEntry>();
+        let mut scan_offset = 0;
+        let mut target_offset = size;
+        let mut found_free = false;
         
+        while scan_offset < size {
+            let block_idx = (scan_offset / BLOCK_SIZE) as u32;
+            if let Ok(disk_block) = self.fs.get_block_id(&mut parent_inode, block_idx, false) {
+                 if disk_block != 0 {
+                    let real_block = self.fs.data_area_start() + disk_block;
+                    let mut block_buf = [0u8; BLOCK_SIZE];
+                    self.fs.device.read_block(real_block, &mut block_buf).unwrap();
+                    
+                    for i in 0..BLOCK_SIZE/entry_size {
+                        let pos = scan_offset + i * entry_size;
+                        if pos >= size { break; }
+                        
+                        let slot = unsafe { &*(block_buf.as_ptr().add(i*entry_size) as *const DirEntry) };
+                        if slot.inode_number != 0 {
+                             let name_len = slot.name.iter().position(|&c| c == 0).unwrap_or(28);
+                             let entry_name = core::str::from_utf8(&slot.name[..name_len]).unwrap_or("");
+                             if entry_name == name {
+                                 return Err("File exists");
+                             }
+                        } else if !found_free {
+                            target_offset = pos;
+                            found_free = true;
+                        }
+                    }
+                 }
+            }
+            scan_offset += BLOCK_SIZE;
+        }
+
         // Alloc new inode
         let new_inode_num = self.fs.alloc_inode()?;
         let new_disk_inode = DiskInode {
@@ -505,41 +537,7 @@ impl<D: BlockDevice + Send + Sync + 'static> Inode for NovaInode<D> {
                 n
             },
         };
-        
-        let entry_size = size_of::<DirEntry>();
-        
-        // Find free slot or append
-        let mut target_offset = parent_inode.size as usize;
-        let mut found_free = false;
-        
-        let size = parent_inode.size as usize;
-        let mut scan_offset = 0;
-        
-        while scan_offset < size {
-            let block_idx = (scan_offset / BLOCK_SIZE) as u32;
-            // We use get_block_id with alloc=false to check existence
-            if let Ok(disk_block) = self.fs.get_block_id(&mut parent_inode, block_idx, false) {
-                 if disk_block != 0 {
-                    let real_block = self.fs.data_area_start() + disk_block;
-                    let mut block_buf = [0u8; BLOCK_SIZE];
-                    self.fs.device.read_block(real_block, &mut block_buf).unwrap();
-                    
-                    for i in 0..BLOCK_SIZE/entry_size {
-                        let pos = scan_offset + i * entry_size;
-                        if pos >= size { break; }
-                        
-                        let slot = unsafe { &*(block_buf.as_ptr().add(i*entry_size) as *const DirEntry) };
-                        if slot.inode_number == 0 {
-                            target_offset = pos;
-                            found_free = true;
-                            break;
-                        }
-                    }
-                 }
-            }
-            if found_free { break; }
-            scan_offset += BLOCK_SIZE;
-        }
+
 
         // Write entry at target_offset
         let block_idx = (target_offset / BLOCK_SIZE) as u32;

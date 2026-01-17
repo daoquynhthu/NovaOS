@@ -77,6 +77,31 @@ pub trait FileSystem: Send + Sync {
         let stat = inode.metadata()?;
         inode.write_at(stat.size, data)
     }
+
+    fn write_file(&self, path: &str, data: &[u8]) -> Result<usize, &'static str> {
+        // Try to create first
+        match self.create_file(path) {
+            Ok(inode) => inode.write_at(0, data),
+            Err(e) if e == "File exists" => {
+                // Remove and recreate to overwrite
+                if let Some(idx) = path.rfind('/') {
+                    let (parent_path, name) = path.split_at(idx);
+                    let name = &name[1..];
+                    let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
+                    let parent = self.resolve_path("/", parent_path)?;
+                    parent.remove(name)?;
+                    let inode = parent.create(name, FileType::File)?;
+                    inode.write_at(0, data)
+                } else {
+                    let root = self.root_inode();
+                    root.remove(path)?;
+                    let inode = root.create(path, FileType::File)?;
+                    inode.write_at(0, data)
+                }
+            },
+            Err(e) => Err(e),
+        }
+    }
 }
 
 /// The Abstract Inode Trait (File or Directory)
