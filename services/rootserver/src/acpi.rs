@@ -1,15 +1,26 @@
 use sel4_sys::{
     seL4_BootInfo, seL4_BootInfoHeader, seL4_CPtr, seL4_Error,
-    seL4_RootCNodeCapSlots_seL4_CapInitThreadCNode as seL4_CapInitThreadCNode,
-    seL4_RootCNodeCapSlots_seL4_CapInitThreadVSpace as seL4_CapInitThreadPML4,
-    seL4_X86_VMAttributes_seL4_X86_Default_VMAttributes as seL4_X86_Default_VMAttributes,
 };
+use sel4_sys::seL4_RootCNodeCapSlots;
+use sel4_sys::seL4_X86_VMAttributes;
 use core::mem::size_of;
 use core::str;
 use crate::println;
 use crate::memory::{SlotAllocator, UntypedAllocator};
 use crate::vspace::VSpace;
 use crate::utils::{seL4_X86_4K, untyped_retype, seL4_CapRights_new};
+use crate::port_io;
+
+static mut FADT_PTR: Option<*const Fadt> = None;
+
+pub fn set_fadt(fadt: *const Fadt) {
+    unsafe { FADT_PTR = Some(fadt); }
+}
+
+pub fn shutdown() -> ! {
+    let fadt = unsafe { FADT_PTR.map(|p| &*p) };
+    system_shutdown(fadt)
+}
 
 const SEL4_BOOTINFO_HEADER_X86_ACPI_RSDP: u64 = 3;
 const SEL4_BOOTINFOFRAME_SIZE: usize = 4096;
@@ -123,6 +134,73 @@ pub struct MadtIso {
     pub flags: u16,
 }
 
+#[repr(C, packed)]
+#[derive(Debug, Copy, Clone)]
+pub struct GenericAddressStructure {
+    pub address_space: u8,
+    pub bit_width: u8,
+    pub bit_offset: u8,
+    pub access_size: u8,
+    pub address: u64,
+}
+
+#[repr(C, packed)]
+#[derive(Debug, Copy, Clone)]
+pub struct Fadt {
+    pub header: AcpiTableHeader,
+    pub firmware_ctrl: u32,
+    pub dsdt: u32,
+    pub reserved: u8,
+    pub preferred_pm_profile: u8,
+    pub sci_int: u16,
+    pub smi_cmd: u32,
+    pub acpi_enable: u8,
+    pub acpi_disable: u8,
+    pub s4bios_req: u8,
+    pub pstate_cnt: u8,
+    pub pm1a_evt_blk: u32,
+    pub pm1b_evt_blk: u32,
+    pub pm1a_cnt_blk: u32,
+    pub pm1b_cnt_blk: u32,
+    pub pm2_cnt_blk: u32,
+    pub pm_tmr_blk: u32,
+    pub gpe0_blk: u32,
+    pub gpe1_blk: u32,
+    pub pm1_evt_len: u8,
+    pub pm1_cnt_len: u8,
+    pub pm2_cnt_len: u8,
+    pub pm_tmr_len: u8,
+    pub gpe0_blk_len: u8,
+    pub gpe1_blk_len: u8,
+    pub gpe1_base: u8,
+    pub cst_cnt: u8,
+    pub p_lvl2_lat: u16,
+    pub p_lvl3_lat: u16,
+    pub flush_size: u16,
+    pub flush_stride: u16,
+    pub duty_offset: u8,
+    pub duty_width: u8,
+    pub day_alrm: u8,
+    pub mon_alrm: u8,
+    pub century: u8,
+    pub iapc_boot_arch: u16,
+    pub reserved2: u8,
+    pub flags: u32,
+    pub reset_reg: GenericAddressStructure,
+    pub reset_value: u8,
+    pub reserved3: [u8; 3],
+    pub x_firmware_ctrl: u64,
+    pub x_dsdt: u64,
+    pub x_pm1a_evt_blk: GenericAddressStructure,
+    pub x_pm1b_evt_blk: GenericAddressStructure,
+    pub x_pm1a_cnt_blk: GenericAddressStructure,
+    pub x_pm1b_cnt_blk: GenericAddressStructure,
+    pub x_pm2_cnt_blk: GenericAddressStructure,
+    pub x_pm_tmr_blk: GenericAddressStructure,
+    pub x_gpe0_blk: GenericAddressStructure,
+    pub x_gpe1_blk: GenericAddressStructure,
+}
+
 #[derive(Debug, Copy, Clone)]
 #[allow(dead_code)]
 pub struct AcpiInfo {
@@ -169,7 +247,7 @@ pub fn init(boot_info: &seL4_BootInfo) -> Option<AcpiInfo> {
             break;
         }
 
-        if id == SEL4_BOOTINFO_HEADER_X86_ACPI_RSDP {
+        if u64::from(id) == SEL4_BOOTINFO_HEADER_X86_ACPI_RSDP {
              println!("[INFO] Found ACPI RSDP Chunk at offset 0x{:x}", current_offset);
              let header_size = size_of::<seL4_BootInfoHeader>();
              let rsdp_ptr = (boot_info_addr + current_offset + header_size) as *const Rsdp;
@@ -208,6 +286,108 @@ pub fn init(boot_info: &seL4_BootInfo) -> Option<AcpiInfo> {
         current_offset += len as usize;
     }
     println!("[WARN] ACPI RSDP not found in boot info.");
+    None
+}
+
+
+pub fn enable_acpi(fadt: &Fadt) {
+    if fadt.smi_cmd == 0 {
+        println!("[ACPI] ACPI already enabled (SMI_CMD=0).");
+        return;
+    }
+    
+    let pm1a_cnt = fadt.pm1a_cnt_blk as u16;
+    if pm1a_cnt == 0 {
+         println!("[ACPI] PM1a_CNT_BLK is 0. Cannot check/enable ACPI.");
+         return;
+    }
+    
+    unsafe {
+        let val = port_io::inw(pm1a_cnt);
+        if (val & 1) != 0 {
+            println!("[ACPI] ACPI already enabled.");
+            return;
+        }
+        
+        println!("[ACPI] Enabling ACPI...");
+        if fadt.acpi_enable != 0 {
+            port_io::outb(fadt.smi_cmd as u16, fadt.acpi_enable);
+            
+            // Wait for enabling
+            for _ in 0..100 {
+                if (port_io::inw(pm1a_cnt) & 1) != 0 {
+                    println!("[ACPI] ACPI Enabled successfully.");
+                    return;
+                }
+                // spin
+                for _ in 0..10000 { core::hint::spin_loop(); }
+            }
+            println!("[ACPI] Failed to enable ACPI (timeout).");
+        } else {
+             println!("[ACPI] No ACPI_ENABLE command specified.");
+        }
+    }
+}
+
+pub fn system_shutdown(fadt: Option<&Fadt>) -> ! {
+    println!("[KERNEL] Shutting down...");
+    
+    // Method 1: QEMU specific (works even without ACPI if supported)
+    unsafe {
+        port_io::outw(0x604, 0x2000);
+    }
+    
+    // Method 2: ACPI
+    if let Some(fadt) = fadt {
+        println!("[KERNEL] Attempting ACPI Shutdown...");
+        let pm1a_cnt = fadt.pm1a_cnt_blk as u16;
+        let pm1b_cnt = fadt.pm1b_cnt_blk as u16;
+        
+        // SLP_TYP_S5 is usually 0 or 5 for QEMU.
+        // QEMU: SLP_TYP_S5 = 0.
+        // Command: (SLP_TYP_S5 << 10) | SLP_EN (1<<13)
+        // 0 << 10 | 1 << 13 = 0x2000
+        
+        let cmd = 0x2000u16; 
+        
+        unsafe {
+             if pm1a_cnt != 0 {
+                 port_io::outw(pm1a_cnt, cmd);
+             }
+             if pm1b_cnt != 0 {
+                 port_io::outw(pm1b_cnt, cmd);
+             }
+        }
+    }
+    
+    println!("[KERNEL] Shutdown failed. Halted.");
+    loop {
+        unsafe { core::arch::asm!("hlt"); }
+    }
+}
+
+pub fn find_iso_for_irq(madt_ptr: *const Madt, irq: u8) -> Option<MadtIso> {
+    let madt = unsafe { &*madt_ptr };
+    let length = madt.header.length as usize;
+    let madt_start = madt_ptr as usize;
+    let mut offset = core::mem::size_of::<Madt>();
+    
+    while offset < length {
+        let entry_ptr = (madt_start + offset) as *const MadtEntryHeader;
+        let entry = unsafe { &*entry_ptr };
+        let record_len = entry.record_length as usize;
+        
+        if record_len < 2 { break; }
+
+        if entry.entry_type == 2 { // ISO
+             let iso = unsafe { &*(entry_ptr as *const MadtIso) };
+             if iso.irq_source == irq {
+                 return Some(*iso);
+             }
+        }
+        
+        offset += record_len;
+    }
     None
 }
 
@@ -376,29 +556,29 @@ pub fn map_phys(
                          mc.cap_cptr,
                          seL4_X86_4K,
                          12,
-                         seL4_CapInitThreadCNode as seL4_CPtr,
-                         0,
-                         0,
-                         slot,
-                         1
-                     )
-                 };
-                 if err != seL4_Error::seL4_NoError {
-                     return Err(err);
-                 }
-                 
-                 let page_vaddr = mc.vaddr_start + current_limit + (i * 4096);
-                 let mut vspace = VSpace::new(seL4_CapInitThreadPML4 as seL4_CPtr);
-                 
-                 vspace.map_page(
-                    allocator,
-                    slots,
-                    boot_info,
-                    slot,
-                    page_vaddr,
-                    seL4_CapRights_new(0, 1, 1, 1),
-                    seL4_X86_Default_VMAttributes
-                )?;
+                         seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr,
+                        0,
+                        0,
+                        slot,
+                        1
+                    )
+                };
+                if err != seL4_Error::seL4_NoError {
+                    return Err(err);
+                }
+                
+                let page_vaddr = mc.vaddr_start + current_limit + (i * 4096);
+                let mut vspace = VSpace::new(seL4_RootCNodeCapSlots::seL4_CapInitThreadVSpace as seL4_CPtr);
+                
+                vspace.map_page(
+                   allocator,
+                   slots,
+                   boot_info,
+                   slot,
+                   page_vaddr,
+                   seL4_CapRights_new(0, 1, 1, 1),
+                   seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes
+               )?;
             }
             mc.mapped_limit = target_limit;
             context.mapped_caps[idx] = Some(mc);

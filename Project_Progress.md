@@ -3,101 +3,135 @@
 > 本文档用于记录项目里程碑、已完成任务以及下一步计划。每次重大变更后必须更新。
 
 ## 📅 当前状态
-- **日期**: 2026-01-16
-- **阶段**: 0.5 - 用户态进程与系统调用 (User Process & Syscall)
-- **版本**: `v0.0.2-alpha`
+- **日期**: 2026-01-17
+- **阶段**: 0.6.1 - VMM 增强 (VMM Enhancements)
+- **版本**: `v0.0.5-alpha`
 
 ## ✅ 已完成任务 (Completed)
 
-### 2026-01-16: 构建修复与错误解决 (Build Fixes & Error Resolution)
-- [x] **sel4-sys 构建修复**:
-    - 解决了 `seL4_X86_VMAttributes` 枚举大小在 x86_64 Windows 环境下的编译断言错误。
-    - 通过在 `build.rs` 中检测环境并定义 `_WIN32` 宏，强制使用 64 位枚举以匹配内核 ABI。
-- [x] **RootServer 编译错误修复**:
-    - 修复了 `main.rs` 中缺失的 `seL4_TCB_BindNotification` 和 `seL4_SetCap` 函数调用。
-    - 替换为 `seL4_Call` + `invocation_label` 的手动实现，并使用 `seL4_SetCap_My`。
-    - 解决了类型不匹配 (usize vs u64, seL4_Error vs int) 和格式化输出问题。
-    - 清理了多余的 `unsafe` 块和未使用代码警告。
-- [x] **集成测试修复与验证**:
-    - 修复了 `test.ps1` 脚本的超时与成功判定逻辑，确保其能正确捕获 User App 的输出。
-    - 在 RootServer 的 Syscall 处理中添加了测试通过标记 `[TEST] PASSED`。
-    - 验证了 `test.ps1` 自动化测试全流程通过 (TEST RESULT: PASSED)。
+### 2026-01-17: 系统关机功能 (System Shutdown)
+- [x] **ACPI 电源管理**:
+    - 实现了 ACPI FADT 表的解析与 ACPI Enable 序列。
+    - 实现了 S5 (Soft Off) 状态的关机逻辑。
+- [x] **双重关机策略**:
+    - 优先尝试 QEMU 特定的端口关机 (Port 0x604)。
+    - 失败则回退至 ACPI PM1a/PM1b 寄存器关机。
+- [x] **系统集成**:
+    - 实现了 `sys_shutdown` (Label 50) 系统调用，允许特权进程请求关机。
+    - Shell 新增 `shutdown` 命令。
+    - 解决了 Port I/O 权限与 Capabilities 管理问题，实现了 `inw`/`outw` 接口。
+- [x] **验证通过**:
+    - `test.ps1` 自动化测试成功触发关机并正确退出。
 
-### 2026-01-16: 动态内存与事件循环 (Dynamic Memory & Event Loop)
-- [x] **统一事件循环 (Unified Event Loop)**:
-    - 重构了 RootServer 的 `main` 循环，将中断处理 (Notification) 和系统调用处理 (IPC) 合并。
-    - 实现了非阻塞的 Shell 交互，Shell 可在后台进程运行时响应键盘输入。
-    - 引入了 Badged Endpoint 机制，用于区分中断 (Badge=0) 和不同进程 (Badge=PID+100) 的请求。
-- [x] **动态内存支持 (sys_brk)**:
-    - 实现了 `sys_brk` (Label 3) 系统调用，支持用户态进程动态调整堆大小。
-    - 在 `Process` 结构中实现了堆帧 (Heap Frames) 的分配、映射与追踪。
-    - 在 `user_app` 中实现了堆内存分配测试，验证了内存读写正确性。
-- [x] **资源清理完善**:
-    - 增强了 `terminate` 方法，确保在进程退出时释放所有堆内存页 (Heap Frames) 和分页结构 (Paging Structures)，防止内存泄漏。
+### 2026-01-17: 文件系统 I/O 与描述符 (File System I/O & Descriptors)
+- [x] **文件 I/O 系统调用**:
+    - 实现了 `sys_file_open` (Label 20): 支持只读、只写、读写、追加模式打开文件。
+    - 实现了 `sys_file_close` (Label 21): 关闭文件描述符，释放资源。
+    - 实现了 `sys_file_read` (Label 22): 从文件描述符读取数据到用户缓冲区。
+    - 实现了 `sys_file_write` (Label 23): 将用户缓冲区数据写入文件描述符。
+- [x] **进程文件描述符表 (FD Table)**:
+    - 在 `Process` 结构体中新增 `fds` 数组，支持每进程最多 16 个打开文件。
+    - 定义了 `FileDescriptor` 结构和 `FileMode` 枚举。
+- [x] **用户态集成**:
+    - 更新 `user_app` 的 `syscalls.rs`，封装了文件 I/O 系统调用接口。
+    - 更新 `user_app` 的 `main.rs`，新增文件创建、写入、读取的完整测试用例。
+    - 验证通过：用户态程序成功创建 `test.txt`，写入数据并重新读取校验。
+    - **已修复 (Fixed)**: RootServer `Process::spawn` 崩溃问题已解决。通过将 `Process` 结构体中的大数组 (`mapped_frames`, `fds`) 移至堆 (`Vec`)，消除了栈溢出风险。
+    - **已修复 (Fixed)**: 文件 I/O 写入失败问题已解决。修正了 RootServer 端 `sys_file_read` 和 `sys_file_write` 对 IPC 消息的解包逻辑，使其与 UserApp 协议一致。
+    - **当前状态 (Status)**: `test.ps1` 完美通过。系统功能（进程管理、内存管理、IPC、文件系统）均验证正常。
 
-### 2026-01-16: 用户态进程与系统调用 (User Process & Syscall)
-- [x] **User App 框架**:
-    - 创建了独立的 `user_app` crate，支持 no_std 环境。
-    - 实现了用户态入口点 (`_start`) 和栈初始化。
-    - 解决了 User App 的编译配置与链接问题。
-- [x] **Syscall 协议实现**:
-    - 定义了基于寄存器的 IPC 协议 (Label 1=Write, Label 2=Exit)。
-    - 在 RootServer 中实现了 Syscall 处理循环 (`test_user_hello_program`)。
-    - 在 `user_app` 中封装了 `seL4_Call` 汇编接口，修复了寄存器约束 (`inout`) 问题。
-- [x] **集成测试自动化**:
-    - 更新 `test.ps1` 支持 User App 的构建与验证。
-    - RootServer 启动时自动加载并运行 User App。
-    - 成功验证 "Hello from Rust User App via Syscall!" 输出。
-- [x] **工程规范化 (Engineering Rigor)**:
-    - 消除了 User App 和 RootServer 的所有编译警告 (Dead code, Unused variables, Non-snake case)。
-    - 统一了代码风格，增强了运行时断言 (`debug_assert!`)。
+### 2026-01-17: 虚拟文件系统 (VFS Implementation)
+- [x] **VFS 核心实现**:
+    - 实现了基于内存的虚拟文件系统 (RamFS)，支持文件与目录结构。
+    - 支持文件/目录的创建、读取、写入(追加)、删除操作。
+    - 实现了线程安全的全局 VFS 实例 (`spin::Mutex`)。
+- [x] **VFS 集成**:
+    - 在 RootServer 启动时初始化 VFS，并挂载 `/home` 和 `/bin` 目录。
+    - 将静态文件 (`filesystem.rs`) 自动迁移至 VFS 的 `/bin` 目录。
+- [x] **Shell 深度集成**:
+    - Shell 新增 `cwd` (当前工作目录) 状态追踪。
+    - 实现了 `cd`, `pwd`, `mkdir`, `touch`, `rm` 命令。
+    - 适配了 `ls`, `cat`, `exec`, `runhello` 命令以使用 VFS。
+    - Shell 提示符更新为显示当前路径 (`NovaOS:/home>`)。
+    - 增强了 Tab 补全功能，支持根据当前路径动态补全文件名和目录名。
 
-### 2026-01-16: I/O 端口能力修复与安全加固 (IO Port Capability)
-- [x] **seL4_X86_IOPort_Issue 修复**:
-    - 修正 Root CNode extraCaps 的 cptr/depth 语义，解决 `Lookup of extra caps failed`。
-    - 成功获取 0x0000-0xFFFF 全范围的 IOPort Capability，并写入 Root CNode 指定槽位。
-- [x] **port_io 安全硬化**:
-    - 移除临时的 Untyped/汇编 I/O fallback，所有端口访问必须通过 IOPort Capability。
-    - 当 IOPort Capability 未初始化时进入安全等待（Yield），避免越权 I/O。
-- [x] **零警告与回归验证**:
-    - `cargo clippy --workspace --target x86_64-unknown-none` 无警告。
-    - `test.ps1` 回归通过，捕获 `[TEST] PASSED`。
+### 2026-01-17: Shell 现代化改造 (Modern Shell)
+- [x] **命令行交互增强**:
+    - 实现了 **Tab 键自动补全** (Tab Completion)：支持命令补全和 `exec` 文件名补全。
+    - 实现了 **彩色提示符** (Colored Prompt)：使用 ANSI 转义序列显示绿色的 `NovaOS>`。
+    - 优化了光标移动和行编辑逻辑。
+- [x] **命令列表**:
+    - 整理了所有可用命令为 `COMMANDS` 常量，方便维护和补全。
+    - 支持 `help`, `clear`, `echo`, `whoami`, `status`, `bootinfo`, `alloc`, `meminfo`, `ps`, `ls`, `kill`, `exec`, `history`, `post`, `runhello`。
 
-### 2026-01-16: 硬件发现与 ACPI 解析 (Hardware Discovery)
-- [x] **ACPI 表解析**:
-    - 实现了 RSDP -> RSDT -> MADT 的完整解析流程。
-    - 成功映射并解析了 RSDT 和 MADT 表，获取了 Local APIC 和 IOAPIC 的物理地址。
-    - 修复了 ACPI 表映射时的物理地址对齐问题。
-- [x] **IOAPIC 初始化**:
-    - 成功解析 ACPI MADT 表，定位 IOAPIC 地址。
-    - 使用 `seL4_IRQControl_GetIOAPIC` 获取了 IOAPIC 的 IRQ Handler Capability。
-    - 解决了 x86_64 下 `GetIOAPIC` 的 Invocation Label 问题 (Label=53)。
-- [x] **中断处理框架**:
-    - 实现了 Notification Object 的分配与绑定 (`seL4_IRQHandler_SetNotification`)。
-    - 实现了 `ack_irq` (`seL4_IRQHandler_Ack`) 以发送 EOI。
-    - 手动实现了 `seL4_Wait` 系统调用封装。
-    - 验证了中断等待循环 (Interrupt Loop) 的基本逻辑。
+### 2026-01-17: 用户态内存管理 (User-Space Memory Management)
+- [x] **用户态堆分配器 (Global Allocator)**:
+    - 引入 `linked_list_allocator` crate。
+    - 实现了 `#[global_allocator]`，支持 `Vec`, `String`, `Box` 等动态数据结构。
+    - 在 `user_app` 初始化时使用 64KB 堆空间 (0x4000_1000 - 0x4001_1000)。
+- [x] **安全性与稳定性**:
+    - 修复了 `sys_brk` 扩展堆时的地址校验逻辑。
+    - 修复了 `Vec` 作用域结束时的 Drop 资源释放问题。
+    - 验证通过：`Vec<i32>` 动态扩容与 `String` 字符串操作均正常工作。
 
-### 2026-01-15: 基础架构与内存管理 (Phase 0.1 - 0.3)
-- [x] **系统启动**: Multiboot 引导，Long Mode 进入，RootServer 启动。
-- [x] **内存管理**: UntypedAllocator (Best-Fit), SlotAllocator (Bitmap), VSpace (Independent Paging)。
-- [x] **进程管理**: TCB/VSpace 抽象，ELF 加载，Process Spawn。
-- [x] **IPC**: 基础 Endpoint 通信，Badge 身份认证。
+### 2026-01-17: 虚拟内存管理增强 (VMM Enhancements)
+- [x] **按需分页范围扩展 (Extended Demand Paging)**:
+    - 扩展了缺页处理范围至 `0x4000_0000 - 0x7000_0000` (768MB)。
+    - 支持该范围内任意 4K 对齐地址的自动映射 (包括 Heap 和测试区域)。
+- [x] **共享内存机制 (Shared Memory)**:
+    - 实现了 `sys_shm_alloc` (分配) 和 `sys_shm_map` (映射) 系统调用。
+    - 支持跨进程的内存共享与 Capability 安全传递。
+    - 实现了基于 Key 的共享区域查找与引用计数管理（基础版）。
+    - 验证通过：`user_app` 成功访问起始页 (`0x6000_0000`)、连续页 (`0x6000_1000`) 和远端页 (`0x6001_4000`)。
 
-## 🚀 下一步计划 (Next Steps)
-- [ ] **调度器完善**:
-    - 实现协作式调度 (`sys_yield`)。
-    - 将临时进程纳入全局 `ProcessManager` 管理。
-- [ ] **文件系统基础**:
-    - 设计简单的 InitRD 或内存文件系统。
-    - 支持按文件名加载程序 (exec)。
-- [ ] **错误恢复机制**:
-    - 处理进程崩溃 (Fault Endpoint)，避免 RootServer Panic。
+### 2026-01-17: 异常处理与系统稳定性 (Exception Handling & Stability)
+- [x] **缺页异常处理 (Page Fault Handler)**:
+    - 实现了 `seL4_Fault_VMFault` (Label 5) 的处理逻辑。
+    - 实现了按需分页 (Demand Paging) 机制：当用户态访问未映射地址 (如 `0x6000_0000`) 时，自动分配并映射 4K 页帧。
+    - 验证通过：`user_app` 成功触发并从缺页异常中恢复，完成内存写入。
+- [x] **系统调用与异常路由修复**:
+    - 解决了 `sys_sleep` 与 `seL4_Fault_VMFault` 的 Label 冲突 (sys_sleep 迁移至 Label 10)。
+    - 统一了系统调用 (Syscall) 和 异常 (Fault) 的 Endpoint 路由，简化了 IPC 通道管理。
+- [x] **稳定性修复**:
+    - 修复了 RootServer 在进程终止时的 `Double Free` Panic (SlotAllocator 重复释放 unified endpoint)。
+    - 修复了 `sys_sleep` 唤醒逻辑，验证了 100 滴答的睡眠与唤醒。
+    - 验证了多进程 IPC 通信 (Process 0 <-> Process 1) 的稳定性。
 
-## 🚧 进行中任务 (In Progress)
-- [ ] **中断控制器完善**:
-    - [x] 解析 MADT 获取 IOAPIC 地址。
-    - [x] 封装 `get_ioapic_handler` 系统调用。
-    - [ ] 实现 IOAPIC 中断重定向表项配置。
-- [ ] **文件系统基础**:
-    - [ ] 设计简单的 InitRD 或内存文件系统。
+### 2026-01-17: Shell 增强与多任务调度 (Shell Enhancements & Multi-task Scheduling)
+- [x] **Shell 功能完善**:
+    - 增强了 `ps` 命令，显示堆使用情况 (Heap)、已映射页帧数 (Frames) 和优先级 (Prio)。
+    - 实现了 `Esc` 键清空当前行，`F1` 键显示帮助。
+    - 修复了键盘驱动中的 Shift/Alt 键状态追踪，支持更多控制键。
+- [x] **多任务调度优化**:
+    - ProcessManager 新增优先级支持 (`priority` 字段)。
+    - 实现了 `set_priority` 接口。
+    - 实现了简单的优先级调度逻辑（为后续抢占式调度打基础）。
+
+## 📊 OS 现状评估与路线图 (OS Evaluation & Roadmap)
+
+### 当前状态评估 (Status Assessment)
+- **开发阶段**: **Alpha 0.3 - 原型验证阶段 (Prototype Phase)**
+    - 核心服务层 (RootServer) 已具备基础功能：进程管理、内存管理、虚拟文件系统 (RamFS)、Shell。
+    - 实现了基础驱动：PS/2 键盘、Port I/O。
+    - 用户态环境初步成型：支持动态内存分配、基础系统调用。
+- **主要短板 (Key Deficiencies)**:
+    - **缺乏持久化存储**: 文件系统纯基于内存，重启即丢失。
+    - **缺乏标准库**: 用户态程序需手动封装系统调用，开发效率低。
+    - **驱动支持有限**: 仅有基础输入和调试输出，无显示驱动、无块设备驱动。
+
+### 路线图 (Roadmap)
+
+#### Phase 1: 基础架构巩固 (Current)
+- [x] 完善 Shell 功能 (文件操作、进程查看)。
+- [x] 实现基础 VFS 和 RamFS。
+- [x] 优化多任务调度 (优先级队列)。
+- [ ] **创建标准用户库 (`libnova`)**: 封装系统调用，提供类似 std 的接口。
+
+#### Phase 2: 持久化与扩展 (Next)
+- [ ] **块设备驱动**: 实现基础 ATA/IDE 驱动。
+- [ ] **持久化文件系统**: 实现 FAT16 或 SimpleFS，挂载硬盘分区。
+- [ ] **ELF 加载增强**: 支持向进程传递参数 (`argc`, `argv`)。
+
+#### Phase 3: 交互与网络 (Future)
+- [ ] **图形界面 (GUI)**: 帧缓冲驱动 (Framebuffer) + 窗口管理器。
+- [ ] **网络栈**: 网卡驱动 + TCP/IP 协议栈。

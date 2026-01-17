@@ -13,6 +13,9 @@ pub enum Key {
     End,
     PageUp,
     PageDown,
+    Esc,
+    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+    Unknown(u8),
 }
 
 pub struct Keyboard {
@@ -21,6 +24,8 @@ pub struct Keyboard {
     rshift: bool,
     lctrl: bool,
     rctrl: bool,
+    lalt: bool,
+    ralt: bool,
     caps_lock: bool,
 }
 
@@ -32,6 +37,8 @@ impl Keyboard {
             rshift: false,
             lctrl: false,
             rctrl: false,
+            lalt: false,
+            ralt: false,
             caps_lock: false,
         }
     }
@@ -46,29 +53,32 @@ impl Keyboard {
         let extended = self.extended;
         self.extended = false;
 
+        // Handle Break codes (Key Release)
         if scancode & 0x80 != 0 {
             let key = scancode & 0x7F;
             if extended {
-                if key == 0x1D {
-                    self.rctrl = false;
+                match key {
+                    0x1D => self.rctrl = false,
+                    0x38 => self.ralt = false,
+                    _ => {}
                 }
             } else {
                 match key {
                     0x2A => self.lshift = false,
                     0x36 => self.rshift = false,
                     0x1D => self.lctrl = false,
+                    0x38 => self.lalt = false,
                     _ => {}
                 }
             }
             return None;
         }
 
+        // Handle Make codes (Key Press)
         if extended {
             let k = match scancode {
-                0x1D => {
-                    self.rctrl = true;
-                    return None;
-                }
+                0x1D => { self.rctrl = true; return None; }
+                0x38 => { self.ralt = true; return None; }
                 0x48 => Key::Up,
                 0x50 => Key::Down,
                 0x4B => Key::Left,
@@ -78,17 +88,30 @@ impl Keyboard {
                 0x4F => Key::End,
                 0x49 => Key::PageUp,
                 0x51 => Key::PageDown,
-                _ => return None,
+                _ => return Some(Key::Unknown(scancode)),
             };
             return Some(k);
         }
 
-        // Handle Make codes (Key Press)
         match scancode {
             0x2A => { self.lshift = true; return None; }
             0x36 => { self.rshift = true; return None; }
             0x1D => { self.lctrl = true; return None; }
+            0x38 => { self.lalt = true; return None; }
             0x3A => { self.caps_lock = !self.caps_lock; return None; }
+            0x01 => return Some(Key::Esc),
+            0x3B => return Some(Key::F1),
+            0x3C => return Some(Key::F2),
+            0x3D => return Some(Key::F3),
+            0x3E => return Some(Key::F4),
+            0x3F => return Some(Key::F5),
+            0x40 => return Some(Key::F6),
+            0x41 => return Some(Key::F7),
+            0x42 => return Some(Key::F8),
+            0x43 => return Some(Key::F9),
+            0x44 => return Some(Key::F10),
+            0x57 => return Some(Key::F11),
+            0x58 => return Some(Key::F12),
             _ => {}
         }
 
@@ -146,7 +169,7 @@ impl Keyboard {
             0x34 => if shift { '>' } else { '.' },
             0x35 => if shift { '?' } else { '/' },
             0x39 => ' ',    // Space
-            _ => return None,
+            _ => return Some(Key::Unknown(scancode)),
         };
 
         // Apply Caps Lock (only affects letters)
@@ -168,6 +191,10 @@ impl Keyboard {
                 return Some(Key::Char(c));
             }
         }
+
+        // Handle Alt keys (optional: return different chars or just Key::Char)
+        // For now, we treat Alt like regular key unless we want Alt+Key logic
+        // But maybe we just return the key.
 
         Some(Key::Char(char_code))
     }

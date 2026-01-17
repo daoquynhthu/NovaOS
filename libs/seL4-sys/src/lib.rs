@@ -127,7 +127,7 @@ pub unsafe fn seL4_Call(dest: seL4_CPtr, msgInfo: seL4_MessageInfo) -> seL4_Mess
         "syscall",
         "mov rsp, rbx",   // Restore RSP from RBX
         "pop rbx",        // Restore RBX
-        in("rdx") seL4_Syscall_ID_seL4_SysCall, 
+        in("rdx") seL4_Syscall_ID::seL4_SysCall as isize, 
         in("rdi") dest,
         inout("rsi") info_val,
         inout("r10") mr0,
@@ -172,7 +172,7 @@ pub unsafe fn seL4_CallWithMRs(
         "syscall",
         "mov rsp, rbx",
         "pop rbx",
-        in("rdx") seL4_Syscall_ID_seL4_SysCall,
+        in("rdx") seL4_Syscall_ID::seL4_SysCall as isize,
         in("rdi") dest,
         inout("rsi") info_val,
         inout("r10") out_mr0,
@@ -215,7 +215,7 @@ pub unsafe fn seL4_RecvWithMRs(
         "syscall",
         "mov rsp, rbx",
         "pop rbx",
-        in("rdx") seL4_Syscall_ID_seL4_SysRecv,
+        in("rdx") seL4_Syscall_ID::seL4_SysRecv as isize,
         in("rdi") src,
         inout("rsi") info_val,
         lateout("r10") out_mr0,
@@ -272,7 +272,7 @@ pub unsafe fn seL4_ReplyRecvWithMRs(
         "syscall",
         "mov rsp, rbx",
         "pop rbx",
-        in("rdx") seL4_Syscall_ID_seL4_SysReplyRecv,
+        in("rdx") seL4_Syscall_ID::seL4_SysReplyRecv as isize,
         in("rdi") src,
         inout("rsi") info_val,
         inout("r10") out_mr0,
@@ -315,7 +315,7 @@ pub unsafe fn seL4_Recv(src: seL4_CPtr, sender: *mut seL4_Word) -> seL4_MessageI
         "syscall",
         "mov rsp, rbx",
         "pop rbx",
-        in("rdx") seL4_Syscall_ID_seL4_SysRecv,
+        in("rdx") seL4_Syscall_ID::seL4_SysRecv as isize,
         in("rdi") src,
         inout("rsi") info_val,
         lateout("r10") mr0,
@@ -360,7 +360,7 @@ pub unsafe fn seL4_ReplyRecv(src: seL4_CPtr, msgInfo: seL4_MessageInfo, sender: 
         "syscall",
         "mov rsp, rbx",
         "pop rbx",
-        in("rdx") seL4_Syscall_ID_seL4_SysReplyRecv,
+        in("rdx") seL4_Syscall_ID::seL4_SysReplyRecv as isize,
         in("rdi") src,
         inout("rsi") info_val,
         inout("r10") mr0,
@@ -430,7 +430,7 @@ pub unsafe fn seL4_CNode_Mint(
 pub unsafe fn seL4_Yield() {
     core::arch::asm!(
         "syscall",
-        in("rdx") seL4_Syscall_ID_seL4_SysYield,
+        in("rdx") seL4_Syscall_ID::seL4_SysYield as isize,
         out("rcx") _,
         out("r11") _,
         options(nostack)

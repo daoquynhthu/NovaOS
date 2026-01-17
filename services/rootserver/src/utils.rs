@@ -2,6 +2,7 @@ use sel4_sys::{
     seL4_CapRights, seL4_Word, seL4_CPtr, seL4_Error,
     seL4_MessageInfo_new, seL4_SetMR, seL4_Call, seL4_MessageInfo_get_label, seL4_SetCap_My
 };
+// use crate::println;
 
 // Helper for CapRights (missing in bindings)
 #[allow(non_snake_case)]
@@ -10,7 +11,7 @@ pub fn seL4_CapRights_new(grant_reply: u64, grant: u64, read: u64, write: u64) -
              | ((grant & 0x1) << 2)
              | ((read & 0x1) << 1)
              | (write & 0x1);
-    seL4_CapRights { words: [word] }
+    seL4_CapRights { words: [word.try_into().unwrap()] }
 }
 
 // Temporary definition if missing in bindings
@@ -27,10 +28,9 @@ pub unsafe fn copy_cap(
     src_depth: u8,
     rights: seL4_CapRights,
 ) -> seL4_Error {
-    const SE_L4_CNODE_COPY: seL4_Word = 20;
-
+    use sel4_sys::invocation_label_CNodeCopy;
     let info = seL4_MessageInfo_new(
-        SE_L4_CNODE_COPY,
+        invocation_label_CNodeCopy as seL4_Word,
         0,
         1, // extraCaps (src_root)
         5, // length (no badge)
@@ -86,6 +86,64 @@ pub unsafe fn untyped_retype(
     seL4_Error::from(seL4_MessageInfo_get_label(dest_info) as i32)
 }
 
+// Helper for Saving Caller Capability
+#[allow(non_snake_case)]
+pub unsafe fn seL4_CNode_SaveCaller(
+    service: seL4_CPtr,
+    index: seL4_Word,
+    depth: u8,
+) -> seL4_Error {
+    // Hardcoded invocation label for SaveCaller
+    // Based on seL4 XML order: Revoke(17), Delete(18), CancelBadgedSends(19), 
+    // Copy(20), Mint(21), Move(22), Mutate(23), Rotate(24), SaveCaller(25)
+    const SE_L4_CNODE_SAVECALLER: seL4_Word = 25;
+    
+    let info = seL4_MessageInfo_new(
+        SE_L4_CNODE_SAVECALLER,
+        0,
+        0,
+        2,
+    );
+
+    seL4_SetMR(0, index);
+    seL4_SetMR(1, depth as seL4_Word);
+
+    let dest_info = seL4_Call(service, info);
+    seL4_Error::from(seL4_MessageInfo_get_label(dest_info) as i32)
+}
+
+// Helper for seL4_Send
+#[allow(non_snake_case)]
+#[inline(never)]
+pub unsafe fn seL4_Send(dest: seL4_CPtr, msgInfo: seL4_Word, mrs: [u64; 4]) {
+    let info = msgInfo;
+    const SE_L4_SYS_SEND: isize = -3;
+    let mr0 = mrs[0];
+    let mr1 = mrs[1];
+    let mr2 = mrs[2];
+    let mr3 = mrs[3];
+    let _ = (dest, info, mrs, SE_L4_SYS_SEND);
+    
+    core::arch::asm!(
+        "push rbx",
+        "mov rbx, rsp",
+        "syscall",
+        "mov rsp, rbx",
+        "pop rbx",
+        in("rdx") SE_L4_SYS_SEND,
+        in("rdi") dest,
+        in("rsi") info,
+        in("r10") mr0,
+        in("r8") mr1,
+        in("r9") mr2,
+        in("r15") mr3,
+        out("rcx") _,
+        out("r11") _,
+        out("rax") _, // Clobbered by return value
+        // options(nostack) // Cannot use nostack with push/pop
+    );
+}
+
 // Helper for Deleting Capabilities
 #[allow(non_snake_case)]
 pub unsafe fn seL4_CNode_Delete(
@@ -93,10 +151,10 @@ pub unsafe fn seL4_CNode_Delete(
     index: seL4_Word,
     depth: u8,
 ) -> seL4_Error {
-    const SE_L4_CNODE_DELETE: seL4_Word = 18;
+    use sel4_sys::invocation_label_CNodeDelete;
     
     let info = seL4_MessageInfo_new(
-        SE_L4_CNODE_DELETE,
+        invocation_label_CNodeDelete as seL4_Word,
         0,
         0,
         2,

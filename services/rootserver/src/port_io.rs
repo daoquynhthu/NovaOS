@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use sel4_sys::*;
 use core::sync::atomic::{AtomicU64, Ordering};
 use crate::println;
@@ -5,12 +6,16 @@ use crate::println;
 // Invocation labels from bindings.rs
 const X86_IO_PORT_CONTROL_ISSUE: seL4_Word = 45;
 const X86_IO_PORT_IN8: seL4_Word = 46;
+const X86_IO_PORT_IN16: seL4_Word = 47;
+const X86_IO_PORT_IN32: seL4_Word = 48;
 const X86_IO_PORT_OUT8: seL4_Word = 49;
+const X86_IO_PORT_OUT16: seL4_Word = 50;
+const X86_IO_PORT_OUT32: seL4_Word = 51;
 
 static IO_PORT_CAP: AtomicU64 = AtomicU64::new(0);
 
 pub fn init(cap: seL4_CPtr) {
-    IO_PORT_CAP.store(cap, Ordering::Release);
+    IO_PORT_CAP.store(cap.into(), Ordering::Release);
 }
 
 /// Issues a new IO Port capability from the control capability.
@@ -108,5 +113,95 @@ pub unsafe fn outb(port: u16, value: u8) {
     
     let info = seL4_MessageInfo_new(X86_IO_PORT_OUT8, 0, 0, 2);
     
-    seL4_Call(cap, info);
+    let resp = seL4_Call(cap, info);
+    
+    if seL4_MessageInfo_get_label(resp) != 0 {
+        return;
+    }
+}
+
+pub unsafe fn inw(port: u16) -> u16 {
+    let cap = IO_PORT_CAP.load(Ordering::Acquire) as seL4_CPtr;
+    if cap == 0 {
+        println!("[SECURITY] Port I/O attempted without IOPort capability");
+        loop {
+            seL4_Yield();
+        }
+    }
+    
+    seL4_SetMR(0, port as seL4_Word);
+    
+    let info = seL4_MessageInfo_new(X86_IO_PORT_IN16, 0, 0, 1);
+    
+    let resp = seL4_Call(cap, info);
+    
+    if seL4_MessageInfo_get_label(resp) != 0 {
+        return 0xFFFF;
+    }
+    
+    seL4_GetMR(0) as u16
+}
+
+pub unsafe fn outw(port: u16, value: u16) {
+    let cap = IO_PORT_CAP.load(Ordering::Acquire) as seL4_CPtr;
+    if cap == 0 {
+        println!("[SECURITY] Port I/O attempted without IOPort capability");
+        loop {
+            seL4_Yield();
+        }
+    }
+    
+    seL4_SetMR(0, port as seL4_Word);
+    seL4_SetMR(1, value as seL4_Word);
+    
+    let info = seL4_MessageInfo_new(X86_IO_PORT_OUT16, 0, 0, 2);
+    
+    let resp = seL4_Call(cap, info);
+    
+    if seL4_MessageInfo_get_label(resp) != 0 {
+        return;
+    }
+}
+
+pub unsafe fn inl(port: u16) -> u32 {
+    let cap = IO_PORT_CAP.load(Ordering::Acquire) as seL4_CPtr;
+    if cap == 0 {
+        println!("[SECURITY] Port I/O attempted without IOPort capability");
+        loop {
+            seL4_Yield();
+        }
+    }
+    
+    seL4_SetMR(0, port as seL4_Word);
+    
+    let info = seL4_MessageInfo_new(X86_IO_PORT_IN32, 0, 0, 1);
+    
+    let resp = seL4_Call(cap, info);
+    
+    if seL4_MessageInfo_get_label(resp) != 0 {
+        return 0xFFFFFFFF;
+    }
+    
+    seL4_GetMR(0) as u32
+}
+
+pub unsafe fn outl(port: u16, value: u32) {
+    let cap = IO_PORT_CAP.load(Ordering::Acquire) as seL4_CPtr;
+    if cap == 0 {
+        println!("[SECURITY] Port I/O attempted without IOPort capability");
+        loop {
+            seL4_Yield();
+        }
+    }
+    
+    seL4_SetMR(0, port as seL4_Word);
+    seL4_SetMR(1, value as seL4_Word);
+    
+    let info = seL4_MessageInfo_new(X86_IO_PORT_OUT32, 0, 0, 2);
+    
+    let resp = seL4_Call(cap, info);
+    
+    if seL4_MessageInfo_get_label(resp) != 0 {
+        return;
+    }
 }

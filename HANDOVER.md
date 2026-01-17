@@ -4,94 +4,59 @@
 本项目旨在基于 **seL4 microkernel (x86_64)** 开发一个 **Rust 编写的 RootServer**。
 RootServer 是 seL4 启动后的第一个用户态进程，负责接管系统资源（Untyped Memory, CSpace, VSpace）并初始化操作系统环境。
 
-### 核心目标
-- 验证 seL4 在 x86_64 下的启动流程。
-- 构建基于 Rust 的系统服务基础（内存管理、线程管理、进程加载）。
-- 实现自动化测试流程（QEMU + Unit Tests）。
+### 当前版本: v0.0.3-alpha (2026-01-17)
 
-## 2. 环境配置
-- **操作系统**: Windows (PowerShell)
-- **依赖工具**:
-  - Rust (目前使用 Stable，建议切换至 Nightly 以支持 `custom_test_frameworks`)
-  - CMake & Ninja (用于构建 seL4 内核)
-  - QEMU (x86_64)
-  - Python (sel4-deps)
-  - GCC/LD (MinGW 或 x86_64-elf 工具链)
+## 2. 核心架构与已实现功能
+### 2.1 进程管理 (`process.rs`)
+- **TCB & VSpace**: 支持创建独立的页表 (PML4) 和线程控制块 (TCB)。
+- **ELF 加载**: 自研 `ElfLoader`，支持解析静态链接的 ELF 文件并加载到独立地址空间。
+- **资源追踪**: 使用 RAII 模式管理 Caps (CNode, VSpace, Frames)，支持进程终止时的资源自动回收。
+- **状态机**: 进程状态包括 `Ready`, `Running`, `Sleeping`。
 
-## 3. 构建与运行
-### 脚本说明
-- `build.ps1`: 核心构建脚本。
-  - 编译 seL4 内核 (CMake)。
-  - 编译 RootServer (Cargo)。
-  - 生成 `build/images/rootserver.elf`。
-- `test.ps1`: **(开发中)** 自动化测试脚本。
-  - 尝试启动 QEMU 并捕获串口输出以验证 `[TEST] PASSED` 标记。
-- `init_env.ps1`: 环境检查脚本。
+### 2.2 内存管理 (`memory.rs`)
+- **UntypedAllocator**: 使用 Best-Fit 策略从 seL4 的 Untyped Memory 分配对象。
+- **动态堆 (Heap)**: 实现了 `sys_brk`，支持用户态进程动态申请内存 (4KB 粒度)。
 
-### 常用命令
-```powershell
-# 完整构建
-.\build.ps1
+### 2.3 系统调用 (Syscalls)
+基于 `seL4_Call` 的同步 IPC 协议，RootServer 监听 Badged Endpoint。
+- **Label 1 (Write)**: 调试输出。
+- **Label 2 (Exit)**: 进程退出。
+- **Label 3 (Brk)**: 调整堆大小。
+- **Label 4 (Yield)**: 协作式调度让出。
+- **Label 5 (Sleep)**: (WIP) 睡眠指定 Ticks。
 
-# 运行测试 (目前存在 QEMU 内存问题)
-.\test.ps1
-```
+### 2.4 驱动与中断 (`acpi.rs`, `ioapic.rs`)
+- **ACPI**: 解析 RSDP/RSDT/MADT，处理 ISO (Interrupt Source Override) 映射。
+- **IOAPIC**: 动态获取 IOAPIC Cap，配置 IRQ 重定向。
+- **Timer**: 使用 PIT (8254) 作为系统时钟源，映射到 Vector 40。
 
-## 4. 当前开发进度 (Status)
-### 已完成功能
-1.  **内核引导**: 成功引导 seL4 kernel 并进入 RootServer `rust_main`。
-2.  **运行时基础**:
-    -   实现了 Panic Handler。
-    -   实现了串口打印 (`println!`)。
-    -   解析 `BootInfo`。
-3.  **内存管理 (`memory.rs`)**:
-    -   定义了 `ObjectAllocator` trait。
-    -   实现了 `UntypedAllocator` (Bump Pointer 风格)，支持从 Untyped Memory 分配内核对象。
-    -   **注意**: 之前修复了 `retype` 方法缺失问题，现在统一使用 `allocate` 接口。
-4.  **地址空间 (`vspace.rs`)**:
-    -   实现了基本的页表映射 (Map/Unmap)。
-5.  **线程管理 (`process.rs`)**:
-    -   可以创建 TCB (Thread Control Block) 并配置优先级。
+## 3. 当前阻碍与待修复问题 (Critical Issues)
 
-### 进行中的任务 (WIP)
-1.  **单元测试集成**:
-    -   目标：在 `no_std` 环境下运行 Rust 单元测试 (`#[test]`)。
-    -   现状：由于 Stable Channel 不支持 `#![feature(custom_test_frameworks)]`，暂时移除了 `main.rs` 中的测试入口代码。
-2.  **自动化测试脚本 (`test.ps1`)**:
-    -   目标：一键编译并运行 QEMU，根据串口输出判断测试通过/失败。
-    -   现状：脚本逻辑已完成，但 QEMU 在当前 Windows 环境下运行时报 `jit buffer` 内存分配错误。
+### 🔴 `sys_sleep` 唤醒失败
+- **现象**: 运行 `test.ps1` 时，User App 输出 "Sleeping for 100 ticks..." 后不再有响应。测试脚本最终超时失败。
+- **分析**:
+  - 代码逻辑位于 `services/rootserver/src/main.rs` 的事件循环中。
+  - 可能性 A: IOAPIC 配置的 Vector 40 中断未被 CPU/seL4 接收（需检查 `seL4_IRQHandler_SetNotification` 绑定）。
+  - 可能性 B: 中断发生但 RootServer 未正确 Ack，导致后续中断被屏蔽。
+  - 可能性 C: 逻辑错误导致 `process.wake_at_tick` 条件从未满足。
+- **复现**: 运行 `.\test.ps1`。
 
-## 5. 已知问题与阻碍 (Issues)
-### 1. QEMU JIT Buffer 内存不足
-- **现象**: 运行 `test.ps1` 时 QEMU 报错：
-  `allocate 1073741824 bytes for jit buffer: 页面文件太小，无法完成操作`
-- **原因**: QEMU 的 TCG (Tiny Code Generator) 默认请求 1GB 的 JIT 缓存，而当前开发机的 Windows 页面文件/内存配额不足。
-- **尝试过的修复**: 尝试设置 `-accel tcg,tb-size=32` (32MB)，但仍未完全解决或导致其他 panic。
+## 4. 环境与构建
+- **构建**: `.\build.ps1` (编译 Kernel + RootServer + UserApp)
+- **测试**: `.\test.ps1` (启动 QEMU 并验证串口输出)
+- **依赖**: Rust (Stable/Nightly), QEMU, Python, CMake, Ninja.
 
-### 2. Rust Stable vs Nightly
-- **现象**: 为了支持 `#[test]` 和自定义测试运行器 (`test_runner`)，需要 Rust Nightly 特性。当前为了保持编译通过，回退到了纯业务代码状态。
-- **影响**: 无法方便地编写和运行细粒度的单元测试。
+## 5. 接下来的工作建议 (Next Steps)
+1. **修复时钟中断**:
+   - 在 `main.rs` 的 Timer 分支添加调试打印，确认是否收到 Badge 为 1 (或其他 Timer Badge) 的通知。
+   - 确认 `seL4_IRQHandler_Ack` 是否被调用。
+2. **完善 IPC**:
+   - 实现 `sys_send` / `sys_recv`，支持进程间通信。
+3. **文件系统**:
+   - 引入 InitRD，支持从内存加载文件。
 
-### 3. Linker Warnings
-- **现象**: `ld.lld: warning: ... refers to a non-alloc section at ...` (在 `head.S` 中)。
-- **状态**: 暂时忽略，不影响运行，但未来需要修复 Multiboot 头部的段属性。
-
-## 6. 接下来的工作建议 (Next Steps)
-1.  **解决 QEMU 运行问题**:
-    -   尝试增加 Windows 虚拟内存（页面文件）。
-    -   或者在支持虚拟化的机器上使用 `-accel haxm` 或 `-accel whpx` 代替 TCG。
-    -   调整 QEMU 参数以大幅降低内存占用 (e.g., `-m 64M` 配合正确的 `tb-size`)。
-2.  **切换到 Rust Nightly**:
-    -   执行 `rustup override set nightly`。
-    -   在 `main.rs` 中恢复 `#![feature(custom_test_frameworks)]` 和 `test_runner` 相关代码。
-    -   参考: `#[test_case]` 和 `crate::test_runner` 的实现。
-3.  **完善内存分配器测试**:
-    -   在测试框架就绪后，编写针对 `UntypedAllocator` 的边界测试（如内存耗尽、重复释放）。
-4.  **实现 IPC**:
-    -   下一步核心功能是实现进程间通信 (IPC)，这是微内核系统的基础。
-
-## 7. 关键代码位置
-- 入口点: `services/rootserver/src/main.rs`
-- 内存分配: `services/rootserver/src/memory.rs`
-- 启动汇编 (Kernel): `kernel/seL4/src/arch/x86/64/head.S`
-- 构建脚本: `build.ps1`, `test.ps1`
+## 6. 关键文件索引
+- `services/rootserver/src/main.rs`: 主事件循环，中断与 Syscall 分发。
+- `services/rootserver/src/process.rs`: 进程控制块与状态管理。
+- `services/user_app/src/main.rs`: 用户态测试程序。
+- `test.ps1`: 自动化测试入口。

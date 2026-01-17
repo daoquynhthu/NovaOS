@@ -9,23 +9,24 @@ use crate::println;
 // 1: IRQIssueIRQHandler (Generic)
 // 2: X86IRQIssueIRQHandlerIOAPIC
 // 3: X86IRQIssueIRQHandlerMSI
-pub const X86_IRQ_ISSUE_IRQ_HANDLER_IOAPIC: usize = 53;
+// Note: Calculated based on X86_IO_PORT_OUT8 = 49 (in port_io.rs) + 3 = 52
+pub const X86_IRQ_ISSUE_IRQ_HANDLER_IOAPIC: usize = 52;
 pub const IRQ_ACK_IRQ: usize = 27;
 pub const IRQ_SET_IRQ_HANDLER: usize = 28;
 
 pub unsafe fn ack_irq(irq_handler: usize) -> Result<(), usize> {
-    let info = seL4_MessageInfo_new(IRQ_ACK_IRQ as u64, 0, 0, 0);
-    let resp = seL4_Call(irq_handler as u64, info);
+    let info = seL4_MessageInfo_new((IRQ_ACK_IRQ as u64).try_into().unwrap(), 0, 0, 0);
+    let resp = seL4_Call(irq_handler.try_into().unwrap(), info);
     let label = seL4_MessageInfo_get_label(resp);
     if label == 0 { Ok(()) } else { Err(label as usize) }
 }
 
 pub unsafe fn set_irq_handler(irq_handler: usize, notification: usize) -> Result<(), usize> {
     let ipc_buffer = seL4_GetIPCBuffer();
-    (*ipc_buffer).caps_or_badges[0] = notification as u64;
+    (*ipc_buffer).caps_or_badges[0] = (notification as u64).try_into().unwrap();
     
-    let info = seL4_MessageInfo_new(IRQ_SET_IRQ_HANDLER as u64, 0, 1, 0);
-    let resp = seL4_Call(irq_handler as u64, info);
+    let info = seL4_MessageInfo_new((IRQ_SET_IRQ_HANDLER as u64).try_into().unwrap(), 0, 1, 0);
+    let resp = seL4_Call(irq_handler.try_into().unwrap(), info);
     let label = seL4_MessageInfo_get_label(resp);
     if label == 0 { Ok(()) } else { Err(label as usize) }
 }
@@ -85,32 +86,36 @@ pub unsafe fn get_ioapic_handler(
     let ipc_buffer = seL4_GetIPCBuffer();
     
     // Set extra cap (root CNode) at index 0
-    (*ipc_buffer).caps_or_badges[0] = root as u64;
+    (*ipc_buffer).caps_or_badges[0] = (root as u64).try_into().unwrap();
     
     // Set Message Registers based on kernel/seL4/src/arch/x86/object/interrupt.c
     // Arg 0: index
-    seL4_SetMR(0, index as u64);
+    seL4_SetMR(0, (index as u64).try_into().unwrap());
     // Arg 1: depth
-    seL4_SetMR(1, depth as u64);
+    seL4_SetMR(1, (depth as u64).try_into().unwrap());
     // Arg 2: ioapic
-    seL4_SetMR(2, ioapic as u64);
-    // Arg 3: pin
-    seL4_SetMR(3, pin as u64);
-    // Arg 4: level
-    seL4_SetMR(4, level as u64);
-    // Arg 5: polarity
-    seL4_SetMR(5, polarity as u64);
-    // Arg 6: irq (vector)
-    seL4_SetMR(6, vector as u64);
+    seL4_SetMR(2, (ioapic as u64).try_into().unwrap());
     
+    // Arg 3: pin
+    seL4_SetMR(3, (pin as u64).try_into().unwrap());
+
+    // Arg 4: level (trigger mode)
+    seL4_SetMR(4, (level as u64).try_into().unwrap());
+
+    // Arg 5: polarity
+    seL4_SetMR(5, (polarity as u64).try_into().unwrap());
+
+    // Arg 6: vector
+    seL4_SetMR(6, (vector as u64).try_into().unwrap());
+
     let info = seL4_MessageInfo_new(
-        X86_IRQ_ISSUE_IRQ_HANDLER_IOAPIC as u64, // label
-        0, // capsUnwrapped
-        1, // extraCaps
-        7  // length
+        (X86_IRQ_ISSUE_IRQ_HANDLER_IOAPIC as u64).try_into().unwrap(), // label
+        0,
+        1, // extra caps
+        7  // MRs
     );
     
-    let resp = seL4_Call(irq_control as u64, info);
+    let resp = seL4_Call(irq_control.try_into().unwrap(), info);
     let label = seL4_MessageInfo_get_label(resp);
     
     if label == 0 {

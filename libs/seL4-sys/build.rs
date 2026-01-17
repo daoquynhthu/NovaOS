@@ -2,7 +2,7 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    let target = env::var("TARGET").unwrap();
+    let _target = env::var("TARGET").unwrap();
     
     // 1. 获取从 CMake 传递过来的 seL4 内核构建目录
     // CMakeLists.txt 中需要通过 set(ENV{SEL4_OUT_DIR} ...) 传递此变量
@@ -11,6 +11,9 @@ fn main() {
 
     let sel4_kernel_dir = env::var("SEL4_KERNEL_DIR").expect("SEL4_KERNEL_DIR not set");
     let sel4_kernel_path = PathBuf::from(&sel4_kernel_dir);
+
+    // println!("cargo:warning=SEL4_KERNEL_PATH: {:?}", sel4_kernel_path);
+    // println!("cargo:warning=SEL4_OUT_PATH: {:?}", sel4_out_path);
 
     // 2. 确定头文件搜索路径
     // seL4 构建系统通常将生成的头文件放在以下位置：
@@ -38,13 +41,17 @@ fn main() {
         .derive_default(true)
         .derive_debug(true)
         .rustified_enum("seL4_Error")
-        // 显式指定目标架构，防止 bindgen 默认使用宿主机架构
-        .clang_arg(format!("--target={}", target));
+        .rustified_enum("seL4_.*") // Rustify all seL4 enums to handle 64-bit values correctly
+        // Force x86_64 SysV ABI (Linux) for bindgen because seL4 is built as ELF
+        // regardless of the host OS (Windows) or Cargo target (if not explicitly set).
+        .clang_arg("--target=x86_64-unknown-linux-gnu")
+        .clang_arg("-D__LP64__") // Ensure LP64 data model (long is 64-bit)
+        .clang_arg("-m64");
 
     // Fix for Windows host compiling for x86_64: force 64-bit enums
-    if target.contains("x86_64") && cfg!(windows) {
-        builder = builder.clang_arg("-D_WIN32");
-    }
+    // if target.contains("x86_64") && cfg!(windows) {
+    //    builder = builder.clang_arg("-D_WIN32");
+    // }
 
     for dir in include_dirs {
         builder = builder.clang_arg(format!("-I{}", dir.display()));

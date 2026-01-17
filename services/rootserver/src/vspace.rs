@@ -1,4 +1,8 @@
-use sel4_sys::*;
+use sel4_sys::{
+    seL4_BootInfo, seL4_CPtr, seL4_CapRights, seL4_Error, seL4_Word,
+    seL4_MessageInfo_new, seL4_SetMR, seL4_Call, seL4_SetCap_My, seL4_GetMR,
+};
+use sel4_sys::seL4_X86_VMAttributes;
 use crate::memory::{ObjectAllocator, SlotAllocator};
 use crate::println;
 use crate::utils::check_syscall_result;
@@ -185,7 +189,7 @@ impl VSpace {
             // - Args: [vaddr, attr]
             let info = seL4_MessageInfo_new(map_label, 0, 1, 2);
             seL4_SetMR(0, vaddr as seL4_Word);
-            seL4_SetMR(1, seL4_X86_VMAttributes_seL4_X86_Default_VMAttributes as seL4_Word);
+            seL4_SetMR(1, seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes as seL4_Word);
             seL4_SetCap_My(0, self.pml4_cap);
 
             let dest_info = seL4_Call(cap, info);

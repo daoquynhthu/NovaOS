@@ -17,9 +17,9 @@ impl Endpoint {
                 self.cptr,
                 info,
                 &mut sender_badge,
-                mrs[0], mrs[1], mrs[2], mrs[3]
+                mrs[0].try_into().unwrap(), mrs[1].try_into().unwrap(), mrs[2].try_into().unwrap(), mrs[3].try_into().unwrap()
             );
-            (resp_info, sender_badge, [mr0, mr1, mr2, mr3])
+            (resp_info, sender_badge, [mr0.into(), mr1.into(), mr2.into(), mr3.into()])
         }
     }
 
@@ -43,14 +43,14 @@ impl Endpoint {
             let (resp_info, _badge, mr0, _mr1, _mr2, _mr3) = sel4_sys::seL4_CallWithMRs(
                 self.cptr,
                 info,
-                msg, // MR0
+                msg.try_into().unwrap(), // MR0
                 0, 0, 0 // MR1-MR3
             );
             
             // Check length of response
             let len = seL4_MessageInfo_get_length(resp_info);
             if len > 0 {
-                return mr0;
+                return mr0.into();
             }
             0
         }
@@ -73,7 +73,7 @@ impl Endpoint {
             let len = seL4_MessageInfo_get_length(info);
             let msg = if len > 0 { mr0 } else { 0 };
             
-            (msg, sender_badge)
+            (msg.into(), sender_badge)
         }
     }
 
@@ -84,7 +84,7 @@ impl Endpoint {
                 self.cptr, 
                 &mut sender_badge
             );
-            (info, sender_badge, [mr0, mr1, mr2, mr3])
+            (info, sender_badge, [mr0.into(), mr1.into(), mr2.into(), mr3.into()])
         }
     }
 
@@ -107,14 +107,14 @@ impl Endpoint {
                 self.cptr,
                 info,
                 &mut sender_badge,
-                msg, // MR0
+                msg.try_into().unwrap(), // MR0
                 0, 0, 0 // MR1-MR3
             );
             
             let len = seL4_MessageInfo_get_length(resp_info);
             let next_msg = if len > 0 { mr0 } else { 0 };
             
-            (next_msg, sender_badge)
+            (next_msg.into(), sender_badge)
         }
     }
 }
