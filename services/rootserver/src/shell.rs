@@ -11,7 +11,7 @@ const HISTORY_LEN: usize = 16;
 const COMMANDS: &[&str] = &[
     "help", "clear", "echo", "cat", "whoami", "status", "bootinfo", "alloc", "meminfo",
     "ps", "ls", "kill", "exec", "history", "post", "runhello", "cd", "mkdir", "rm", "touch", "pwd",
-    "renice", "pci", "date", "disk_read", "disk_write", "mkfs", "mount"
+    "renice", "pci", "date", "disk_read", "disk_write", "mkfs", "mount", "write"
 ];
 
 pub struct Shell {
@@ -672,11 +672,15 @@ impl Shell {
         } else if self.word_eq(word_start, word_end, "mount") {
              println!("Mounting NovaFS...");
              let drv = alloc::sync::Arc::new(crate::drivers::ata::AtaDriver::new(0x1F0));
-             let fs = crate::fs::novafs::NovaFS::new(drv, 0);
-             // We could verify magic here if we exposed it, but for now we assume it works or panics/errors internally.
-             // Ideally NovaFS::new should return Result.
-             *crate::fs::DISK_FS.lock() = Some(fs);
-             println!("Mount attempted.");
+             match crate::fs::novafs::NovaFS::new(drv, 0) {
+                 Ok(fs) => {
+                     *crate::fs::DISK_FS.lock() = Some(fs);
+                     println!("Mount successful.");
+                 },
+                 Err(e) => {
+                     println!("Mount failed: {}", e);
+                 }
+             }
 
         } else if self.word_eq(word_start, word_end, "date") {
             let rtc = crate::drivers::rtc::RtcDriver::new();
@@ -1189,40 +1193,9 @@ impl Shell {
 
                  let fs_lock = crate::fs::DISK_FS.lock();
                  if let Some(fs) = fs_lock.as_ref() {
-                      let (parent_path, name) = if let Some(idx) = path_str.rfind('/') {
-                           if idx == 0 { ("/", &path_str[1..]) }
-                           else { (&path_str[..idx], &path_str[idx+1..]) }
-                      } else {
-                           (self.cwd.as_str(), path_str.as_str())
-                      };
-                      
-                      if name.is_empty() {
-                           println!("echo: Invalid filename");
-                      } else {
-                           match crate::vfs::resolve_path(fs, &self.cwd, parent_path) {
-                                Ok(parent) => {
-                                     let inode = match parent.lookup(name) {
-                                          Ok(node) => Some(node),
-                                          Err(_) => {
-                                               match parent.create(name, crate::vfs::FileType::File) {
-                                                    Ok(node) => Some(node),
-                                                    Err(e) => {
-                                                         println!("echo: create error: {}", e);
-                                                         None
-                                                    }
-                                               }
-                                          }
-                                     };
-                                     
-                                     if let Some(inode) = inode {
-                                         match inode.write_at(0, &content_vec) {
-                                              Ok(_) => println!("Written to {}", path_str),
-                                              Err(e) => println!("echo: write error: {}", e),
-                                         }
-                                     }
-                                },
-                                Err(e) => println!("echo: {}: {}", parent_path, e),
-                           }
+                      match fs.write_file(&path_str, &content_vec) {
+                          Ok(_) => println!("Written to {}", path_str),
+                          Err(e) => println!("echo: write error: {}", e),
                       }
                  } else {
                       println!("echo: Filesystem not mounted");

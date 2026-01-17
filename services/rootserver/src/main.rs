@@ -132,54 +132,65 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     
     // Initialize Disk Driver
     println!("[KERNEL] Initializing Disk Driver...");
-    let ata = alloc::sync::Arc::new(drivers::ata::AtaDriver::new(0x1F0));
+    let mut ata_driver = drivers::ata::AtaDriver::new(0x1F0);
+    let disk_size_sectors = if let Err(e) = ata_driver.init() {
+        println!("[KERNEL] ATA Driver Init Failed: {}", e);
+        // Fallback size (e.g. 5MB)
+        1024 * 10
+    } else {
+        ata_driver.sector_count as u32
+    };
+    
+    let ata = alloc::sync::Arc::new(ata_driver);
     
     // Initialize NovaFS (Mount)
     println!("[KERNEL] Mounting NovaFS...");
-    // Try to mount. If magic is bad, NovaFS::new currently might print error but return struct.
-    // In a real OS we'd check Result. For now we assume we might need format.
-    let fs = crate::fs::novafs::NovaFS::new(ata.clone(), 0);
-    *crate::fs::DISK_FS.lock() = Some(fs.clone());
+    let mut need_format = false;
     
-    // Check and populate /bin
-    {
-        // Check if we need to format
-        let mut need_format = false;
-        if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
-            if fs.root_inode().lookup("bin").is_err() {
-                need_format = true;
-            }
+    match crate::fs::novafs::NovaFS::new(ata.clone(), 0) {
+        Ok(fs) => {
+             *crate::fs::DISK_FS.lock() = Some(fs.clone());
+             if fs.root_inode().lookup("bin").is_err() {
+                 println!("[KERNEL] /bin not found.");
+                 need_format = true;
+             }
+        },
+        Err(e) => {
+             println!("[KERNEL] Mount failed: {}. Will format.", e);
+             need_format = true;
         }
-        
-        if need_format {
-             println!("[KERNEL] /bin not found or disk uninitialized. Formatting...");
-             let fs_new = crate::fs::novafs::NovaFS::format(ata.clone(), 0, 1024 * 10); // 5MB
-             *crate::fs::DISK_FS.lock() = Some(fs_new.clone());
+    }
+
+    if need_format {
+         println!("[KERNEL] Disk uninitialized or system missing. Formatting...");
+         // Use detected size if valid, else default 5MB
+         let format_size = if disk_size_sectors > 0 { disk_size_sectors } else { 1024 * 10 };
+         let fs_new = crate::fs::novafs::NovaFS::format(ata.clone(), 0, format_size); 
+         *crate::fs::DISK_FS.lock() = Some(fs_new.clone());
+         
+         if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+             let root = fs.root_inode();
+             println!("[KERNEL] Creating /bin...");
+             let bin = root.create("bin", crate::vfs::FileType::Directory).expect("Failed to create /bin");
              
-             if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
-                 let root = fs.root_inode();
-                 println!("[KERNEL] Creating /bin...");
-                 let bin = root.create("bin", crate::vfs::FileType::Directory).expect("Failed to create /bin");
-                 
-                 println!("[KERNEL] Installing system binaries...");
-                 for file in filesystem::FILES {
-                     let inode = bin.create(file.name, crate::vfs::FileType::File).expect("Failed to create file");
-                     inode.write_at(0, file.data).expect("Failed to write data");
-                     println!("  - Installed: {}", file.name);
-                 }
-                 
-                 // Create README
-                 let readme = root.create("README.TXT", crate::vfs::FileType::File).unwrap();
-                 readme.write_at(0, b"Welcome to NovaOS (Persistent Mode)!").unwrap();
-                 readme.sync().ok();
+             println!("[KERNEL] Installing system binaries...");
+             for file in filesystem::FILES {
+                 let inode = bin.create(file.name, crate::vfs::FileType::File).expect("Failed to create file");
+                 inode.write_at(0, file.data).expect("Failed to write data");
+                 println!("  - Installed: {}", file.name);
              }
              
-             if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
-                 fs.sync().ok();
-             }
-        } else {
-             println!("[KERNEL] Filesystem healthy.");
-        }
+             // Create README
+             let readme = root.create("README.TXT", crate::vfs::FileType::File).unwrap();
+             readme.write_at(0, b"Welcome to NovaOS (Persistent Mode)!").unwrap();
+             readme.sync().ok();
+         }
+         
+         if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+             fs.sync().ok();
+         }
+    } else {
+         println!("[KERNEL] Filesystem healthy.");
     }
     println!("[KERNEL] VFS Initialized.");
     
