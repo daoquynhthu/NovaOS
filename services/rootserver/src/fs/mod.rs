@@ -1,7 +1,8 @@
-pub mod simplefs;
+pub mod novafs;
 
 use spin::Mutex;
-use crate::drivers::ata::AtaDriver;
-use crate::fs::simplefs::SimpleFS;
+use crate::vfs::FileSystem;
+use alloc::sync::Arc;
 
-pub static DISK_FS: Mutex<Option<SimpleFS<AtaDriver>>> = Mutex::new(None);
+// Global FS instance
+pub static DISK_FS: Mutex<Option<Arc<dyn FileSystem>>> = Mutex::new(None);

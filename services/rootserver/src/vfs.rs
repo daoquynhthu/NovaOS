@@ -1,216 +1,99 @@
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use spin::Mutex;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// Global VFS instance
+pub static VFS: Mutex<Option<Arc<dyn FileSystem>>> = Mutex::new(None);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
     File,
     Directory,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct FileStat {
-    pub name: String,
     pub file_type: FileType,
     pub size: usize,
 }
 
-struct Node {
-    file_type: FileType,
-    data: Vec<u8>,
-    children: BTreeMap<String, Node>,
+/// The Abstract File System Trait
+pub trait FileSystem: Send + Sync {
+    fn root_inode(&self) -> Arc<dyn Inode>;
+    fn sync(&self) -> Result<(), &'static str>;
+
+    fn resolve_path(&self, cwd: &str, path: &str) -> Result<Arc<dyn Inode>, &'static str> {
+        let mut current = self.root_inode();
+        let full_path = if path.starts_with('/') {
+            String::from(path)
+        } else {
+            let mut s = String::from(cwd);
+            if !s.ends_with('/') { s.push('/'); }
+            s.push_str(path);
+            s
+        };
+        
+        for part in full_path.split('/') {
+            if part.is_empty() || part == "." { continue; }
+            if part == ".." { continue; } // TODO: Parent support
+            current = current.lookup(part)?;
+        }
+        Ok(current)
+    }
+
+    fn read_file(&self, path: &str) -> Result<Vec<u8>, &'static str> {
+        let inode = self.resolve_path("/", path)?;
+        let stat = inode.metadata()?;
+        let mut buf = alloc::vec![0u8; stat.size];
+        inode.read_at(0, &mut buf)?;
+        Ok(buf)
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        self.resolve_path("/", path).is_ok()
+    }
+
+    fn create_file(&self, path: &str) -> Result<Arc<dyn Inode>, &'static str> {
+         if let Some(idx) = path.rfind('/') {
+            let (parent_path, name) = path.split_at(idx);
+            let name = &name[1..];
+            let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
+            let parent = self.resolve_path("/", parent_path)?;
+            parent.create(name, FileType::File)
+        } else {
+            let root = self.root_inode();
+            root.create(path, FileType::File)
+        }
+    }
+
+    fn list_dir(&self, path: &str) -> Result<Vec<String>, &'static str> {
+        let inode = self.resolve_path("/", path)?;
+        inode.list()
+    }
+
+    fn append_file(&self, path: &str, data: &[u8]) -> Result<usize, &'static str> {
+        let inode = self.resolve_path("/", path)?;
+        let stat = inode.metadata()?;
+        inode.write_at(stat.size, data)
+    }
 }
 
-impl Node {
-    fn new_file() -> Self {
-        Node {
-            file_type: FileType::File,
-            data: Vec::new(),
-            children: BTreeMap::new(),
-        }
-    }
-
-    fn new_dir() -> Self {
-        Node {
-            file_type: FileType::Directory,
-            data: Vec::new(),
-            children: BTreeMap::new(),
-        }
-    }
-}
-
-pub struct VirtualFileSystem {
-    root: Node,
-}
-
-impl VirtualFileSystem {
-    pub fn new() -> Self {
-        let root = Node::new_dir();
-        Self { root }
-    }
-
-    // Helper to traverse path
-    fn traverse_mut<'a>(&'a mut self, path: &str) -> Option<&'a mut Node> {
-        let path = path.trim_start_matches('/');
-        if path.is_empty() {
-            return Some(&mut self.root);
-        }
-
-        let mut current = &mut self.root;
-        for part in path.split('/') {
-            if part.is_empty() { continue; }
-            if !current.children.contains_key(part) {
-                return None;
-            }
-            current = current.children.get_mut(part).unwrap();
-        }
-        Some(current)
-    }
+/// The Abstract Inode Trait (File or Directory)
+pub trait Inode: Send + Sync {
+    fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize, &'static str>;
+    fn write_at(&self, offset: usize, buf: &[u8]) -> Result<usize, &'static str>;
+    fn metadata(&self) -> Result<FileStat, &'static str>;
+    fn sync(&self) -> Result<(), &'static str>;
     
-    fn traverse<'a>(&'a self, path: &str) -> Option<&'a Node> {
-        let path = path.trim_start_matches('/');
-        if path.is_empty() {
-            return Some(&self.root);
-        }
-
-        let mut current = &self.root;
-        for part in path.split('/') {
-            if part.is_empty() { continue; }
-            if !current.children.contains_key(part) {
-                return None;
-            }
-            current = current.children.get(part).unwrap();
-        }
-        Some(current)
-    }
-
-    pub fn create_file(&mut self, path: &str) -> Result<(), &'static str> {
-        let (parent_path, filename) = split_path(path);
-        if let Some(parent) = self.traverse_mut(parent_path) {
-            if parent.file_type != FileType::Directory {
-                return Err("Parent is not a directory");
-            }
-            if parent.children.contains_key(filename) {
-                return Err("File already exists");
-            }
-            parent.children.insert(filename.to_string(), Node::new_file());
-            Ok(())
-        } else {
-            Err("Parent directory not found")
-        }
-    }
-
-    pub fn create_dir(&mut self, path: &str) -> Result<(), &'static str> {
-        let (parent_path, filename) = split_path(path);
-        if let Some(parent) = self.traverse_mut(parent_path) {
-            if parent.file_type != FileType::Directory {
-                return Err("Parent is not a directory");
-            }
-            if parent.children.contains_key(filename) {
-                return Err("Directory already exists");
-            }
-            parent.children.insert(filename.to_string(), Node::new_dir());
-            Ok(())
-        } else {
-            Err("Parent directory not found")
-        }
-    }
-
-    pub fn write_file(&mut self, path: &str, data: &[u8]) -> Result<usize, &'static str> {
-        if let Some(node) = self.traverse_mut(path) {
-            if node.file_type != FileType::File {
-                return Err("Not a file");
-            }
-            node.data = data.to_vec();
-            Ok(node.data.len())
-        } else {
-            Err("File not found")
-        }
-    }
-    
-    #[allow(dead_code)]
-    pub fn append_file(&mut self, path: &str, data: &[u8]) -> Result<usize, &'static str> {
-        if let Some(node) = self.traverse_mut(path) {
-            if node.file_type != FileType::File {
-                return Err("Not a file");
-            }
-            node.data.extend_from_slice(data);
-            Ok(node.data.len())
-        } else {
-            Err("File not found")
-        }
-    }
-
-    pub fn read_file(&self, path: &str) -> Option<Vec<u8>> {
-        if let Some(node) = self.traverse(path) {
-            if node.file_type == FileType::File {
-                Some(node.data.clone())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    pub fn list_dir(&self, path: &str) -> Option<Vec<FileStat>> {
-        if let Some(node) = self.traverse(path) {
-            if node.file_type == FileType::Directory {
-                let mut entries = Vec::new();
-                for (name, child) in &node.children {
-                    entries.push(FileStat {
-                        name: name.clone(),
-                        file_type: child.file_type,
-                        size: child.data.len(),
-                    });
-                }
-                Some(entries)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-    
-    pub fn exists(&self, path: &str) -> bool {
-        self.traverse(path).is_some()
-    }
-
-    pub fn remove(&mut self, path: &str) -> Result<(), &'static str> {
-        let (parent_path, filename) = split_path(path);
-        if let Some(parent) = self.traverse_mut(parent_path) {
-            if parent.file_type != FileType::Directory {
-                return Err("Parent is not a directory");
-            }
-            if parent.children.remove(filename).is_some() {
-                Ok(())
-            } else {
-                Err("File or directory not found")
-            }
-        } else {
-            Err("Parent directory not found")
-        }
-    }
+    // Directory Operations
+    fn lookup(&self, name: &str) -> Result<Arc<dyn Inode>, &'static str>;
+    fn create(&self, name: &str, type_: FileType) -> Result<Arc<dyn Inode>, &'static str>;
+    fn list(&self) -> Result<Vec<String>, &'static str>;
+    fn remove(&self, name: &str) -> Result<(), &'static str>;
 }
 
-fn split_path(path: &str) -> (&str, &str) {
-    let path = path.trim_end_matches('/');
-    if let Some(idx) = path.rfind('/') {
-        (&path[..idx], &path[idx+1..])
-    } else {
-        ("", path) // Root relative
-    }
-}
-
-pub static VFS: Mutex<Option<VirtualFileSystem>> = Mutex::new(None);
-
-pub fn init() {
-    let mut fs = VirtualFileSystem::new();
-    // Default directories
-    fs.create_dir("/home").unwrap();
-    fs.create_dir("/bin").unwrap();
-    
-    *VFS.lock() = Some(fs);
+/// Helper to resolve path (Delegates to FileSystem trait)
+pub fn resolve_path(fs: &Arc<dyn FileSystem>, cwd: &str, path: &str) -> Result<Arc<dyn Inode>, &'static str> {
+    fs.resolve_path(cwd, path)
 }

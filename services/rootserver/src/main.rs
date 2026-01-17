@@ -130,20 +130,55 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     allocator::init_heap();
     println!("[KERNEL] Heap Initialized (1MB).");
     
-    // Initialize VFS
-    vfs::init();
-    // Populate VFS from static filesystem
+    // Initialize Disk Driver
+    println!("[KERNEL] Initializing Disk Driver...");
+    let ata = alloc::sync::Arc::new(drivers::ata::AtaDriver::new(0x1F0));
+    
+    // Initialize NovaFS (Mount)
+    println!("[KERNEL] Mounting NovaFS...");
+    // Try to mount. If magic is bad, NovaFS::new currently might print error but return struct.
+    // In a real OS we'd check Result. For now we assume we might need format.
+    let fs = crate::fs::novafs::NovaFS::new(ata.clone(), 0);
+    *crate::fs::DISK_FS.lock() = Some(fs.clone());
+    
+    // Check and populate /bin
     {
-        let mut vfs_lock = vfs::VFS.lock();
-        if let Some(fs) = vfs_lock.as_mut() {
-             for file in filesystem::FILES {
-                 let path = alloc::format!("/bin/{}", file.name);
-                 fs.create_file(&path).expect("Failed to create file");
-                 fs.write_file(&path, file.data).expect("Failed to write file");
+        // Check if we need to format
+        let mut need_format = false;
+        if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+            if fs.root_inode().lookup("bin").is_err() {
+                need_format = true;
+            }
+        }
+        
+        if need_format {
+             println!("[KERNEL] /bin not found or disk uninitialized. Formatting...");
+             let fs_new = crate::fs::novafs::NovaFS::format(ata.clone(), 0, 1024 * 10); // 5MB
+             *crate::fs::DISK_FS.lock() = Some(fs_new.clone());
+             
+             if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                 let root = fs.root_inode();
+                 println!("[KERNEL] Creating /bin...");
+                 let bin = root.create("bin", crate::vfs::FileType::Directory).expect("Failed to create /bin");
+                 
+                 println!("[KERNEL] Installing system binaries...");
+                 for file in filesystem::FILES {
+                     let inode = bin.create(file.name, crate::vfs::FileType::File).expect("Failed to create file");
+                     inode.write_at(0, file.data).expect("Failed to write data");
+                     println!("  - Installed: {}", file.name);
+                 }
+                 
+                 // Create README
+                 let readme = root.create("README.TXT", crate::vfs::FileType::File).unwrap();
+                 readme.write_at(0, b"Welcome to NovaOS (Persistent Mode)!").unwrap();
+                 readme.sync().ok();
              }
-             // Create a README
-             fs.create_file("/home/README.txt").unwrap();
-             fs.write_file("/home/README.txt", b"Welcome to NovaOS! This is a RamFS file.").unwrap();
+             
+             if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                 fs.sync().ok();
+             }
+        } else {
+             println!("[KERNEL] Filesystem healthy.");
         }
     }
     println!("[KERNEL] VFS Initialized.");
@@ -1273,12 +1308,12 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     if let Some(p) = get_process_manager().get_process_mut(pid) {
                          if fd < MAX_FDS {
                              if let Some(file_desc) = &mut p.fds[fd] {
-                                 if file_desc.mode != FileMode::WriteOnly {
-                                     let lock = crate::vfs::VFS.lock();
-                                     if let Some(fs) = lock.as_ref() {
-                                         if let Some(file_data) = fs.read_file(&file_desc.path) {
-                                             if file_desc.offset < file_data.len() {
-                                                 let available = file_data.len() - file_desc.offset;
+                                if file_desc.mode != FileMode::WriteOnly {
+                                    let lock = crate::vfs::VFS.lock();
+                                    if let Some(fs) = lock.as_ref() {
+                                        if let Ok(file_data) = fs.read_file(&file_desc.path) {
+                                            if file_desc.offset < file_data.len() {
+                                                let available = file_data.len() - file_desc.offset;
                                                  let to_read = core::cmp::min(len, available);
                                                  let max_mrs_bytes = 64; 
                                                  let actual_read = core::cmp::min(to_read, max_mrs_bytes);
