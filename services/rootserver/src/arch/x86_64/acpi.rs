@@ -8,8 +8,8 @@ use core::str;
 use crate::println;
 use crate::memory::{SlotAllocator, UntypedAllocator};
 use crate::vspace::VSpace;
+use crate::arch::port_io;
 use crate::utils::{seL4_X86_4K, untyped_retype, seL4_CapRights_new};
-use crate::port_io;
 
 static mut FADT_PTR: Option<*const Fadt> = None;
 

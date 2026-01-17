@@ -1,4 +1,4 @@
-use crate::acpi::AcpiContext;
+use crate::arch::acpi::AcpiContext;
 use crate::memory::{SlotAllocator, UntypedAllocator};
 use sel4_sys::seL4_BootInfo;
 use crate::println;
@@ -53,7 +53,7 @@ pub fn init(
     println!("[APIC] Initializing Local APIC at paddr 0x{:x}...", paddr);
     
     // Map the APIC page
-    match crate::acpi::map_phys(boot_info, paddr, 0, allocator, slots, context) {
+    match crate::arch::acpi::map_phys(boot_info, paddr, 0, allocator, slots, context) {
         Ok(vaddr) => {
             println!("[APIC] Mapped Local APIC to vaddr 0x{:x}", vaddr);
             let mut apic = unsafe { LocalApic::new(vaddr) };

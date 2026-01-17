@@ -18,12 +18,8 @@ mod ipc;
 mod elf_loader;
 mod utils;
 mod tests;
-mod ioapic;
-mod acpi;
-mod apic;
-mod port_io;
+mod arch;
 mod keyboard;
-mod serial;
 mod shell;
 mod filesystem;
 mod shared_memory;
@@ -36,6 +32,7 @@ use sel4_sys::{
     seL4_PageBits
 };
 use crate::utils::seL4_X86_4K;
+use crate::arch::{port_io, ioapic, acpi, serial};
 use sel4_sys::seL4_RootCNodeCapSlots::{
     seL4_CapInitThreadCNode,
     seL4_CapInitThreadVSpace
@@ -53,10 +50,10 @@ static mut SHARED_MEMORY_MANAGER: SharedMemoryManager = SharedMemoryManager::new
 static mut WORKER_STACK: [u8; 4096] = [0; 4096];
 
 extern "C" fn irq_worker_entry(notification: usize, endpoint: usize) {
-    crate::serial::send_char('[');
-    crate::serial::send_char('W');
-    crate::serial::send_char(']');
-    crate::serial::send_char('\n');
+    serial::send_char('[');
+    serial::send_char('W');
+    serial::send_char(']');
+    serial::send_char('\n');
     println!("[WORKER] Thread started. Notification: {}, Endpoint: {}", notification, endpoint);
 
     loop {
@@ -250,7 +247,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     println!("[ACPI] RSDT OEM ID: {:?}", core::str::from_utf8(&oem_id_slice).unwrap_or("Unknown"));
                     
                     // Iterate RSDT Entries
-                    let header_size = core::mem::size_of::<acpi::AcpiTableHeader>();
+                    let header_size = core::mem::size_of::<crate::arch::acpi::AcpiTableHeader>();
                     let entries_count = (len as usize - header_size) / 4;
                     println!("[ACPI] Scanning {} RSDT entries...", entries_count);
                     
@@ -261,9 +258,9 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         // Map table to check signature
                         let vaddr_base = 0x8001_0000 + (i * 0x10000); // 64KB spacing to be safe
                         
-                        match acpi::map_phys(boot_info, table_paddr, vaddr_base, &mut allocator, &mut slot_allocator, &mut acpi_context) {
+                        match crate::arch::acpi::map_phys(boot_info, table_paddr, vaddr_base, &mut allocator, &mut slot_allocator, &mut acpi_context) {
                             Ok(ptr_val) => {
-                                let header = unsafe { &*(ptr_val as *const acpi::AcpiTableHeader) };
+                                let header = unsafe { &*(ptr_val as *const crate::arch::acpi::AcpiTableHeader) };
                                  if let Ok(sig) = core::str::from_utf8(&header.signature) {
                                      println!("[ACPI] Table [{}] Signature: {}", i, sig);
                                     if sig == "APIC" {
@@ -275,68 +272,68 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                              println!("[ACPI] MADT size {} bytes, mapping {} extra pages...", length, pages_needed - 1);
                                              for p in 1..pages_needed {
                                                  let p_paddr = table_paddr + p * 4096;
-                                                 if let Err(e) = acpi::map_phys(boot_info, p_paddr, 0, &mut allocator, &mut slot_allocator, &mut acpi_context) {
+                                                 if let Err(e) = crate::arch::acpi::map_phys(boot_info, p_paddr, 0, &mut allocator, &mut slot_allocator, &mut acpi_context) {
                                                      println!("[ACPI] Failed to map extra page for MADT: {:?}", e);
                                                  }
                                              }
                                          }
                                          
-                                         let madt = unsafe { &*(ptr_val as *const acpi::Madt) };
+                                         let madt = unsafe { &*(ptr_val as *const crate::arch::acpi::Madt) };
                                          let local_apic = madt.local_apic_address;
                                          let flags = madt.flags;
                                          println!("[ACPI] Local APIC Address: 0x{:x}", local_apic);
                                          println!("[ACPI] MADT Flags: 0x{:x}", flags);
                                          
                                          // Parse MADT records
-                                         acpi::walk_madt(madt);
+                                         crate::arch::acpi::walk_madt(madt);
                                          
                                          // Initialize Local APIC
-                                         if let Some(_apic) = apic::init(boot_info, local_apic as usize, &mut allocator, &mut slot_allocator, &mut acpi_context) {
+                                         if let Some(_apic) = crate::arch::apic::init(boot_info, local_apic as usize, &mut allocator, &mut slot_allocator, &mut acpi_context) {
                                              println!("[KERNEL] Local APIC Initialized.");
                                          } else {
                                              println!("[KERNEL] Local APIC init skipped (using default configuration).");
                                          }
 
                                          // Initialize IO APIC
-                                         if let Some(ioapic_info) = acpi::find_first_ioapic(madt) {
+                                         if let Some(ioapic_info) = crate::arch::acpi::find_first_ioapic(madt) {
                                              println!("[KERNEL] Found IOAPIC at 0x{:x} (ID: {}).", ioapic_info.address, ioapic_info.id);
                                              
                                              let irq_control_cap = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapIRQControl as usize;
-                                             let root_cnode_cap = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as usize;
-                                             let depth = sel4_sys::seL4_WordBits as usize;
+                                            let root_cnode_cap = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as usize;
+                                            let depth = sel4_sys::seL4_WordBits as usize;
 
-                                             // 1. Keyboard IRQ (IRQ 1)
-                                             if let Ok(irq_slot) = slot_allocator.alloc() {
-                                                let irq = 1;
-                                                // Check for ISO
-                                                let (gsi, level, polarity) = if let Some(iso) = acpi::find_iso_for_irq(madt, irq) {
-                                                    let iso_gsi = iso.gsi;
-                                                    let iso_flags = iso.flags;
-                                                    println!("[KERNEL] Found ISO for IRQ 1: GSI={}, Flags=0x{:x}", iso_gsi, iso_flags);
-                                                    let p_flag = iso_flags & 0x3;
-                                                    let t_flag = (iso_flags >> 2) & 0x3;
-                                                    
-                                                    let pol = if p_flag == 3 { 1 } else { 0 }; 
-                                                    let lev = if t_flag == 3 { 1 } else { 0 };
-                                                    
-                                                    (iso_gsi as usize, lev, pol)
-                                                } else {
-                                                    // Legacy IRQ 1 is GSI 1, Active High, Edge
-                                                    (1, 0, 0)
-                                                };
-                                                
-                                                println!("[KERNEL] Config Keyboard IRQ {} -> GSI {}", irq, gsi);
+                                            // 1. Keyboard IRQ (IRQ 1)
+                                            if let Ok(irq_slot) = slot_allocator.alloc() {
+                                               let irq = 1;
+                                               // Check for ISO
+                                               let (gsi, level, polarity) = if let Some(iso) = crate::arch::acpi::find_iso_for_irq(madt, irq) {
+                                                   let iso_gsi = iso.gsi;
+                                                   let iso_flags = iso.flags;
+                                                   println!("[KERNEL] Found ISO for IRQ 1: GSI={}, Flags=0x{:x}", iso_gsi, iso_flags);
+                                                   let p_flag = iso_flags & 0x3;
+                                                   let t_flag = (iso_flags >> 2) & 0x3;
+                                                   
+                                                   let pol = if p_flag == 3 { 1 } else { 0 }; 
+                                                   let lev = if t_flag == 3 { 1 } else { 0 };
+                                                   
+                                                   (iso_gsi as usize, lev, pol)
+                                               } else {
+                                                   // Legacy IRQ 1 is GSI 1, Active High, Edge
+                                                   (1, 0, 0)
+                                               };
+                                               
+                                               println!("[KERNEL] Config Keyboard IRQ {} -> GSI {}", irq, gsi);
 
-                                                let pin = gsi;
-                                                let ioapic_idx = 0; 
-                                                let vector = 33; // 0x21
-                                                
-                                                let err = unsafe {
-                                                    ioapic::get_ioapic_handler(
-                                                        irq_control_cap, ioapic_idx as usize, pin as usize, level, polarity,
-                                                        root_cnode_cap, irq_slot.try_into().unwrap(), depth, vector
-                                                    )
-                                                };
+                                               let pin = gsi;
+                                               let ioapic_idx = 0; 
+                                               let vector = 33; // 0x21
+                                               
+                                               let err = unsafe {
+                                                   crate::arch::ioapic::get_ioapic_handler(
+                                                       irq_control_cap, ioapic_idx as usize, pin as usize, level, polarity,
+                                                       root_cnode_cap, irq_slot.try_into().unwrap(), depth, vector
+                                                   )
+                                               };
                                                 if err.is_ok() {
                                                     println!("[KERNEL] IRQ Handler for Keyboard created.");
                                                     
@@ -355,38 +352,38 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                                  // ACPI Flags: Polarity (0=Bus, 1=High, 3=Low), Trigger (0=Bus, 1=Edge, 3=Level)
                                                  // seL4: Polarity (0=High, 1=Low), Level (0=Edge, 1=Level)
                                                  
-                                                 let (gsi, level, polarity) = if let Some(iso) = acpi::find_iso_for_irq(madt, irq) {
-                                                     let iso_gsi = iso.gsi;
-                                                     let iso_flags = iso.flags;
-                                                     println!("[KERNEL] Found ISO for IRQ 0: GSI={}, Flags=0x{:x}", iso_gsi, iso_flags);
-                                                     let p_flag = iso_flags & 0x3;
-                                                     let t_flag = (iso_flags >> 2) & 0x3;
-                                                     
-                                                     let pol = if p_flag == 3 { 1 } else { 0 }; // 3=Low -> 1
-                                                     let lev = if t_flag == 3 { 1 } else { 0 }; // 3=Level -> 1
-                                                     
-                                                     (iso_gsi as usize, lev, pol)
-                                                 } else {
-                                                    // QEMU Default: IRQ 0 is often overridden to GSI 2, but if no ISO, assume legacy.
-                                                    // Actually, on QEMU, IRQ 0 is GSI 2.
-                                                    // If find_iso_for_irq returns None, we might be in trouble if it IS GSI 2.
-                                                    // But find_iso_for_irq SHOULD find it on QEMU.
-                                                    println!("[KERNEL] No ISO for IRQ 0. Assuming GSI 2 (Legacy override).");
-                                                    (2, 0, 0)
-                                                };
+                                                 let (gsi, level, polarity) = if let Some(iso) = crate::arch::acpi::find_iso_for_irq(madt, irq) {
+                                                    let iso_gsi = iso.gsi;
+                                                    let iso_flags = iso.flags;
+                                                    println!("[KERNEL] Found ISO for IRQ 0: GSI={}, Flags=0x{:x}", iso_gsi, iso_flags);
+                                                    let p_flag = iso_flags & 0x3;
+                                                    let t_flag = (iso_flags >> 2) & 0x3;
+                                                    
+                                                    let pol = if p_flag == 3 { 1 } else { 0 }; // 3=Low -> 1
+                                                    let lev = if t_flag == 3 { 1 } else { 0 }; // 3=Level -> 1
+                                                    
+                                                    (iso_gsi as usize, lev, pol)
+                                                } else {
+                                                   // QEMU Default: IRQ 0 is often overridden to GSI 2, but if no ISO, assume legacy.
+                                                   // Actually, on QEMU, IRQ 0 is GSI 2.
+                                                   // If find_iso_for_irq returns None, we might be in trouble if it IS GSI 2.
+                                                   // But find_iso_for_irq SHOULD find it on QEMU.
+                                                   println!("[KERNEL] No ISO for IRQ 0. Assuming GSI 2 (Legacy override).");
+                                                   (2, 0, 0)
+                                               };
 
-                                                println!("[KERNEL] Config Timer IRQ {} -> GSI {}, Level {}, Polarity {}", irq, gsi, level, polarity);
+                                               println!("[KERNEL] Config Timer IRQ {} -> GSI {}, Level {}, Polarity {}", irq, gsi, level, polarity);
 
-                                                let pin = gsi;
-                                                let ioapic_idx = 0;
-                                                let vector = 40; // 0x28
-                                                
-                                                let err = unsafe {
-                                                    ioapic::get_ioapic_handler(
-                                                        irq_control_cap, ioapic_idx as usize, pin as usize, level, polarity,
-                                                        root_cnode_cap, irq_slot.try_into().unwrap(), depth, vector
-                                                    )
-                                                };
+                                               let pin = gsi;
+                                               let ioapic_idx = 0;
+                                               let vector = 40; // 0x28
+                                               
+                                               let err = unsafe {
+                                                   crate::arch::ioapic::get_ioapic_handler(
+                                                       irq_control_cap, ioapic_idx as usize, pin as usize, level, polarity,
+                                                       root_cnode_cap, irq_slot.try_into().unwrap(), depth, vector
+                                                   )
+                                               };
 
                                                 if err.is_ok() {
                                                     timer_irq_cap = irq_slot as usize;

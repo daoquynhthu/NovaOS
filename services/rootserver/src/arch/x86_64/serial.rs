@@ -1,4 +1,4 @@
-use crate::port_io::{outb, inb};
+use crate::arch::port_io::{outb, inb};
 
 const COM1: u16 = 0x3F8;
 

@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use sel4_sys::{seL4_BootInfo, seL4_GetIPCBuffer, seL4_MessageInfo_new, seL4_Call, seL4_SetMR, seL4_MessageInfo_get_label};
 use crate::memory::{UntypedAllocator, SlotAllocator};
-use crate::acpi::AcpiContext;
+use crate::arch::acpi::AcpiContext;
 use crate::println;
 
 // Invocation label for X86IRQIssueIRQHandlerIOAPIC
@@ -134,7 +134,7 @@ pub fn init(
 ) -> Option<IoApic> {
     println!("[IOAPIC] Initializing IOAPIC at paddr 0x{:x}...", paddr);
     
-    match crate::acpi::map_phys(boot_info, paddr, 0, allocator, slots, context) {
+    match crate::arch::acpi::map_phys(boot_info, paddr, 0, allocator, slots, context) {
         Ok(vaddr) => {
             println!("[IOAPIC] Mapped IOAPIC to vaddr 0x{:x}", vaddr);
             let ioapic = unsafe { IoApic::new(vaddr) };
