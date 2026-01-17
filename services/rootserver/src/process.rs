@@ -113,11 +113,12 @@ pub struct Process {
     pub priority: seL4_Word,
 }
 
-static mut PROCESS_MANAGER: ProcessManager = ProcessManager::new();
+use spin::Mutex;
 
-pub fn get_process_manager() -> &'static mut ProcessManager {
-    #[allow(static_mut_refs)]
-    unsafe { &mut PROCESS_MANAGER }
+static PROCESS_MANAGER: Mutex<ProcessManager> = Mutex::new(ProcessManager::new());
+
+pub fn get_process_manager() -> spin::MutexGuard<'static, ProcessManager> {
+    PROCESS_MANAGER.lock()
 }
 
 pub struct ProcessManager {

@@ -67,7 +67,7 @@ extern "C" fn irq_worker_entry(notification: usize, endpoint: usize) {
         
         libnova::ipc::set_mr(0, badge);
         let info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
-        libnova::ipc::call(endpoint.try_into().unwrap(), info);
+        let _ = libnova::ipc::call(endpoint.try_into().unwrap(), info);
     }
 }
 
@@ -864,7 +864,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         system_tick += 1;
                         
                         // Wake up sleeping processes
-                        let pm = get_process_manager();
+                        let mut pm = get_process_manager();
                         for pid in 0..crate::process::MAX_PROCESSES {
                             if let Some(p) = pm.get_process_mut(pid) {
                                 if p.state == process::ProcessState::Sleeping && system_tick >= p.wake_at_tick {

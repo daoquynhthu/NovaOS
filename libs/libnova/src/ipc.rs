@@ -21,10 +21,14 @@ impl MessageInfo {
     }
 }
 
-pub fn call(dest: seL4_CPtr, info: MessageInfo) -> MessageInfo {
+pub fn call(dest: seL4_CPtr, info: MessageInfo) -> Result<MessageInfo, seL4_Error> {
     unsafe {
-        MessageInfo {
-            inner: seL4_Call(dest, info.inner),
+        let result = seL4_Call(dest, info.inner);
+        let label = seL4_MessageInfo_get_label(result);
+        if label != 0 {
+            Err(core::mem::transmute(label as i32))
+        } else {
+            Ok(MessageInfo { inner: result })
         }
     }
 }
@@ -49,11 +53,16 @@ pub fn recv(src: seL4_CPtr) -> (seL4_Word, MessageInfo) {
     }
 }
 
-pub fn reply_recv(src: seL4_CPtr, info: MessageInfo) -> (seL4_Word, MessageInfo) {
+pub fn reply_recv(src: seL4_CPtr, info: MessageInfo) -> Result<(seL4_Word, MessageInfo), seL4_Error> {
     unsafe {
         let mut sender: seL4_Word = 0;
-        let info = seL4_ReplyRecv(src, info.inner, &mut sender);
-        (sender, MessageInfo { inner: info })
+        let result = seL4_ReplyRecv(src, info.inner, &mut sender);
+        let label = seL4_MessageInfo_get_label(result);
+        if label != 0 {
+            Err(core::mem::transmute(label as i32))
+        } else {
+            Ok((sender, MessageInfo { inner: result }))
+        }
     }
 }
 

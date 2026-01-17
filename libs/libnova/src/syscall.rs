@@ -83,7 +83,7 @@ pub fn sys_write(ep: seL4_CPtr, s: &str) {
         }
         
         let info = ipc::MessageInfo::new(1, 0, 0, msg_len_words as seL4_Word);
-        ipc::call(ep, info);
+        let _ = ipc::call(ep, info);
         
         offset += chunk_len;
     }
@@ -92,26 +92,32 @@ pub fn sys_write(ep: seL4_CPtr, s: &str) {
 pub fn sys_exit(ep: seL4_CPtr, code: usize) -> ! {
     ipc::set_mr(0, code as seL4_Word);
     let info = ipc::MessageInfo::new(2, 0, 0, 1);
-    ipc::call(ep, info);
+    let _ = ipc::call(ep, info);
     loop {}
 }
 
 pub fn sys_brk(ep: seL4_CPtr, new_brk: usize) -> usize {
     ipc::set_mr(0, new_brk as seL4_Word);
     let info = ipc::MessageInfo::new(3, 0, 0, 1);
-    let _ = ipc::call(ep, info);
-    ipc::get_mr(0) as usize
+    if ipc::call(ep, info).is_ok() {
+        ipc::get_mr(0) as usize
+    } else {
+        0 // Should we return current break? Or 0 indicates error?
+    }
 }
 
 pub fn sys_yield(ep: seL4_CPtr) {
     let info = ipc::MessageInfo::new(4, 0, 0, 0);
-    ipc::call(ep, info);
+    let _ = ipc::call(ep, info);
 }
 
 pub fn sys_get_pid(ep: seL4_CPtr) -> usize {
     let info = ipc::MessageInfo::new(9, 0, 0, 0);
-    let _ = ipc::call(ep, info);
-    ipc::get_mr(0) as usize
+    if ipc::call(ep, info).is_ok() {
+        ipc::get_mr(0) as usize
+    } else {
+        0
+    }
 }
 
 pub fn sys_print_hex(ep: seL4_CPtr, val: usize) {

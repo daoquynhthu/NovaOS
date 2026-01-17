@@ -126,7 +126,7 @@ impl VSpace {
         debug_assert!(vaddr % 4096 == 0, "Virtual address must be page aligned");
         
         let mut attempts = 0;
-        const MAX_ATTEMPTS: usize = 4; // PML4 -> PDPT -> PD -> PT -> Frame (3 levels of structure to add)
+        const MAX_ATTEMPTS: usize = 3; // PML4 -> PDPT -> PD -> PT
 
         loop {
             match self.map_page_syscall(frame_cap, vaddr, rights, attr) {
@@ -137,13 +137,16 @@ impl VSpace {
                         return Err(e);
                     }
                     
+                    // Immediately read failed bits to avoid them being overwritten
+                    let failed_bits = libnova::ipc::get_mr(0);
+
                     if attempts >= MAX_ATTEMPTS {
                         println!("[VSpace] Max mapping attempts reached for 0x{:x}", vaddr);
                         return Err(seL4_Error::seL4_FailedLookup);
                     }
 
                     // println!("[VSpace] Lookup failed for 0x{:x}, allocating paging structures (Attempt {})...", vaddr, attempts + 1);
-                    self.handle_map_error(allocator, slots, boot_info, vaddr)?;
+                    self.handle_map_error(allocator, slots, boot_info, vaddr, failed_bits)?;
                     attempts += 1;
                 }
             }
@@ -184,8 +187,12 @@ impl VSpace {
         slots: &mut SlotAllocator,
         boot_info: &seL4_BootInfo,
         vaddr: usize,
+        failed_bits: seL4_Word,
     ) -> Result<(), seL4_Error> {
-        let failed_bits = libnova::ipc::get_mr(SEL4_MAPPING_LOOKUP_LEVEL);
+        // Cache to support larger address space
+        if self.paging_cap_count >= MAX_PAGING_CAPS {
+            return Err(seL4_Error::seL4_NotEnoughMemory);
+        }
         
         match failed_bits {
             SEL4_MAPPING_LOOKUP_NO_PT => {

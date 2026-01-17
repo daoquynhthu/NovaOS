@@ -16,7 +16,7 @@ impl Endpoint {
         libnova::ipc::set_mr(2, mrs[2].try_into().unwrap());
         libnova::ipc::set_mr(3, mrs[3].try_into().unwrap());
         
-        let (badge, resp_info) = libnova::ipc::reply_recv(self.cptr, info);
+        let (badge, resp_info) = libnova::ipc::reply_recv(self.cptr, info).expect("IPC ReplyRecv failed");
         
         let mr0 = libnova::ipc::get_mr(0);
         let mr1 = libnova::ipc::get_mr(1);
@@ -43,12 +43,12 @@ impl Endpoint {
 
         libnova::ipc::set_mr(0, msg.try_into().unwrap());
         
-        let resp_info = libnova::ipc::call(self.cptr, info);
-        
-        // Check length of response
-        let len = resp_info.length();
-        if len > 0 {
-            return libnova::ipc::get_mr(0).into();
+        if let Ok(resp_info) = libnova::ipc::call(self.cptr, info) {
+             // Check length of response
+            let len = resp_info.length();
+            if len > 0 {
+                return libnova::ipc::get_mr(0).into();
+            }
         }
         0
     }
@@ -89,7 +89,7 @@ impl Endpoint {
         );
         libnova::ipc::set_mr(0, msg.try_into().unwrap());
         
-        let (sender_badge, resp_info) = libnova::ipc::reply_recv(self.cptr, info);
+        let (sender_badge, resp_info) = libnova::ipc::reply_recv(self.cptr, info).expect("IPC ReplyRecv failed");
         
         let len = resp_info.length();
         let msg = if len > 0 { libnova::ipc::get_mr(0) } else { 0 };

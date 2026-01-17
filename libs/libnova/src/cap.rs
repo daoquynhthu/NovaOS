@@ -1,16 +1,6 @@
 use sel4_sys::*;
 use crate::syscall::{Result, check_err};
 
-/// Helper to create CapRights
-#[allow(non_snake_case)]
-pub fn CapRights_new(grant_reply: bool, grant: bool, read: bool, write: bool) -> seL4_CapRights {
-    let word = ((grant_reply as seL4_Word) << 3)
-             | ((grant as seL4_Word) << 2)
-             | ((read as seL4_Word) << 1)
-             | (write as seL4_Word);
-    seL4_CapRights { words: [word] }
-}
-
 // Import invocation labels
 // Note: If these are missing, we might need to hardcode them based on architecture
 // x86_64: Revoke=17? No, bindings usually export invocation_label_...
@@ -208,12 +198,4 @@ pub fn untyped_retype(
     }
 }
 
-/// Helper to create CapRights
-pub fn rights_new(grant_reply: bool, grant: bool, read: bool, write: bool) -> seL4_CapRights {
-    let val = (if write { 1 } else { 0 }) |
-              ((if read { 1 } else { 0 }) << 1) |
-              ((if grant { 1 } else { 0 }) << 2) |
-              ((if grant_reply { 1 } else { 0 }) << 3);
-    
-    seL4_CapRights { words: [val] }
-}
+
