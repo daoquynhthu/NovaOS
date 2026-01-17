@@ -619,7 +619,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 3, // ExtraCaps: CSpace, VSpace, BufferFrame
                 5, // Length
             );
-                libnova::ipc::call(worker_tcb_cap, info);
+                let _ = libnova::ipc::call(worker_tcb_cap, info);
 
                 // Set Priority
                 let authority = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadTCB as seL4_CPtr;
@@ -645,7 +645,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     1, // ExtraCaps: Authority
                     1, // Length: Priority
                 );
-                libnova::ipc::call(worker_tcb_cap, info);
+                let _ = libnova::ipc::call(worker_tcb_cap, info);
 
                 // Write Registers
                 let stack_top = (core::ptr::addr_of_mut!(WORKER_STACK) as usize) + 4096;
@@ -670,14 +670,14 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 for i in 0..20 {
                     libnova::ipc::set_mr(i+2, regs[i].try_into().unwrap());
                 }
-                libnova::ipc::call(worker_tcb_cap, info);
+                let _ = libnova::ipc::call(worker_tcb_cap, info);
 
                 // Resume
                 let info = libnova::ipc::MessageInfo::new(
                     sel4_sys::invocation_label_TCBResume as seL4_Word,
                     0, 0, 0
                 );
-                libnova::ipc::call(worker_tcb_cap, info);
+                let _ = libnova::ipc::call(worker_tcb_cap, info);
 
                 println!("[KERNEL] IRQ Worker Thread Started.");
             }

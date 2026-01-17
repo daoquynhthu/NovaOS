@@ -6,7 +6,7 @@ use crate::memory::{ObjectAllocator, SlotAllocator};
 use libnova::syscall::check_msg_err;
 
 // x86_64 mapping constants
-const SEL4_MAPPING_LOOKUP_LEVEL: usize = 2;
+// const SEL4_MAPPING_LOOKUP_LEVEL: usize = 2; // Unused
 const SEL4_MAPPING_LOOKUP_NO_PT: seL4_Word = 21;
 const SEL4_MAPPING_LOOKUP_NO_PD: seL4_Word = 30;
 const SEL4_MAPPING_LOOKUP_NO_PDPT: seL4_Word = 39;
@@ -91,7 +91,7 @@ impl VSpace {
             let info = libnova::ipc::MessageInfo::new(ARCH_INVOCATION_LABEL_X86_ASID_POOL_ASSIGN, 0, 1, 0);
             libnova::ipc::set_cap(0, pml4_cap);
             
-            let dest_info = libnova::ipc::call(asid_pool, info);
+            let dest_info = libnova::ipc::call(asid_pool, info).expect("ASID Pool Assign IPC failed");
             if let Err(e) = check_msg_err(dest_info.inner) {
                 println!("[VSpace] ASID Pool Assign failed: {:?}", e);
                 return Err(to_sel4_error(e));
@@ -106,8 +106,7 @@ impl VSpace {
     #[allow(dead_code)]
     pub fn unmap_page(&self, frame_cap: seL4_CPtr) -> Result<(), seL4_Error> {
         let info = libnova::ipc::MessageInfo::new(ARCH_INVOCATION_LABEL_X86_PAGE_UNMAP, 0, 0, 0);
-        let resp = libnova::ipc::call(frame_cap, info);
-        check_msg_err(resp.inner).map_err(to_sel4_error)
+        libnova::ipc::call(frame_cap, info).map(|_| ())
     }
 
     /// Map a 4K page at a specific virtual address
@@ -172,12 +171,12 @@ impl VSpace {
         libnova::ipc::set_cap(0, self.pml4_cap);
         
         let dest_info = libnova::ipc::call(frame_cap, info);
-        check_msg_err(dest_info.inner).map_err(|e| {
-             if e == libnova::syscall::Error::InvalidCapability {
+        dest_info.map(|_| ()).map_err(|e| {
+             if e == seL4_Error::seL4_InvalidCapability {
                   println!("[VSpace] Page Map InvalidCapability. frame_cap={}, pml4_cap={}, vaddr={:x}", 
                       frame_cap, self.pml4_cap, vaddr);
              }
-             to_sel4_error(e)
+             e
         })
     }
 
@@ -241,9 +240,9 @@ impl VSpace {
             libnova::ipc::set_cap(0, self.pml4_cap);
 
             let dest_info = libnova::ipc::call(cap, info);
-            if let Err(e) = check_msg_err(dest_info.inner) {
+            if let Err(e) = dest_info {
                 println!("[VSpace] Failed to map paging structure (type={}): {:?}", type_, e);
-                return Err(to_sel4_error(e));
+                return Err(e);
             }
         }
 

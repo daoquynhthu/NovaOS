@@ -12,6 +12,16 @@ use sel4_sys::{
     invocation_label_CNodeRevoke,
 };
 
+/// Create a new CapRights structure
+pub fn CapRights_new(grant_reply: bool, grant: bool, read: bool, write: bool) -> seL4_CapRights {
+    let mut word: seL4_Word = 0;
+    if write { word |= 1 << 0; }
+    if read { word |= 1 << 1; }
+    if grant { word |= 1 << 2; }
+    if grant_reply { word |= 1 << 3; }
+    seL4_CapRights { words: [word] }
+}
+
 /// Wrapper for CNode operations
 #[derive(Debug, Clone, Copy)]
 pub struct CNode {

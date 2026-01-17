@@ -48,7 +48,7 @@ pub fn issue_ioport_cap(
     );
 
     let resp = libnova::ipc::call(control_cap, info);
-    let label = resp.label();
+    let label = resp.expect("PortIO issue failed").label();
     if label == 0 { Ok(()) } else { Err(label) }
 }
 
@@ -89,7 +89,7 @@ pub fn inb(port: u16) -> u8 {
     
     let resp = libnova::ipc::call(cap, info);
     
-    if resp.label() != 0 {
+    if resp.expect("inb failed").label() != 0 {
         return 0xFF;
     }
     
@@ -113,7 +113,7 @@ pub fn outb(port: u16, value: u8) {
     
     let resp = libnova::ipc::call(cap, info);
     
-    if resp.label() != 0 {
+    if resp.expect("outb failed").label() != 0 {
         println!("[PortIO] outb failed");
     }
 }
@@ -133,7 +133,7 @@ pub fn inw(port: u16) -> u16 {
     
     let resp = libnova::ipc::call(cap, info);
     
-    if resp.label() != 0 {
+    if resp.expect("inw failed").label() != 0 {
         return 0xFFFF;
     }
     
@@ -156,7 +156,7 @@ pub fn outw(port: u16, value: u16) {
     
     let resp = libnova::ipc::call(cap, info);
     
-    if resp.label() != 0 {
+    if resp.expect("outl failed").label() != 0 {
         return;
     }
 }
@@ -176,7 +176,7 @@ pub fn inl(port: u16) -> u32 {
     
     let resp = libnova::ipc::call(cap, info);
     
-    if resp.label() != 0 {
+    if resp.expect("inl failed").label() != 0 {
         return 0xFFFFFFFF;
     }
     
@@ -199,7 +199,7 @@ pub fn outl(port: u16, value: u32) {
     
     let resp = libnova::ipc::call(cap, info);
     
-    if resp.label() != 0 {
+    if resp.expect("outl failed").label() != 0 {
         return;
     }
 }

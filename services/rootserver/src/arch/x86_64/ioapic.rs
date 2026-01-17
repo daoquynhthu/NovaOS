@@ -16,7 +16,7 @@ pub const IRQ_SET_IRQ_HANDLER: usize = 28;
 pub fn ack_irq(irq_handler: usize) -> Result<(), usize> {
     let info = libnova::ipc::MessageInfo::new((IRQ_ACK_IRQ as u64).try_into().unwrap(), 0, 0, 0);
     let resp = libnova::ipc::call(irq_handler.try_into().unwrap(), info);
-    let label = resp.label();
+    let label = resp.expect("ack_irq failed").label();
     if label == 0 { Ok(()) } else { Err(label as usize) }
 }
 
@@ -25,7 +25,7 @@ pub fn set_irq_handler(irq_handler: usize, notification: usize) -> Result<(), us
     
     let info = libnova::ipc::MessageInfo::new((IRQ_SET_IRQ_HANDLER as u64).try_into().unwrap(), 0, 1, 0);
     let resp = libnova::ipc::call(irq_handler.try_into().unwrap(), info);
-    let label = resp.label();
+    let label = resp.expect("set_irq_handler failed").label();
     if label == 0 { Ok(()) } else { Err(label as usize) }
 }
 
@@ -113,7 +113,7 @@ pub fn get_ioapic_handler(
     );
     
     let resp = libnova::ipc::call(irq_control.try_into().unwrap(), info);
-    let label = resp.label();
+    let label = resp.expect("get_ioapic_handler failed").label();
     
     if label == 0 {
         Ok(())

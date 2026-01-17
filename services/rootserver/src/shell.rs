@@ -796,7 +796,7 @@ impl Shell {
                     println!("Invalid PID");
                 } else {
                     use crate::process::get_process_manager;
-                    let pm = get_process_manager();
+                    let mut pm = get_process_manager();
                     if let Some(mut p) = pm.remove_process(pid) {
                         if self.slots.is_null() {
                              println!("Error: Slot allocator unavailable");
@@ -861,7 +861,7 @@ impl Shell {
 
                     if valid_pid && valid_prio {
                         use crate::process::get_process_manager;
-                        let pm = get_process_manager();
+                        let mut pm = get_process_manager();
                         if let Some(p) = pm.get_process_mut(pid) {
                             // Authority is Root TCB
                             let auth = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadTCB as usize;
@@ -1308,7 +1308,7 @@ impl Shell {
         let frame_alloc = unsafe { &mut *self.frame_allocator };
 
         // 1. Allocate PID
-        let pm = get_process_manager();
+        let mut pm = get_process_manager();
         let pid = match pm.allocate_pid() {
             Ok(p) => p,
             Err(e) => {

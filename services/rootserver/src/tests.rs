@@ -185,7 +185,7 @@ fn test_process_manager() {
     use crate::process::{Process, get_process_manager};
     
     // Access the global process manager
-    let pm = get_process_manager();
+    let mut pm = get_process_manager();
     
     // Create a dummy process (invalid caps, just for structural test)
     let dummy_process = Process {

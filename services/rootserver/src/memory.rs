@@ -180,7 +180,7 @@ impl UntypedAllocator {
         libnova::ipc::set_mr(5, num_objects);
         
         let dest_info = libnova::ipc::call(service, info);
-        seL4_Error::from(dest_info.label() as i32)
+        seL4_Error::from(dest_info.expect("Untyped retype IPC failed").label() as i32)
     }
 
     pub fn print_info(&self, boot_info: &seL4_BootInfo) {
