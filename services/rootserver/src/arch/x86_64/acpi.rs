@@ -5,9 +5,11 @@ use sel4_sys::seL4_RootCNodeCapSlots;
 use sel4_sys::seL4_X86_VMAttributes;
 use core::mem::size_of;
 use core::str;
+use alloc::vec::Vec;
 use crate::memory::{SlotAllocator, UntypedAllocator};
 use crate::vspace::VSpace;
 use crate::arch::port_io;
+use libnova::cap::{CNode, CapRights_new};
 
 // Temporary constant until we confirm sel4_sys export
 #[allow(non_upper_case_globals)]
@@ -28,7 +30,7 @@ const SEL4_BOOTINFO_HEADER_X86_ACPI_RSDP: u64 = 3;
 const SEL4_BOOTINFOFRAME_SIZE: usize = 4096;
 const MAX_MAPPED_CAPS: usize = 16;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct MappedCap {
     pub cap_index: usize, // Index in boot_info.untypedList
@@ -37,6 +39,7 @@ pub struct MappedCap {
     pub size_bits: usize,
     pub vaddr_start: usize,
     pub mapped_limit: usize, // Bytes from start that are mapped
+    pub allocated_slots: Vec<seL4_CPtr>,
 }
 
 #[derive(Debug)]
@@ -48,8 +51,43 @@ pub struct AcpiContext {
 impl AcpiContext {
     pub fn new() -> Self {
         Self {
-            mapped_caps: [None; MAX_MAPPED_CAPS],
+            mapped_caps: [
+                None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None
+            ],
             next_vaddr: 0x8000_0000,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn cleanup(&mut self, _vspace: &mut VSpace, slots: &mut SlotAllocator) {
+        println!("[ACPI] Cleaning up resources...");
+        let root_cnode = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+        
+        for i in 0..MAX_MAPPED_CAPS {
+            if let Some(mut mc) = self.mapped_caps[i].take() {
+                // 1. Unmap pages (Implicitly handled by Revoke of Untyped, or we can explicit unmap)
+                // Explicit unmap is safer but requires vspace traversal or just unmap syscall.
+                // Since we are revoking the parent untyped, the children (frames) will be destroyed,
+                // and mappings should disappear.
+                
+                // 2. Revoke Untyped
+                // We need to be careful: MappedCap wraps an Untyped. 
+                // Did we allocate this Untyped? No, it's from boot_info.
+                // So we shouldn't delete the Untyped Cap itself (it's in Root CNode), 
+                // but we should Revoke it to destroy any children we created (the 4K frames).
+                let root_cnode_obj = CNode::new(root_cnode, sel4_sys::seL4_WordBits as u8);
+                if let Err(e) = root_cnode_obj.revoke(mc.cap_cptr) {
+                    println!("[ACPI] Failed to revoke untyped cap {}: {:?}", mc.cap_cptr, e);
+                }
+
+                // 3. Free slots
+                for slot in mc.allocated_slots.drain(..) {
+                    slots.free(slot);
+                }
+                
+                println!("[ACPI] Cleaned up MappedCap index {}", mc.cap_index);
+            }
         }
     }
 }
@@ -518,6 +556,7 @@ pub fn map_phys(
                         size_bits,
                         vaddr_start,
                         mapped_limit: 0,
+                        allocated_slots: Vec::new(),
                     });
                     mapped_idx = Some(i);
                     println!("[ACPI] Registered new mapped cap: index={}, paddr=0x{:x}, vaddr=0x{:x}, size={}", 
@@ -534,7 +573,7 @@ pub fn map_phys(
         let page_offset = offset & !(4096 - 1);
         let target_limit = page_offset + 4096;
         
-        let mut mc = context.mapped_caps[idx].unwrap();
+        let mut mc = context.mapped_caps[idx].take().unwrap();
         
         if target_limit > mc.mapped_limit {
             // Need to map more pages
@@ -547,6 +586,8 @@ pub fn map_phys(
 
             for i in 0..pages_needed {
                  let slot = slots.alloc().map_err(|_| seL4_Error::seL4_NotEnoughMemory)?;
+                 mc.allocated_slots.push(slot);
+                 
                  let root_cnode_obj = libnova::cap::CNode::new(seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr, 64);
                  
                  let res = libnova::cap::untyped_retype(
@@ -573,15 +614,17 @@ pub fn map_phys(
                    boot_info,
                    slot,
                    page_vaddr,
-                   libnova::cap::CapRights_new(false, true, true, true),
+                   CapRights_new(false, true, true, true),
                    seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes
-               )?;
+                )?;
             }
             mc.mapped_limit = target_limit;
-            context.mapped_caps[idx] = Some(mc);
         }
+        
+        let vaddr_start = mc.vaddr_start;
+        context.mapped_caps[idx] = Some(mc);
 
-        Ok(mc.vaddr_start + offset)
+        Ok(vaddr_start + offset)
     } else {
         // println!("[ACPI] Failed to find untyped cap for paddr 0x{:x}", paddr);
         Err(seL4_Error::seL4_FailedLookup)

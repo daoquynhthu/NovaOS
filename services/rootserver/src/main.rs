@@ -32,6 +32,7 @@ use alloc::boxed::Box;
 use sel4_sys::{
     seL4_BootInfo, seL4_CPtr, seL4_Word,
 };
+use libnova::cap::CapRights_new;
 // Temporary constant until we confirm sel4_sys export
 #[allow(dead_code, non_upper_case_globals)]
 const seL4_X86_4K: seL4_Word = 8;
@@ -482,7 +483,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
             root_cnode,
             syscall_ep_cap,
             cnode_depth as u8,
-            libnova::cap::CapRights_new(false, true, true, true),
+            CapRights_new(false, true, true, true),
             200 // Badge 200 for Test Service
         )
     };
@@ -506,7 +507,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
             root_cnode,
             syscall_ep_cap,
             cnode_depth as u8,
-            libnova::cap::CapRights_new(false, true, true, true),
+            CapRights_new(false, true, true, true),
             100 // Badge for Process 1
         )
     };
@@ -542,7 +543,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
             root_cnode,
             syscall_ep_cap,
             cnode_depth as u8,
-            libnova::cap::CapRights_new(false, true, true, true),
+            CapRights_new(false, true, true, true),
             101 // Badge for Process 2
         )
     };
@@ -595,7 +596,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 sel4_sys::seL4_CNode_Mint(
                     root_cnode, worker_badged_ep, cnode_depth,
                     root_cnode, syscall_ep_cap, cnode_depth,
-                    libnova::cap::CapRights_new(false, true, true, true),
+                    CapRights_new(false, true, true, true),
                     999
                 );
 
@@ -692,7 +693,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     sel4_sys::seL4_CNode_Mint(
                         root_cnode, kb_badge_cap, cnode_depth,
                         root_cnode, notification_cap, cnode_depth,
-                        libnova::cap::CapRights_new(false, true, true, true),
+                        CapRights_new(false, true, true, true),
                         1 // Badge 1
                     )
                 };
@@ -724,7 +725,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     sel4_sys::seL4_CNode_Mint(
                         root_cnode, timer_badge_cap, cnode_depth,
                         root_cnode, notification_cap, cnode_depth,
-                        libnova::cap::CapRights_new(false, true, true, true),
+                        CapRights_new(false, true, true, true),
                         2 // Badge 2
                     )
                 };
@@ -755,7 +756,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     sel4_sys::seL4_CNode_Mint(
                         root_cnode, serial_badge_cap, cnode_depth,
                         root_cnode, notification_cap, cnode_depth,
-                        libnova::cap::CapRights_new(false, true, true, true),
+                        CapRights_new(false, true, true, true),
                         4 // Badge 4
                     )
                 };
@@ -988,7 +989,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                     boot_info,
                                     frame_cap,
                                     aligned_addr,
-                                    libnova::cap::CapRights_new(false, true, true, true),
+                                    CapRights_new(false, true, true, true),
                                     sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes
                                  ) {
                                      let _ = p.track_frame(frame_cap);

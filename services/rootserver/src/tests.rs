@@ -99,7 +99,8 @@ fn test_user_hello_program(
     println!("[INFO] Spawning process with Syscall Endpoint Cap: {}", syscall_ep_cap);
 
     let elf_data = crate::filesystem::get_file("hello").expect("hello binary not found");
-    let mut process = match Process::spawn(allocator, slot_allocator, frame_allocator, boot_info, elf_data, &[], 100, syscall_ep_cap) {
+    let args = ["hello", "test_arg"];
+    let mut process = match Process::spawn(allocator, slot_allocator, frame_allocator, boot_info, elf_data, &args, 100, syscall_ep_cap) {
         Ok(p) => p,
         Err(e) => {
             println!("[ERROR] Failed to spawn hello program: {:?}", e);

@@ -1,5 +1,6 @@
 
 use crate::drivers::keyboard::Key;
+use libnova::cap::CapRights_new;
 use crate::memory::{SlotAllocator, UntypedAllocator, FrameAllocator};
 use crate::tests;
 use sel4_sys::seL4_BootInfo;
@@ -889,7 +890,7 @@ impl Shell {
                 let parts: alloc::vec::Vec<&str> = full_line_str.split_whitespace().collect();
 
                 if let Some(filename) = parts.first() {
-                    let args = &parts[1..];
+                    let args = parts.as_slice();
                     let path_str = self.resolve_path(filename);
                     
                     let data_opt = crate::vfs::VFS.lock().as_ref().and_then(|fs| fs.read_file(&path_str));
@@ -1335,7 +1336,7 @@ impl Shell {
             badged_ep_slot,
             &root_cnode,
             self.syscall_ep_cap,
-            libnova::cap::CapRights_new(false, true, true, true),
+            CapRights_new(false, true, true, true),
             badge as seL4_Word
         ) {
             println!("[RUN] Failed to mint badged endpoint: {:?}", e);
