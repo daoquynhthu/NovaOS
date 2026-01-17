@@ -1,3 +1,6 @@
+use crate::arch::port_io::inb;
+use crate::arch::ioapic;
+use super::{Driver, DriverEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
@@ -28,10 +31,11 @@ pub struct Keyboard {
     lalt: bool,
     ralt: bool,
     caps_lock: bool,
+    irq_cap: usize,
 }
 
 impl Keyboard {
-    pub fn new() -> Self {
+    pub fn new(irq_cap: usize) -> Self {
         Keyboard {
             extended: false,
             lshift: false,
@@ -41,6 +45,7 @@ impl Keyboard {
             lalt: false,
             ralt: false,
             caps_lock: false,
+            irq_cap,
         }
     }
 
@@ -86,9 +91,9 @@ impl Keyboard {
                 0x4D => Key::Right,
                 0x53 => Key::Delete,
                 0x47 => Key::Home,
-                0x4F => Key::End,
                 0x49 => Key::PageUp,
                 0x51 => Key::PageDown,
+                0x4F => Key::End,
                 _ => return Some(Key::Unknown(scancode)),
             };
             return Some(k);
@@ -174,29 +179,69 @@ impl Keyboard {
         };
 
         // Apply Caps Lock (only affects letters)
-        let mut char_code = key;
-        let is_letter = char_code.is_ascii_lowercase() || char_code.is_ascii_uppercase();
+        let mut char_code = Key::Char(key);
+        let is_letter = match char_code {
+            Key::Char(c) => c.is_ascii_lowercase() || c.is_ascii_uppercase(),
+            _ => false,
+        };
+        
         if self.caps_lock && is_letter {
-            if char_code.is_ascii_lowercase() {
-                char_code = char_code.to_ascii_uppercase();
-            } else {
-                char_code = char_code.to_ascii_lowercase();
-            }
+             if let Key::Char(c) = char_code {
+                if c.is_ascii_lowercase() {
+                    char_code = Key::Char(c.to_ascii_uppercase());
+                } else {
+                    char_code = Key::Char(c.to_ascii_lowercase());
+                }
+             }
         }
 
         let ctrl = self.lctrl || self.rctrl;
         if ctrl && is_letter {
-            let lower = char_code.to_ascii_lowercase() as u8;
-            if lower.is_ascii_lowercase() {
-                let c = (lower - b'a' + 1) as char;
-                return Some(Key::Char(c));
-            }
+             if let Key::Char(c) = char_code {
+                let lower = c.to_ascii_lowercase() as u8;
+                if lower >= b'a' && lower <= b'z' {
+                    let c_code = (lower - b'a' + 1) as char;
+                    return Some(Key::Char(c_code));
+                }
+             }
         }
 
-        // Handle Alt keys (optional: return different chars or just Key::Char)
-        // For now, we treat Alt like regular key unless we want Alt+Key logic
-        // But maybe we just return the key.
+        Some(char_code)
+    }
+}
 
-        Some(Key::Char(char_code))
+impl Driver for Keyboard {
+    fn name(&self) -> &str {
+        "PS/2 Keyboard"
+    }
+
+    fn init(&mut self) -> Result<(), &'static str> {
+        // PS/2 Keyboard initialization
+        // Flush buffer
+        while inb(0x64) & 0x01 != 0 {
+            inb(0x60);
+        }
+        Ok(())
+    }
+
+    fn handle_irq(&mut self, _irq: u8) -> DriverEvent {
+        let mut event = DriverEvent::None;
+        
+         // Check status register
+         for _ in 0..32 {
+            if inb(0x64) & 0x01 == 0 {
+                 break;
+            }
+            let scancode = inb(0x60);
+            if let Some(key) = self.process_scancode(scancode) {
+                event = DriverEvent::KeyboardInput(key);
+            }
+        }
+        
+        if let Err(_) = ioapic::ack_irq(self.irq_cap) {
+            // Log?
+        }
+        
+        event
     }
 }

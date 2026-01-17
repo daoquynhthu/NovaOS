@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 linked_list_allocator = "0.10.5"
+libnova = { path = "../../libs/libnova" }
+sel4-sys = { path = "../../libs/seL4-sys" }

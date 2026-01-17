@@ -12,28 +12,33 @@ impl SerialPort {
     }
 
     pub fn init(&self) {
-        unsafe {
-            outb(self.port + 1, 0x00);    // Disable all interrupts
-            outb(self.port + 3, 0x80);    // Enable DLAB (set baud rate divisor)
-            outb(self.port, 0x03);    // Set divisor to 3 (lo byte) 38400 baud
-            outb(self.port + 1, 0x00);    //                  (hi byte)
-            outb(self.port + 3, 0x03);    // 8 bits, no parity, one stop bit
-            outb(self.port + 2, 0xC7);    // Enable FIFO, clear them, with 14-byte threshold
-            outb(self.port + 4, 0x0B);    // IRQs enabled, RTS/DSR set
+        outb(self.port + 1, 0x00);    // Disable all interrupts
+        outb(self.port + 3, 0x80);    // Enable DLAB (set baud rate divisor)
+        outb(self.port, 0x03);    // Set divisor to 3 (lo byte) 38400 baud
+        outb(self.port + 1, 0x00);    //                  (hi byte)
+        outb(self.port + 3, 0x03);    // 8 bits, no parity, one stop bit
+        outb(self.port + 2, 0xC7);    // Enable FIFO, clear them, with 14-byte threshold
+        outb(self.port + 4, 0x0B);    // IRQs enabled, RTS/DSR set
+        outb(self.port + 1, 0x01);    // Enable RX Interrupt
+    }
+
+    #[allow(dead_code)]
+    pub fn receive(&self) -> Option<u8> {
+        if inb(self.port + 5) & 1 == 0 {
+            return None;
         }
+        Some(inb(self.port))
     }
 
     #[allow(dead_code)]
     fn is_transmit_empty(&self) -> bool {
-        unsafe { inb(self.port + 5) & 0x20 != 0 }
+        inb(self.port + 5) & 0x20 != 0
     }
 
     #[allow(dead_code)]
     pub fn send(&self, data: u8) {
         while !self.is_transmit_empty() {}
-        unsafe {
-            outb(self.port, data);
-        }
+        outb(self.port, data);
     }
 }
 

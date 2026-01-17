@@ -9,6 +9,23 @@
 
 ## ✅ 已完成任务 (Completed)
 
+### 2026-01-17: 磁盘驱动与文件系统 (Disk Driver & File System)
+- [x] **ATA PIO 驱动器**:
+    - 实现了 PIO 模式的 ATA 磁盘驱动 (`drivers/ata.rs`)。
+    - 支持 LBA28 寻址模式，实现 512 字节扇区的读写操作。
+    - 解决了 DRQ 超时问题，优化了时序延迟与状态等待逻辑。
+- [x] **块设备抽象**:
+    - 定义了 `BlockDevice` Trait，解耦文件系统与具体硬件驱动。
+- [x] **Nova Simple File System (NSFS)**:
+    - 实现了基础的文件系统结构：超级块 (SuperBlock)、位图 (Bitmap)、根目录 (RootDir)。
+    - 实现了磁盘格式化 (`format`) 与 挂载检查 (`check_magic`) 逻辑。
+- [x] **Shell 集成**:
+    - 新增 `mkfs` 命令：支持指定块数量格式化磁盘。
+    - 新增 `mount` 命令：支持挂载并校验 NSFS 文件系统。
+- [x] **验证通过**:
+    - 集成测试脚本 `test.ps1` 新增磁盘镜像创建与挂载功能。
+    - RootServer 启动自检 (POST) 成功验证扇区读写与数据一致性。
+
 ### 2026-01-17: 系统关机功能 (System Shutdown)
 - [x] **ACPI 电源管理**:
     - 实现了 ACPI FADT 表的解析与 ACPI Enable 序列。
@@ -107,6 +124,47 @@
     - 实现了 `set_priority` 接口。
     - 实现了简单的优先级调度逻辑（为后续抢占式调度打基础）。
 
+### 2026-01-17: RootServer 重构与 libnova 集成 (Refactoring & libnova)
+- [x] **代码库标准化**:
+    - 移除了 RootServer 中遗留的 `utils.rs`，全面迁移至 `libnova` 抽象层。
+    - 引入了 `libnova::tcb`, `libnova::cnode`, `libnova::vspace` 等类型安全封装。
+- [x] **核心模块重构**:
+    - 重构了 `process.rs`, `vspace.rs`, `memory.rs`, `ipc.rs` 等核心模块，移除了大量裸 `unsafe` 代码。
+    - 优化了 `arch/x86_64` 下的驱动代码 (`acpi`, `ioapic`, `port_io`)，使其符合安全抽象。
+- [x] **编译错误修复**:
+    - 修复了重构过程中产生的上百个类型匹配和借用检查错误。
+    - **注意**: `elf_loader.rs` 和 `shell.rs` 仍保留少量直接系统调用，需后续继续优化。
+
+### 2026-01-17: 块设备驱动与内存优化 (Block Device Driver & Memory Optimization)
+- [x] **块设备驱动 (Block Device Driver)**:
+    - 实现了 **ATA PIO 模式** 驱动 (`drivers/ata.rs`)，支持 LBA28 寻址。
+    - 实现了 `read_sectors` 和 `write_sectors` 接口，支持 512 字节扇区读写。
+    - 增加了 `wait_bsy` 和 `wait_drq` 的超时保护机制，防止死循环。
+    - 集成测试：在 `tests.rs` 中新增了磁盘读写校验测试，验证通过。
+- [x] **内存管理深度优化 (Memory Management Deep Optimization)**:
+    - **FrameAllocator**: 实现了基于栈/链表的物理帧分配器，支持帧的分配与回收。
+    - **动态元数据管理**: 将 `Process` 结构体中的 `mapped_frames` 固定数组替换为 `Vec`，消除了最大映射页数限制。
+    - **事务性 sys_brk**: 实现了堆内存扩展的事务回滚机制，分配失败时自动释放已分配资源，防止内存泄漏。
+    - **资源回收**: 实现了进程终止时的页帧回收逻辑（*注：因 seL4 Capability 问题暂时禁用回收功能，待后续修复*）。
+- [x] **系统稳定性与测试**:
+    - 修复了 RootServer 和 UserApp 的所有静态编译错误。
+    - `test.ps1` 集成测试全票通过，涵盖文件 I/O、内存管理、多进程调度及磁盘驱动测试。
+
+### 2026-01-17: NSFS 文件系统增强 (NSFS Enhancements)
+- [x] **目录与子目录支持**:
+    - 实现了 `resolve_path_from` 路径解析逻辑，支持 `/disk/dir/file` 形式的多级路径访问。
+    - 实现了 `delete_dir` 接口，支持删除空目录。
+    - 解决了 Shell 命令 (`ls`, `cd`, `rm`, `touch`, `echo`) 对 NSFS 子目录的支持问题。
+    - 修复了 `DirEntry` 结构体内存对齐问题 (packed struct)，消除了潜在的 undefined behavior。
+- [x] **Shell 命令升级**:
+    - `ls`: 支持列出 NSFS 子目录内容。
+    - `rm`: 智能识别文件与目录，支持删除空目录。
+    - `touch`/`echo`: 支持在 NSFS 子目录中创建与写入文件。
+    - `cat`: 支持读取 NSFS 子目录文件。
+- [x] **集成测试**:
+    - 修复了 `simplefs.rs` 中的未使用变量警告。
+    - `test.ps1` 再次全票通过，验证了 NSFS 的稳定性和目录操作的正确性。
+
 ## 📊 OS 现状评估与路线图 (OS Evaluation & Roadmap)
 
 ### 当前状态评估 (Status Assessment)
@@ -128,8 +186,8 @@
 - [ ] **创建标准用户库 (`libnova`)**: 封装系统调用，提供类似 std 的接口。
 
 #### Phase 2: 持久化与扩展 (Next)
-- [ ] **块设备驱动**: 实现基础 ATA/IDE 驱动。
-- [ ] **持久化文件系统**: 实现 FAT16 或 SimpleFS，挂载硬盘分区。
+- [x] **块设备驱动**: 实现基础 ATA/IDE 驱动。
+- [x] **持久化文件系统**: 实现 SimpleFS (NSFS)，挂载硬盘分区。
 - [ ] **ELF 加载增强**: 支持向进程传递参数 (`argc`, `argv`)。
 
 #### Phase 3: 交互与网络 (Future)

@@ -58,6 +58,14 @@ pub fn seL4_MessageInfo_get_length(info: seL4_MessageInfo) -> seL4_Word {
     info.words[0] & 0x7f
 }
 
+pub fn seL4_MessageInfo_get_extraCaps(info: seL4_MessageInfo) -> seL4_Word {
+    (info.words[0] >> 7) & 0x3
+}
+
+pub fn seL4_MessageInfo_get_capsUnwrapped(info: seL4_MessageInfo) -> seL4_Word {
+    (info.words[0] >> 9) & 0x7
+}
+
 #[inline(always)]
 /// # Safety
 /// `__sel4_ipc_buffer` must be initialized to a valid seL4 IPC buffer pointer
@@ -425,6 +433,42 @@ pub unsafe fn seL4_CNode_Mint(
     seL4_Error::from(seL4_MessageInfo_get_label(dest_info) as i32)
 }
 
+#[allow(clippy::too_many_arguments)]
+/// # Safety
+/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - `service` must be a valid CNode capability pointer.
+/// - `src_root` must be a valid capability pointer for the source CNode.
+/// - All indices and depths must follow seL4 CSpace addressing rules for the
+///   provided CNodes.
+pub unsafe fn seL4_CNode_Move(
+    service: seL4_CPtr,
+    dest_index: seL4_Word,
+    dest_depth: u8,
+    src_root: seL4_CPtr,
+    src_index: seL4_Word,
+    src_depth: u8,
+) -> seL4_Error {
+    // Hardcoded invocation label for seL4_CNode_Move
+    const SE_L4_CNODE_MOVE: seL4_Word = 22; 
+
+    let info = seL4_MessageInfo_new(
+        SE_L4_CNODE_MOVE,
+        0, // capsUnwrapped
+        1, // extraCaps (src_root)
+        4, // length (dest_index, dest_depth, src_index, src_depth) -> 4 words
+    );
+
+    seL4_SetMR(0, dest_index);
+    seL4_SetMR(1, dest_depth as seL4_Word);
+    seL4_SetMR(2, src_index);
+    seL4_SetMR(3, src_depth as seL4_Word);
+    
+    seL4_SetCap_My(0, src_root);
+
+    let dest_info = seL4_Call(service, info);
+    seL4_Error::from(seL4_MessageInfo_get_label(dest_info) as i32)
+}
+
 /// # Safety
 /// Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
 pub unsafe fn seL4_Yield() {
@@ -434,5 +478,67 @@ pub unsafe fn seL4_Yield() {
         out("rcx") _,
         out("r11") _,
         options(nostack)
+    );
+}
+
+/// # Safety
+/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - `dest` must be a valid capability pointer for the expected invocation.
+/// - If this call expects to write message registers, the IPC buffer must be
+///   initialized appropriately via `seL4_SetIPCBuffer`.
+#[allow(unused_assignments)]
+pub unsafe fn seL4_Send(dest: seL4_CPtr, msgInfo: seL4_MessageInfo) {
+    let mut info_val = msgInfo.words[0];
+    let mut mr0 = seL4_GetMR(0);
+    let mut mr1 = seL4_GetMR(1);
+    let mut mr2 = seL4_GetMR(2);
+    let mut mr3 = seL4_GetMR(3);
+    
+    core::arch::asm!(
+        "push rbx",
+        "mov rbx, rsp",
+        "syscall",
+        "mov rsp, rbx",
+        "pop rbx",
+        in("rdx") seL4_Syscall_ID::seL4_SysSend as isize,
+        in("rdi") dest,
+        inout("rsi") info_val,
+        inout("r10") mr0,
+        inout("r8") mr1,
+        inout("r9") mr2,
+        inout("r15") mr3,
+        out("rcx") _,
+        out("r11") _,
+    );
+}
+
+/// # Safety
+/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - If this call expects to write message registers, the IPC buffer must be
+///   initialized appropriately via `seL4_SetIPCBuffer`.
+#[allow(unused_assignments)]
+pub unsafe fn seL4_Reply(msgInfo: seL4_MessageInfo) {
+    let mut info_val = msgInfo.words[0];
+    let mut mr0 = seL4_GetMR(0);
+    let mut mr1 = seL4_GetMR(1);
+    let mut mr2 = seL4_GetMR(2);
+    let mut mr3 = seL4_GetMR(3);
+    
+    core::arch::asm!(
+        "push rbx",
+        "mov rbx, rsp",
+        "syscall",
+        "mov rsp, rbx",
+        "pop rbx",
+        in("rdx") seL4_Syscall_ID::seL4_SysReply as isize,
+        inout("rsi") info_val,
+        inout("r10") mr0,
+        inout("r8") mr1,
+        inout("r9") mr2,
+        inout("r15") mr3,
+        out("rcx") _,
+        out("r11") _,
+        out("rdi") _, // dest is not used for Reply, but register might be clobbered? 
+                      // Actually rdi is not input for Reply.
     );
 }

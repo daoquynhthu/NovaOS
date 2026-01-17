@@ -1,11 +1,9 @@
 use sel4_sys::{
     seL4_BootInfo, seL4_CPtr, seL4_CapRights, seL4_Error, seL4_Word,
-    seL4_MessageInfo_new, seL4_SetMR, seL4_Call, seL4_SetCap_My, seL4_GetMR,
+    seL4_X86_VMAttributes,
 };
-use sel4_sys::seL4_X86_VMAttributes;
 use crate::memory::{ObjectAllocator, SlotAllocator};
-use crate::println;
-use crate::utils::check_syscall_result;
+use libnova::syscall::check_msg_err;
 
 // x86_64 mapping constants
 const SEL4_MAPPING_LOOKUP_LEVEL: usize = 2;
@@ -13,10 +11,18 @@ const SEL4_MAPPING_LOOKUP_NO_PT: seL4_Word = 21;
 const SEL4_MAPPING_LOOKUP_NO_PD: seL4_Word = 30;
 const SEL4_MAPPING_LOOKUP_NO_PDPT: seL4_Word = 39;
 
+// Temporary constants until we confirm sel4_sys export
+#[allow(non_upper_case_globals)]
+const seL4_X86_PageTableObject: seL4_Word = 10;
+#[allow(non_upper_case_globals)]
+const seL4_X86_PageDirectoryObject: seL4_Word = 11;
+#[allow(non_upper_case_globals)]
+const seL4_X86_PDPTObject: seL4_Word = 5;
+
 // Object Types (from bindings.rs constants)
-const SE_L4_X86_PAGE_TABLE_OBJECT: seL4_Word = 10;
-const SE_L4_X86_PAGE_DIRECTORY_OBJECT: seL4_Word = 11;
-const SE_L4_X86_PDPT_OBJECT: seL4_Word = 5; // _mode_object_seL4_X86_PDPTObject
+const SE_L4_X86_PAGE_TABLE_OBJECT: seL4_Word = seL4_X86_PageTableObject;
+const SE_L4_X86_PAGE_DIRECTORY_OBJECT: seL4_Word = seL4_X86_PageDirectoryObject;
+const SE_L4_X86_PDPT_OBJECT: seL4_Word = seL4_X86_PDPTObject;
 
 // Invocation Labels (from bindings.rs)
 const ARCH_INVOCATION_LABEL_X86_PDPT_MAP: seL4_Word = 31;
@@ -40,6 +46,23 @@ pub struct VSpace {
     pub paging_cap_count: usize,
 }
 
+fn to_sel4_error(e: libnova::syscall::Error) -> seL4_Error {
+    match e {
+        libnova::syscall::Error::NoError => seL4_Error::seL4_NoError,
+        libnova::syscall::Error::InvalidArgument => seL4_Error::seL4_InvalidArgument,
+        libnova::syscall::Error::InvalidCapability => seL4_Error::seL4_InvalidCapability,
+        libnova::syscall::Error::IllegalOperation => seL4_Error::seL4_IllegalOperation,
+        libnova::syscall::Error::RangeError => seL4_Error::seL4_RangeError,
+        libnova::syscall::Error::AlignmentError => seL4_Error::seL4_AlignmentError,
+        libnova::syscall::Error::FailedLookup => seL4_Error::seL4_FailedLookup,
+        libnova::syscall::Error::TruncatedMessage => seL4_Error::seL4_TruncatedMessage,
+        libnova::syscall::Error::DeleteFirst => seL4_Error::seL4_DeleteFirst,
+        libnova::syscall::Error::RevokeFirst => seL4_Error::seL4_RevokeFirst,
+        libnova::syscall::Error::NotEnoughMemory => seL4_Error::seL4_NotEnoughMemory,
+        _ => seL4_Error::seL4_IllegalOperation,
+    }
+}
+
 impl VSpace {
     pub fn new(pml4_cap: seL4_CPtr) -> Self {
         VSpace { 
@@ -49,7 +72,7 @@ impl VSpace {
         }
     }
 
-    /// Allocate a new VSpace (PML4) and assign it to an ASID
+    /// Assign ASID
     pub fn new_from_scratch<A: ObjectAllocator>(
         allocator: &mut A,
         slots: &mut SlotAllocator,
@@ -64,14 +87,14 @@ impl VSpace {
         debug_assert!(pml4_cap != 0, "Allocated PML4 cap cannot be 0");
 
         // 2. Assign ASID
-        unsafe {
-            let info = seL4_MessageInfo_new(ARCH_INVOCATION_LABEL_X86_ASID_POOL_ASSIGN, 0, 1, 0);
-            seL4_SetCap_My(0, pml4_cap);
+        {
+            let info = libnova::ipc::MessageInfo::new(ARCH_INVOCATION_LABEL_X86_ASID_POOL_ASSIGN, 0, 1, 0);
+            libnova::ipc::set_cap(0, pml4_cap);
             
-            let dest_info = seL4_Call(asid_pool, info);
-            if let Err(e) = check_syscall_result(dest_info) {
+            let dest_info = libnova::ipc::call(asid_pool, info);
+            if let Err(e) = check_msg_err(dest_info.inner) {
                 println!("[VSpace] ASID Pool Assign failed: {:?}", e);
-                return Err(e);
+                return Err(to_sel4_error(e));
             }
         }
         
@@ -82,11 +105,9 @@ impl VSpace {
     /// Unmap a frame
     #[allow(dead_code)]
     pub fn unmap_page(&self, frame_cap: seL4_CPtr) -> Result<(), seL4_Error> {
-        unsafe {
-            let info = seL4_MessageInfo_new(ARCH_INVOCATION_LABEL_X86_PAGE_UNMAP, 0, 0, 0);
-            let resp = seL4_Call(frame_cap, info);
-            check_syscall_result(resp)
-        }
+        let info = libnova::ipc::MessageInfo::new(ARCH_INVOCATION_LABEL_X86_PAGE_UNMAP, 0, 0, 0);
+        let resp = libnova::ipc::call(frame_cap, info);
+        check_msg_err(resp.inner).map_err(to_sel4_error)
     }
 
     /// Map a 4K page at a specific virtual address
@@ -103,16 +124,27 @@ impl VSpace {
         attr: seL4_X86_VMAttributes,
     ) -> Result<(), seL4_Error> {
         debug_assert!(vaddr % 4096 == 0, "Virtual address must be page aligned");
+        
+        let mut attempts = 0;
+        const MAX_ATTEMPTS: usize = 4; // PML4 -> PDPT -> PD -> PT -> Frame (3 levels of structure to add)
+
         loop {
             match self.map_page_syscall(frame_cap, vaddr, rights, attr) {
                 Ok(_) => return Ok(()),
                 Err(e) => {
                     if e != seL4_Error::seL4_FailedLookup {
-                        println!("[VSpace] Map failed with error: {:?}", e);
+                        println!("[VSpace] Map syscall failed for frame {} at 0x{:x} with error: {:?}", frame_cap, vaddr, e);
                         return Err(e);
                     }
-                    // Handle failed lookup (missing paging structures)
+                    
+                    if attempts >= MAX_ATTEMPTS {
+                        println!("[VSpace] Max mapping attempts reached for 0x{:x}", vaddr);
+                        return Err(seL4_Error::seL4_FailedLookup);
+                    }
+
+                    // println!("[VSpace] Lookup failed for 0x{:x}, allocating paging structures (Attempt {})...", vaddr, attempts + 1);
                     self.handle_map_error(allocator, slots, boot_info, vaddr)?;
+                    attempts += 1;
                 }
             }
         }
@@ -125,16 +157,25 @@ impl VSpace {
         rights: seL4_CapRights,
         attr: seL4_X86_VMAttributes,
     ) -> Result<(), seL4_Error> {
-        unsafe {
-            let info = seL4_MessageInfo_new(ARCH_INVOCATION_LABEL_X86_PAGE_MAP, 0, 1, 3);
-            seL4_SetMR(0, vaddr as seL4_Word);
-            seL4_SetMR(1, rights.words[0]); // Access inner word
-            seL4_SetMR(2, attr as seL4_Word);
-            seL4_SetCap_My(0, self.pml4_cap);
-            
-            let dest_info = seL4_Call(frame_cap, info);
-            check_syscall_result(dest_info)
+        if frame_cap == 0 {
+             println!("[VSpace] map_page_syscall called with frame_cap=0");
+             return Err(seL4_Error::seL4_InvalidCapability);
         }
+
+        let info = libnova::ipc::MessageInfo::new(ARCH_INVOCATION_LABEL_X86_PAGE_MAP, 0, 1, 3);
+        libnova::ipc::set_mr(0, vaddr as seL4_Word);
+        libnova::ipc::set_mr(1, rights.words[0]); // Access inner word
+        libnova::ipc::set_mr(2, attr as seL4_Word);
+        libnova::ipc::set_cap(0, self.pml4_cap);
+        
+        let dest_info = libnova::ipc::call(frame_cap, info);
+        check_msg_err(dest_info.inner).map_err(|e| {
+             if e == libnova::syscall::Error::InvalidCapability {
+                  println!("[VSpace] Page Map InvalidCapability. frame_cap={}, pml4_cap={}, vaddr={:x}", 
+                      frame_cap, self.pml4_cap, vaddr);
+             }
+             to_sel4_error(e)
+        })
     }
 
     fn handle_map_error<A: ObjectAllocator>(
@@ -144,7 +185,7 @@ impl VSpace {
         boot_info: &seL4_BootInfo,
         vaddr: usize,
     ) -> Result<(), seL4_Error> {
-        let failed_bits = unsafe { seL4_GetMR(SEL4_MAPPING_LOOKUP_LEVEL) };
+        let failed_bits = libnova::ipc::get_mr(SEL4_MAPPING_LOOKUP_LEVEL);
         
         match failed_bits {
             SEL4_MAPPING_LOOKUP_NO_PT => {
@@ -183,19 +224,19 @@ impl VSpace {
         let cap = allocator.allocate(boot_info, type_, 12, slots)?;
 
         // Map the structure
-        unsafe {
+        {
             // X86PageTableMap, X86PageDirectoryMap, X86PDPTMap all take:
             // - Caps: [PML4 (root)]
             // - Args: [vaddr, attr]
-            let info = seL4_MessageInfo_new(map_label, 0, 1, 2);
-            seL4_SetMR(0, vaddr as seL4_Word);
-            seL4_SetMR(1, seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes as seL4_Word);
-            seL4_SetCap_My(0, self.pml4_cap);
+            let info = libnova::ipc::MessageInfo::new(map_label, 0, 1, 2);
+            libnova::ipc::set_mr(0, vaddr as seL4_Word);
+            libnova::ipc::set_mr(1, seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes as seL4_Word);
+            libnova::ipc::set_cap(0, self.pml4_cap);
 
-            let dest_info = seL4_Call(cap, info);
-            if let Err(e) = check_syscall_result(dest_info) {
+            let dest_info = libnova::ipc::call(cap, info);
+            if let Err(e) = check_msg_err(dest_info.inner) {
                 println!("[VSpace] Failed to map paging structure (type={}): {:?}", type_, e);
-                return Err(e);
+                return Err(to_sel4_error(e));
             }
         }
 

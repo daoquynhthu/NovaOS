@@ -1,6 +1,6 @@
-use crate::{print, println};
-use crate::keyboard::Key;
-use crate::memory::{SlotAllocator, UntypedAllocator};
+
+use crate::drivers::keyboard::Key;
+use crate::memory::{SlotAllocator, UntypedAllocator, FrameAllocator};
 use crate::tests;
 use sel4_sys::seL4_BootInfo;
 
@@ -10,7 +10,7 @@ const HISTORY_LEN: usize = 16;
 const COMMANDS: &[&str] = &[
     "help", "clear", "echo", "cat", "whoami", "status", "bootinfo", "alloc", "meminfo",
     "ps", "ls", "kill", "exec", "history", "post", "runhello", "cd", "mkdir", "rm", "touch", "pwd",
-    "renice"
+    "renice", "pci", "date", "disk_read", "disk_write", "mkfs", "mount"
 ];
 
 pub struct Shell {
@@ -20,6 +20,7 @@ pub struct Shell {
     boot_info: *const seL4_BootInfo,
     allocator: *mut UntypedAllocator,
     slots: *mut SlotAllocator,
+    frame_allocator: *mut FrameAllocator,
     history: [[char; MAX_CMD_LEN]; HISTORY_LEN],
     history_lens: [usize; HISTORY_LEN],
     history_count: usize,
@@ -42,6 +43,7 @@ impl Shell {
             boot_info: core::ptr::null(),
             allocator: core::ptr::null_mut(),
             slots: core::ptr::null_mut(),
+            frame_allocator: core::ptr::null_mut(),
             history: [['\0'; MAX_CMD_LEN]; HISTORY_LEN],
             history_lens: [0; HISTORY_LEN],
             history_count: 0,
@@ -61,11 +63,13 @@ impl Shell {
         boot_info: &seL4_BootInfo,
         allocator: &mut UntypedAllocator,
         slots: &mut SlotAllocator,
+        frame_allocator: &mut FrameAllocator,
         syscall_ep_cap: sel4_sys::seL4_CPtr,
     ) {
         self.boot_info = boot_info as *const seL4_BootInfo;
         self.allocator = allocator as *mut UntypedAllocator;
         self.slots = slots as *mut SlotAllocator;
+        self.frame_allocator = frame_allocator as *mut FrameAllocator;
         self.syscall_ep_cap = syscall_ep_cap;
         println!("\n[SHELL] Ready. Type 'help' for commands.");
         self.print_prompt();
@@ -552,8 +556,141 @@ impl Shell {
             println!("  runhello  - Run minimal user-mode program");
             println!("  shutdown  - Power off the system");
             println!("  renice    - Change process priority (renice <pid> <prio>)");
+            println!("  pci       - List PCI devices");
         } else if self.word_eq(word_start, word_end, "clear") {
             print!("\x1b[2J\x1b[1;1H");
+        } else if self.word_eq(word_start, word_end, "pci") {
+            crate::arch::pci::init();
+        } else if self.word_eq(word_start, word_end, "disk_read") {
+            let args_len = end - rest_start;
+            if args_len == 0 {
+                println!("Usage: disk_read <lba> <sectors>");
+            } else {
+                 let mut i = rest_start;
+                 while i < end && self.buffer[i] == ' ' { i += 1; }
+                 
+                 let mut lba = 0;
+                 while i < end && self.buffer[i].is_ascii_digit() {
+                     lba = lba * 10 + (self.buffer[i] as usize - '0' as usize);
+                     i += 1;
+                 }
+                 
+                 while i < end && self.buffer[i] == ' ' { i += 1; }
+                 
+                 let mut sectors = 0;
+                 while i < end && self.buffer[i].is_ascii_digit() {
+                     sectors = sectors * 10 + (self.buffer[i] as usize - '0' as usize);
+                     i += 1;
+                 }
+                 
+                 if sectors == 0 { sectors = 1; }
+                 
+                 println!("Reading Disk: LBA={}, Sectors={}", lba, sectors);
+                 let drv = crate::drivers::ata::AtaDriver::new(0x1F0);
+                 match drv.read_sectors(lba as u32, sectors as u8) {
+                     Ok(data) => {
+                         println!("Read {} bytes.", data.len());
+                         for (idx, byte) in data.iter().enumerate() {
+                             if idx % 16 == 0 {
+                                 print!("\n{:04x}: ", idx);
+                             }
+                             print!("{:02x} ", byte);
+                         }
+                         println!();
+                         // Print ASCII
+                         for byte in data.iter() {
+                             let c = *byte as char;
+                             if c.is_ascii_graphic() || c == ' ' {
+                                 print!("{}", c);
+                             } else {
+                                 print!(".");
+                             }
+                         }
+                         println!();
+                     },
+                     Err(e) => println!("Disk Read Error: {}", e),
+                 }
+            }
+        } else if self.word_eq(word_start, word_end, "disk_write") {
+             let args_len = end - rest_start;
+             if args_len == 0 {
+                 println!("Usage: disk_write <lba> <data_string>");
+             } else {
+                 let mut i = rest_start;
+                 while i < end && self.buffer[i] == ' ' { i += 1; }
+                 
+                 let mut lba = 0;
+                 while i < end && self.buffer[i].is_ascii_digit() {
+                     lba = lba * 10 + (self.buffer[i] as usize - '0' as usize);
+                     i += 1;
+                 }
+                 
+                 while i < end && self.buffer[i] == ' ' { i += 1; }
+                 
+                 let mut data = alloc::vec::Vec::new();
+                 while i < end {
+                     data.push(self.buffer[i] as u8);
+                     i += 1;
+                 }
+                 
+                 // Pad to 512
+                 while data.len() < 512 {
+                     data.push(0);
+                 }
+                 
+                 println!("Writing Disk: LBA={} DataLen={}", lba, data.len());
+                 let drv = crate::drivers::ata::AtaDriver::new(0x1F0);
+                 match drv.write_sectors(lba as u32, &data) {
+                     Ok(_) => println!("Write Success."),
+                     Err(e) => println!("Write Error: {}", e),
+                 }
+             }
+        } else if self.word_eq(word_start, word_end, "mkfs") {
+            let args_len = end - rest_start;
+            if args_len == 0 {
+                println!("Usage: mkfs <total_blocks>");
+            } else {
+                let mut i = rest_start;
+                while i < end && self.buffer[i] == ' ' { i += 1; }
+                let mut total_blocks = 0;
+                while i < end && self.buffer[i].is_ascii_digit() {
+                    total_blocks = total_blocks * 10 + (self.buffer[i] as usize - '0' as usize);
+                    i += 1;
+                }
+                
+                if total_blocks < 3 {
+                     println!("Total blocks must be at least 3 (SuperBlock + Bitmap + RootDir)");
+                } else {
+                     println!("Formatting disk with NSFS ({} blocks)...", total_blocks);
+                     let drv = crate::drivers::ata::AtaDriver::new(0x1F0);
+                     let fs = crate::fs::simplefs::SimpleFS::new(drv);
+                     match fs.format(total_blocks as u32) {
+                         Ok(_) => println!("Format successful!"),
+                         Err(e) => println!("Format failed: {}", e),
+                     }
+                }
+            }
+        } else if self.word_eq(word_start, word_end, "mount") {
+             println!("Mounting NSFS...");
+             let drv = crate::drivers::ata::AtaDriver::new(0x1F0);
+             let fs = crate::fs::simplefs::SimpleFS::new(drv);
+             match fs.check_magic() {
+                 Ok(valid) => {
+                     if valid {
+                         println!("Mount successful: Valid NSFS found.");
+                         *crate::fs::DISK_FS.lock() = Some(fs);
+                     } else {
+                         println!("Mount failed: Invalid magic number.");
+                     }
+                 },
+                 Err(e) => println!("Mount error: {}", e),
+             }
+        } else if self.word_eq(word_start, word_end, "date") {
+            let rtc = crate::drivers::rtc::RtcDriver::new();
+            let (day, month, year) = rtc.read_date();
+            let (hour, minute, second) = rtc.read_time();
+            println!("Date: {:04}-{:02}-{:02}", year, month, day);
+            println!("Time: {:02}:{:02}:{:02}", hour, minute, second);
         } else if self.word_eq(word_start, word_end, "whoami") {
             println!("root");
         } else if self.word_eq(word_start, word_end, "status") {
@@ -628,7 +765,7 @@ impl Shell {
                         p.tcb_cap, 
                         p.vspace.pml4_cap,
                         p.heap_brk,
-                        p.mapped_frame_count,
+                        p.mapped_frames.len(),
                         p.priority
                     );
                     println!();
@@ -666,7 +803,8 @@ impl Shell {
                         } else {
                              let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as sel4_sys::seL4_CPtr;
                              let slots = unsafe { &mut *self.slots };
-                             match p.terminate(root_cnode, slots) {
+                             let frame_allocator = unsafe { &mut *self.frame_allocator };
+                             match p.terminate(root_cnode, slots, frame_allocator) {
                                  Ok(_) => println!("Process {} killed.", pid),
                                  Err(e) => println!("Process {} killed but terminate failed: {:?}", pid, e),
                              }
@@ -744,40 +882,47 @@ impl Shell {
         } else if self.word_eq(word_start, word_end, "exec") {
             let len = end - rest_start;
             if len == 0 {
-                println!("Usage: exec <filename>");
+                println!("Usage: exec <filename> [args...]");
             } else {
-                let s = &self.buffer[rest_start..end];
-                let s = s.iter().collect::<alloc::string::String>();
-                let path_str = self.resolve_path(&s);
-                
-                let data_opt = crate::vfs::VFS.lock().as_ref().and_then(|fs| fs.read_file(&path_str));
-                
-                let final_data = if data_opt.is_none() && !path_str.contains("/bin/") {
-                     let bin_path = alloc::format!("/bin/{}", s);
-                     crate::vfs::VFS.lock().as_ref().and_then(|fs| fs.read_file(&bin_path))
-                } else {
-                     data_opt
-                };
+                let full_line = &self.buffer[rest_start..end];
+                let full_line_str = full_line.iter().collect::<alloc::string::String>();
+                let parts: alloc::vec::Vec<&str> = full_line_str.split_whitespace().collect();
 
-                if let Some(data) = final_data {
-                    println!("Executing '{}'...", s);
-                    self.spawn_process(&s, &data);
+                if let Some(filename) = parts.first() {
+                    let args = &parts[1..];
+                    let path_str = self.resolve_path(filename);
+                    
+                    let data_opt = crate::vfs::VFS.lock().as_ref().and_then(|fs| fs.read_file(&path_str));
+                    
+                    let final_data = if data_opt.is_none() && !path_str.contains("/bin/") {
+                         let bin_path = alloc::format!("/bin/{}", filename);
+                         crate::vfs::VFS.lock().as_ref().and_then(|fs| fs.read_file(&bin_path))
+                    } else {
+                         data_opt
+                    };
+
+                    if let Some(data) = final_data {
+                        println!("Executing '{}' with args {:?}...", filename, args);
+                        self.spawn_process(filename, &data, args);
+                    } else {
+                         println!("exec: {}: No such file or directory", path_str);
+                    }
                 } else {
-                     println!("exec: {}: No such file or directory", path_str);
+                    println!("Usage: exec <filename> [args...]");
                 }
             }
         } else if self.word_eq(word_start, word_end, "history") {
             self.print_history();
         } else if self.word_eq(word_start, word_end, "post") {
-            if self.boot_info.is_null() || self.allocator.is_null() || self.slots.is_null() {
-                println!("POST: unavailable");
+            if self.boot_info.is_null() || self.allocator.is_null() || self.slots.is_null() || self.frame_allocator.is_null() {
+                println!("Cannot run POST: missing dependencies");
             } else {
-                unsafe { tests::run_all(&*self.boot_info, &mut *self.allocator, &mut *self.slots) };
-                println!("[POST] Done.");
+                println!("Running POST (Power-On Self-Test)...");
+                unsafe { tests::run_all(&*self.boot_info, &mut *self.allocator, &mut *self.slots, &mut *self.frame_allocator) };
             }
         } else if self.word_eq(word_start, word_end, "runhello") {
             if let Some(data) = crate::vfs::VFS.lock().as_ref().and_then(|fs| fs.read_file("/bin/hello")) {
-                self.spawn_process("hello", &data);
+                self.spawn_process("hello", &data, &[]);
             } else {
                 println!("Error: hello binary not found in /bin");
             }
@@ -790,7 +935,48 @@ impl Shell {
                 self.cwd.clone()
             };
             
-            if let Some(entries) = crate::vfs::VFS.lock().as_ref().and_then(|fs| fs.list_dir(&path_str)) {
+            if path_str.starts_with("/disk") {
+                 let lock = crate::fs::DISK_FS.lock();
+                 if let Some(fs) = lock.as_ref() {
+                     let path_inner = if path_str.len() > 5 { &path_str[6..] } else { "" };
+                     match fs.resolve_path_from(fs.root_dir_block(), path_inner) {
+                         Ok((parent, filename)) => {
+                             let target_block = if filename.is_empty() {
+                                 parent
+                             } else {
+                                 match fs.find_entry(parent, &filename) {
+                                     Ok(entry) => {
+                                         if entry.is_dir() { entry.start_block }
+                                         else {
+                                         let size = entry.size;
+                                         println!("-rw-  {:>8}  {}", size, entry.get_name());
+                                         0 // Marker for "already handled"
+                                     }
+                                     },
+                                     Err(_) => { println!("ls: {}: No such file or directory", path_str); 0 }
+                                 }
+                             };
+                             
+                             if target_block != 0 {
+                                 match fs.list_dir(target_block) {
+                                     Ok(entries) => {
+                                         for entry in entries {
+                                             let size = entry.size;
+                                             let name = entry.get_name();
+                                             let type_char = if entry.is_dir() { 'd' } else { '-' };
+                                             println!("{}rw-  {:>8}  {}", type_char, size, name);
+                                         }
+                                     },
+                                     Err(e) => println!("ls: /disk error: {}", e),
+                                 }
+                             }
+                         },
+                         Err(e) => println!("ls: invalid path: {}", e),
+                     }
+                 } else {
+                     println!("ls: /disk not mounted (use 'mount' first)");
+                 }
+            } else if let Some(entries) = crate::vfs::VFS.lock().as_ref().and_then(|fs| fs.list_dir(&path_str)) {
                 for entry in entries {
                     let type_char = match entry.file_type {
                         crate::vfs::FileType::Directory => 'd',
@@ -810,9 +996,28 @@ impl Shell {
                 let s = s.iter().collect::<alloc::string::String>();
                 let path_str = self.resolve_path(&s);
                 
-                let exists = crate::vfs::VFS.lock().as_ref().map_or(false, |fs| {
-                     fs.list_dir(&path_str).is_some()
-                });
+                let exists = if path_str.starts_with("/disk") {
+                     let lock = crate::fs::DISK_FS.lock();
+                     if let Some(fs) = lock.as_ref() {
+                         let path_inner = if path_str.len() > 5 { &path_str[6..] } else { "" };
+                         match fs.resolve_path_from(fs.root_dir_block(), path_inner) {
+                             Ok((parent, filename)) => {
+                                 if filename.is_empty() { true }
+                                 else {
+                                     match fs.find_entry(parent, &filename) {
+                                         Ok(entry) => entry.is_dir(),
+                                         Err(_) => false
+                                     }
+                                 }
+                             },
+                             Err(_) => false
+                         }
+                     } else { false }
+                } else {
+                     crate::vfs::VFS.lock().as_ref().map_or(false, |fs| {
+                         fs.list_dir(&path_str).is_some()
+                     })
+                };
                 
                 if exists {
                     self.cwd = path_str;
@@ -832,17 +1037,38 @@ impl Shell {
                 let s = s.iter().collect::<alloc::string::String>();
                 let path_str = self.resolve_path(&s);
                 
-                let res = {
-                     let mut lock = crate::vfs::VFS.lock();
+                if path_str.starts_with("/disk/") {
+                     let path_inner = &path_str[6..];
+                     let mut lock = crate::fs::DISK_FS.lock();
                      if let Some(fs) = lock.as_mut() {
-                         fs.create_dir(&path_str)
+                         match fs.resolve_path_from(fs.root_dir_block(), path_inner) {
+                             Ok((parent, filename)) => {
+                                 if filename.is_empty() { println!("mkdir: cannot create root"); }
+                                 else {
+                                     match fs.create_dir(parent, &filename) {
+                                         Ok(_) => println!("Created directory {}", path_str),
+                                         Err(e) => println!("mkdir: error: {}", e),
+                                     }
+                                 }
+                             },
+                             Err(e) => println!("mkdir: error: {}", e),
+                         }
                      } else {
-                         Err("VFS not initialized")
+                         println!("mkdir: /disk not mounted");
                      }
-                };
-                
-                if let Err(e) = res {
-                    println!("mkdir: cannot create directory '{}': {}", path_str, e);
+                } else {
+                    let res = {
+                         let mut lock = crate::vfs::VFS.lock();
+                         if let Some(fs) = lock.as_mut() {
+                             fs.create_dir(&path_str)
+                         } else {
+                             Err("VFS not initialized")
+                         }
+                    };
+                    
+                    if let Err(e) = res {
+                        println!("mkdir: cannot create directory '{}': {}", path_str, e);
+                    }
                 }
             }
         } else if self.word_eq(word_start, word_end, "cat") {
@@ -854,22 +1080,50 @@ impl Shell {
                 let s = s.iter().collect::<alloc::string::String>();
                 let path_str = self.resolve_path(&s);
                 
-                let lock = crate::vfs::VFS.lock();
-                if let Some(fs) = lock.as_ref() {
-                    if !fs.exists(&path_str) {
-                         println!("cat: {}: No such file or directory", path_str);
-                    } else if let Some(data) = fs.read_file(&path_str) {
-                        if let Ok(s) = core::str::from_utf8(&data) {
-                            print!("{}", s);
-                            if !s.ends_with('\n') { println!(); }
+                if path_str.starts_with("/disk/") {
+                     let path_inner = &path_str[6..];
+                     let lock = crate::fs::DISK_FS.lock();
+                     if let Some(fs) = lock.as_ref() {
+                         match fs.resolve_path_from(fs.root_dir_block(), path_inner) {
+                             Ok((parent, filename)) => {
+                                 if filename.is_empty() { println!("cat: {}: Is a directory", path_str); }
+                                 else {
+                                     match fs.read_file(parent, &filename) {
+                                         Ok(data) => {
+                                             if let Ok(s) = core::str::from_utf8(&data) {
+                                                 print!("{}", s);
+                                                 if !s.ends_with('\n') { println!(); }
+                                             } else {
+                                                 println!("(Binary file, {} bytes)", data.len());
+                                             }
+                                         },
+                                         Err(e) => println!("cat: {}", e),
+                                     }
+                                 }
+                             },
+                             Err(e) => println!("cat: error: {}", e),
+                         }
+                     } else {
+                         println!("cat: /disk not mounted");
+                     }
+                } else {
+                    let lock = crate::vfs::VFS.lock();
+                    if let Some(fs) = lock.as_ref() {
+                        if !fs.exists(&path_str) {
+                             println!("cat: {}: No such file or directory", path_str);
+                        } else if let Some(data) = fs.read_file(&path_str) {
+                            if let Ok(s) = core::str::from_utf8(&data) {
+                                print!("{}", s);
+                                if !s.ends_with('\n') { println!(); }
+                            } else {
+                                 println!("(Binary file, {} bytes)", data.len());
+                            }
                         } else {
-                             println!("(Binary file, {} bytes)", data.len());
+                             println!("cat: {}: Is a directory", path_str);
                         }
                     } else {
-                         println!("cat: {}: Is a directory", path_str);
+                         println!("VFS not initialized");
                     }
-                } else {
-                     println!("VFS not initialized");
                 }
             }
         } else if self.word_eq(word_start, word_end, "rm") {
@@ -881,17 +1135,47 @@ impl Shell {
                 let s = s.iter().collect::<alloc::string::String>();
                 let path_str = self.resolve_path(&s);
                 
-                let res = {
-                     let mut lock = crate::vfs::VFS.lock();
+                if path_str.starts_with("/disk/") {
+                     let path_inner = &path_str[6..];
+                     let mut lock = crate::fs::DISK_FS.lock();
                      if let Some(fs) = lock.as_mut() {
-                         fs.remove(&path_str)
+                         match fs.resolve_path_from(fs.root_dir_block(), path_inner) {
+                             Ok((parent, filename)) => {
+                                 if filename.is_empty() { println!("rm: cannot remove root"); }
+                                 else {
+                                     match fs.delete_file(parent, &filename) {
+                                         Ok(_) => println!("Deleted {}", path_str),
+                                         Err(e) => {
+                                             if e == "Is a directory" {
+                                                 match fs.delete_dir(parent, &filename) {
+                                                     Ok(_) => println!("Deleted directory {}", path_str),
+                                                     Err(e2) => println!("rm: error: {}", e2),
+                                                 }
+                                             } else {
+                                                  println!("rm: error: {}", e);
+                                             }
+                                         }
+                                     }
+                                 }
+                             },
+                             Err(e) => println!("rm: error: {}", e),
+                         }
                      } else {
-                         Err("VFS not initialized")
+                         println!("rm: /disk not mounted");
                      }
-                };
-                
-                if let Err(e) = res {
-                    println!("rm: cannot remove '{}': {}", path_str, e);
+                } else {
+                    let res = {
+                         let mut lock = crate::vfs::VFS.lock();
+                         if let Some(fs) = lock.as_mut() {
+                             fs.remove(&path_str)
+                         } else {
+                             Err("VFS not initialized")
+                         }
+                    };
+                    
+                    if let Err(e) = res {
+                         println!("rm: cannot remove '{}': {}", path_str, e);
+                    }
                 }
             }
         } else if self.word_eq(word_start, word_end, "touch") {
@@ -903,29 +1187,102 @@ impl Shell {
                 let s = s.iter().collect::<alloc::string::String>();
                 let path_str = self.resolve_path(&s);
                 
-                let res = {
-                     let mut lock = crate::vfs::VFS.lock();
+                if path_str.starts_with("/disk/") {
+                     let path_inner = &path_str[6..];
+                     let mut lock = crate::fs::DISK_FS.lock();
                      if let Some(fs) = lock.as_mut() {
-                         fs.create_file(&path_str)
+                         match fs.resolve_path_from(fs.root_dir_block(), path_inner) {
+                             Ok((parent, filename)) => {
+                                 if filename.is_empty() { println!("touch: cannot touch root"); }
+                                 else {
+                                     match fs.create_file(parent, &filename) {
+                                         Ok(_) => println!("Created file {}", path_str),
+                                         Err(e) => println!("touch: {}", e),
+                                     }
+                                 }
+                             },
+                             Err(e) => println!("touch: error: {}", e),
+                         }
                      } else {
-                         Err("VFS not initialized")
+                         println!("touch: /disk not mounted");
                      }
-                };
-                
-                if let Err(e) = res {
-                    println!("touch: cannot create file '{}': {}", path_str, e);
+                } else {
+                    let res = {
+                         let mut lock = crate::vfs::VFS.lock();
+                         if let Some(fs) = lock.as_mut() {
+                             fs.create_file(&path_str)
+                         } else {
+                             Err("VFS not initialized")
+                         }
+                    };
+                    
+                    if let Err(e) = res {
+                        println!("touch: cannot create file '{}': {}", path_str, e);
+                    }
                 }
             }
         } else if self.word_eq(word_start, word_end, "pwd") {
             println!("{}", self.cwd);
         } else if self.word_eq(word_start, word_end, "echo") {
-            if rest_start >= end {
-                println!();
-            } else {
-                for i in rest_start..end {
-                    print!("{}", self.buffer[i]);
+            let mut redirect_idx = None;
+            for i in rest_start..end {
+                if self.buffer[i] == '>' {
+                    redirect_idx = Some(i);
+                    break;
                 }
-                println!();
+            }
+
+            if let Some(idx) = redirect_idx {
+                 let content_end = idx;
+                 let mut fn_start = idx + 1;
+                 while fn_start < end && self.buffer[fn_start] == ' ' { fn_start += 1; }
+                 
+                 let s = &self.buffer[fn_start..end];
+                 let s = s.iter().collect::<alloc::string::String>();
+                 let path_str = self.resolve_path(&s);
+                 
+                 let content_s = &self.buffer[rest_start..content_end];
+                 let mut content_vec = alloc::vec::Vec::new();
+                 for c in content_s {
+                      let mut b = [0; 4];
+                      let s = c.encode_utf8(&mut b);
+                      content_vec.extend_from_slice(s.as_bytes());
+                 }
+                 if !content_vec.is_empty() && content_vec[content_vec.len()-1] == b' ' {
+                     content_vec.pop();
+                 }
+
+                 if path_str.starts_with("/disk/") {
+                      let path_inner = &path_str[6..];
+                      let mut lock = crate::fs::DISK_FS.lock();
+                      if let Some(fs) = lock.as_mut() {
+                          match fs.resolve_path_from(fs.root_dir_block(), path_inner) {
+                              Ok((parent, filename)) => {
+                                  if filename.is_empty() { println!("echo: cannot write to directory"); }
+                                  else {
+                                      match fs.write_file(parent, &filename, &content_vec) {
+                                          Ok(_) => println!("Written to {}", path_str),
+                                          Err(e) => println!("Write error: {}", e),
+                                      }
+                                  }
+                              },
+                              Err(e) => println!("echo: error: {}", e),
+                          }
+                      } else {
+                          println!("/disk not mounted");
+                      }
+                 } else {
+                      println!("Only /disk/ supports write for now");
+                 }
+            } else {
+                if rest_start >= end {
+                    println!();
+                } else {
+                    for i in rest_start..end {
+                        print!("{}", self.buffer[i]);
+                    }
+                    println!();
+                }
             }
         } else {
              print!("Unknown command: ");
@@ -936,8 +1293,8 @@ impl Shell {
         }
     }
 
-    fn spawn_process(&mut self, name: &str, elf_data: &[u8]) {
-        if self.boot_info.is_null() || self.allocator.is_null() || self.slots.is_null() {
+    fn spawn_process(&mut self, name: &str, elf_data: &[u8], args: &[&str]) {
+        if self.boot_info.is_null() || self.allocator.is_null() || self.slots.is_null() || self.frame_allocator.is_null() {
             println!("spawn_process: unavailable");
             return;
         }
@@ -948,6 +1305,7 @@ impl Shell {
         let bi = unsafe { &*self.boot_info };
         let alloc = unsafe { &mut *self.allocator };
         let slots = unsafe { &mut *self.slots };
+        let frame_alloc = unsafe { &mut *self.frame_allocator };
 
         // 1. Allocate PID
         let pm = get_process_manager();
@@ -970,31 +1328,24 @@ impl Shell {
             }
         };
 
-        let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-        let cnode_depth = seL4_WordBits; 
+        let root_cnode_cap = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+        let root_cnode = libnova::cap::CNode::new(root_cnode_cap, seL4_WordBits as u8);
         
-        let err = unsafe {
-            seL4_CNode_Mint(
-                root_cnode,
-                badged_ep_slot,
-                cnode_depth as u8,
-                root_cnode,
-                self.syscall_ep_cap,
-                cnode_depth as u8,
-                crate::utils::seL4_CapRights_new(0, 1, 1, 1),
-                badge as seL4_Word 
-            )
-        };
-        
-        if err != 0.into() {
-            println!("[RUN] Failed to mint badged endpoint: {:?}", err);
+        if let Err(e) = root_cnode.mint(
+            badged_ep_slot,
+            &root_cnode,
+            self.syscall_ep_cap,
+            libnova::cap::CapRights_new(false, true, true, true),
+            badge as seL4_Word
+        ) {
+            println!("[RUN] Failed to mint badged endpoint: {:?}", e);
             return;
         }
 
         println!("[RUN] Spawning process '{}' (PID {})...", name, pid);
 
         // 3. Spawn Process
-        match Process::spawn(alloc, slots, bi, elf_data, 100, badged_ep_slot) {
+        match Process::spawn(alloc, slots, frame_alloc, bi, elf_data, args, 100, badged_ep_slot) {
             Ok(process) => {
                     // 4. Add to Manager
                     if let Err(e) = pm.add_process(process) {

@@ -1,8 +1,7 @@
+use alloc::vec::Vec;
 use sel4_sys::{
     seL4_BootInfo, seL4_Error, seL4_Word, seL4_CPtr,
-    seL4_Call, seL4_MessageInfo_new, seL4_SetMR, seL4_MessageInfo_get_label, seL4_SetCap_My,
 };
-use crate::println;
 
 const SE_L4_UNTYPED_RETYPE: seL4_Word = 1;
 const SE_L4_CAP_INIT_THREAD_CNODE: seL4_CPtr = 2;
@@ -10,6 +9,14 @@ const SE_L4_CAP_INIT_THREAD_CNODE: seL4_CPtr = 2;
 const MAX_CSPACE_SLOTS: usize = 4096;
 const BITMAP_SIZE: usize = MAX_CSPACE_SLOTS / 64;
 const MAX_UNTYPED_CAPS: usize = 256;
+
+/// Represents a region of memory backed by a frame capability
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryRegion {
+    pub frame_cap: seL4_CPtr,
+    #[allow(dead_code)]
+    pub size_bits: usize,
+}
 
 /// Allocator for CSpace slots (CNode indices) using a Bitmap
 /// Supports alloc and free operations.
@@ -163,17 +170,17 @@ impl UntypedAllocator {
         num_objects: seL4_Word,
     ) -> seL4_Error {
         // Label=1 (UntypedRetype), Caps=1 (root), Length=7
-        let info = seL4_MessageInfo_new(SE_L4_UNTYPED_RETYPE, 0, 1, 7);
-        seL4_SetMR(0, type_);
-        seL4_SetMR(1, size_bits);
-        seL4_SetCap_My(0, root);
-        seL4_SetMR(2, node_index);
-        seL4_SetMR(3, node_depth);
-        seL4_SetMR(4, node_offset);
-        seL4_SetMR(5, num_objects);
+        let info = libnova::ipc::MessageInfo::new(SE_L4_UNTYPED_RETYPE, 0, 1, 7);
+        libnova::ipc::set_mr(0, type_);
+        libnova::ipc::set_mr(1, size_bits);
+        libnova::ipc::set_cap(0, root);
+        libnova::ipc::set_mr(2, node_index);
+        libnova::ipc::set_mr(3, node_depth);
+        libnova::ipc::set_mr(4, node_offset);
+        libnova::ipc::set_mr(5, num_objects);
         
-        let dest_info = seL4_Call(service, info);
-        seL4_Error::from(seL4_MessageInfo_get_label(dest_info) as i32)
+        let dest_info = libnova::ipc::call(service, info);
+        seL4_Error::from(dest_info.label() as i32)
     }
 
     pub fn print_info(&self, boot_info: &seL4_BootInfo) {
@@ -216,7 +223,7 @@ impl UntypedAllocator {
         let mut ram_used_bytes = 0u64;
 
         for idx in 0..total_caps {
-            let desc = boot_info.untypedList[idx];
+            let desc = &boot_info.untypedList[idx];
             if desc.isDevice != 0 {
                 continue;
             }
@@ -257,7 +264,7 @@ impl ObjectAllocator for UntypedAllocator {
                 break;
             }
 
-            let desc = boot_info.untypedList[idx];
+            let desc = &boot_info.untypedList[idx];
 
             // Skip device memory and too small blocks
             if desc.isDevice != 0 || (desc.sizeBits as seL4_Word) < size_bits {
@@ -290,58 +297,74 @@ impl ObjectAllocator for UntypedAllocator {
         // 2. Try to allocate from the best candidate
         if let Some(idx) = best_idx {
             let untyped_cptr = self.untyped_start + idx;
-            let desc = boot_info.untypedList[idx];
-
-            let root = SE_L4_CAP_INIT_THREAD_CNODE;
-            let node_index = 0; 
-            let node_depth = 0; 
-            let node_offset = dest_slot; 
-            let num_objects = 1;
-
-            // println!("[Alloc] Attempting retype (BestFit): Untyped={} (Size={}) -> Slot={} (Type={}, Size={})", 
-            //    untyped_cptr, desc.sizeBits, dest_slot, type_, size_bits);
-
-            let err = unsafe {
-                Self::untyped_retype(
-                    untyped_cptr as seL4_CPtr,
+            let _desc = &boot_info.untypedList[idx];
+            
+            // Calculate offset again for the chosen block
+            let current_usage = self.usage[idx];
+            let alignment = 1 << size_bits;
+            let start_offset = (current_usage + alignment - 1) & !(alignment - 1);
+            
+            // Perform retype
+             unsafe {
+                let err = UntypedAllocator::untyped_retype(
+                    untyped_cptr.try_into().unwrap(),
                     type_,
                     size_bits,
-                    root,
-                    node_index,
-                    node_depth,
-                    node_offset,
-                    num_objects,
-                )
-            };
-
-            if err == seL4_Error::seL4_NoError {
-                // println!("[Alloc] Success: Retyped Untyped={} into Slot {}", untyped_cptr, dest_slot);
-                self.last_used_idx = idx; 
+                    SE_L4_CAP_INIT_THREAD_CNODE,
+                    0,
+                    0, // node_depth 0 = root cnode
+                    dest_slot,
+                    1,
+                );
                 
-                // Update usage
-                let alignment = 1 << size_bits;
-                let start_offset = (self.usage[idx] + alignment - 1) & !(alignment - 1);
-                self.usage[idx] = start_offset + (1 << size_bits);
-                
-                // Invariant: Usage should not exceed size
-                debug_assert!(self.usage[idx] <= (1 << desc.sizeBits), "Invariant: Usage <= Capacity");
-
-                return Ok(dest_slot);
-            } else {
-                 println!("[Alloc] Retype failed for BestFit Untyped Slot {} (Type={}, Size={}): {:?}", 
-                     untyped_cptr, 
-                     if desc.isDevice != 0 { "Device" } else { "RAM" },
-                     desc.sizeBits,
-                     err);
-                 // If failed, we might want to mark it as full or handle it. 
-                 // For now, we just fail.
+                if err != seL4_Error::seL4_NoError {
+                    println!("[Alloc] Retype failed: {:?}", err);
+                    slots.free(dest_slot);
+                    return Err(err);
+                }
             }
+            
+            // Update usage
+            self.usage[idx] = start_offset + (1 << size_bits);
+            self.last_used_idx = idx;
+            
+            return Ok(dest_slot);
         }
 
-        // If we reach here, we failed to allocate. Free the slot.
+        println!("[Alloc] No suitable untyped memory found for size_bits {}", size_bits);
         slots.free(dest_slot);
-
-        println!("[Alloc] Failed to allocate memory of size_bits {}", size_bits);
         Err(seL4_Error::seL4_NotEnoughMemory)
+    }
+}
+
+/// Allocator specifically for 4K Frames, supporting reuse
+pub struct FrameAllocator {
+    free_frames: Vec<seL4_CPtr>,
+}
+
+impl FrameAllocator {
+    pub fn new() -> Self {
+        FrameAllocator {
+            free_frames: Vec::new(),
+        }
+    }
+
+    pub fn alloc<A: ObjectAllocator>(
+        &mut self,
+        allocator: &mut A,
+        boot_info: &seL4_BootInfo,
+        slots: &mut SlotAllocator,
+    ) -> Result<seL4_CPtr, seL4_Error> {
+        // TEMP DEBUG: Disable recycling to test if frame 567 is corrupt
+        // if let Some(cap) = self.free_frames.pop() {
+        //     return Ok(cap);
+        // }
+        // No free frames, allocate new one
+        // 4K Frame = size_bits 12, type = seL4_X86_4K (value 8)
+        allocator.allocate(boot_info, 8, 12, slots)
+    }
+
+    pub fn free(&mut self, frame_cap: seL4_CPtr) {
+        self.free_frames.push(frame_cap);
     }
 }

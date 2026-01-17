@@ -46,7 +46,13 @@ fn main() {
         // regardless of the host OS (Windows) or Cargo target (if not explicitly set).
         .clang_arg("--target=x86_64-unknown-linux-gnu")
         .clang_arg("-D__LP64__") // Ensure LP64 data model (long is 64-bit)
-        .clang_arg("-m64");
+        .clang_arg("-m64")
+        .blocklist_type("seL4_Word")
+         .raw_line("pub type seL4_Word = u64;")
+         .blocklist_type("seL4_MessageInfo")
+         .raw_line("#[repr(C)] #[derive(Debug, Copy, Clone, PartialEq, Eq)] pub struct seL4_MessageInfo { pub words: [seL4_Word; 1], }")
+         .blocklist_type("seL4_CapRights")
+         .raw_line("#[repr(C)] #[derive(Debug, Copy, Clone, PartialEq, Eq)] pub struct seL4_CapRights { pub words: [seL4_Word; 1], }");
 
     // Fix for Windows host compiling for x86_64: force 64-bit enums
     // if target.contains("x86_64") && cfg!(windows) {

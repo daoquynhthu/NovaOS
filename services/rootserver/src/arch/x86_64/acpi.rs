@@ -1,15 +1,17 @@
 use sel4_sys::{
-    seL4_BootInfo, seL4_BootInfoHeader, seL4_CPtr, seL4_Error,
+    seL4_BootInfo, seL4_BootInfoHeader, seL4_CPtr, seL4_Error, seL4_Word,
 };
 use sel4_sys::seL4_RootCNodeCapSlots;
 use sel4_sys::seL4_X86_VMAttributes;
 use core::mem::size_of;
 use core::str;
-use crate::println;
 use crate::memory::{SlotAllocator, UntypedAllocator};
 use crate::vspace::VSpace;
 use crate::arch::port_io;
-use crate::utils::{seL4_X86_4K, untyped_retype, seL4_CapRights_new};
+
+// Temporary constant until we confirm sel4_sys export
+#[allow(non_upper_case_globals)]
+const seL4_X86_4K: seL4_Word = 8;
 
 static mut FADT_PTR: Option<*const Fadt> = None;
 
@@ -302,30 +304,28 @@ pub fn enable_acpi(fadt: &Fadt) {
          return;
     }
     
-    unsafe {
-        let val = port_io::inw(pm1a_cnt);
-        if (val & 1) != 0 {
-            println!("[ACPI] ACPI already enabled.");
-            return;
-        }
+    let val = port_io::inw(pm1a_cnt);
+    if (val & 1) != 0 {
+        println!("[ACPI] ACPI already enabled.");
+        return;
+    }
+    
+    println!("[ACPI] Enabling ACPI...");
+    if fadt.acpi_enable != 0 {
+        port_io::outb(fadt.smi_cmd as u16, fadt.acpi_enable);
         
-        println!("[ACPI] Enabling ACPI...");
-        if fadt.acpi_enable != 0 {
-            port_io::outb(fadt.smi_cmd as u16, fadt.acpi_enable);
-            
-            // Wait for enabling
-            for _ in 0..100 {
-                if (port_io::inw(pm1a_cnt) & 1) != 0 {
-                    println!("[ACPI] ACPI Enabled successfully.");
-                    return;
-                }
-                // spin
-                for _ in 0..10000 { core::hint::spin_loop(); }
+        // Wait for enabling
+        for _ in 0..100 {
+            if (port_io::inw(pm1a_cnt) & 1) != 0 {
+                println!("[ACPI] ACPI Enabled successfully.");
+                return;
             }
-            println!("[ACPI] Failed to enable ACPI (timeout).");
-        } else {
-             println!("[ACPI] No ACPI_ENABLE command specified.");
+            // spin
+            for _ in 0..10000 { core::hint::spin_loop(); }
         }
+        println!("[ACPI] Failed to enable ACPI (timeout).");
+    } else {
+            println!("[ACPI] No ACPI_ENABLE command specified.");
     }
 }
 
@@ -333,9 +333,7 @@ pub fn system_shutdown(fadt: Option<&Fadt>) -> ! {
     println!("[KERNEL] Shutting down...");
     
     // Method 1: QEMU specific (works even without ACPI if supported)
-    unsafe {
-        port_io::outw(0x604, 0x2000);
-    }
+    port_io::outw(0x604, 0x2000);
     
     // Method 2: ACPI
     if let Some(fadt) = fadt {
@@ -350,13 +348,11 @@ pub fn system_shutdown(fadt: Option<&Fadt>) -> ! {
         
         let cmd = 0x2000u16; 
         
-        unsafe {
-             if pm1a_cnt != 0 {
-                 port_io::outw(pm1a_cnt, cmd);
-             }
-             if pm1b_cnt != 0 {
-                 port_io::outw(pm1b_cnt, cmd);
-             }
+        if pm1a_cnt != 0 {
+            port_io::outw(pm1a_cnt, cmd);
+        }
+        if pm1b_cnt != 0 {
+            port_io::outw(pm1b_cnt, cmd);
         }
     }
     
@@ -398,7 +394,7 @@ fn find_rsdt_cap(boot_info: &seL4_BootInfo, rsdt_paddr: usize) -> Option<AcpiInf
     for i in 0..count {
         let desc_idx = i as usize;
         if desc_idx >= boot_info.untypedList.len() { break; }
-        let desc = boot_info.untypedList[desc_idx];
+        let desc = &boot_info.untypedList[desc_idx];
         let paddr = desc.paddr as usize;
         let size_bits = desc.sizeBits as usize;
         let size_bytes = 1 << size_bits;
@@ -455,7 +451,7 @@ fn find_untyped_for_paddr(boot_info: &seL4_BootInfo, paddr: usize) -> Option<(se
     for i in 0..count {
         let desc_idx = i as usize;
         if desc_idx >= boot_info.untypedList.len() { break; }
-        let desc = boot_info.untypedList[desc_idx];
+        let desc = &boot_info.untypedList[desc_idx];
         let cap_paddr = desc.paddr as usize;
         let size_bits = desc.sizeBits as usize;
         let size_bytes = 1 << size_bits;
@@ -551,20 +547,21 @@ pub fn map_phys(
 
             for i in 0..pages_needed {
                  let slot = slots.alloc().map_err(|_| seL4_Error::seL4_NotEnoughMemory)?;
-                 let err = unsafe {
-                     untyped_retype(
+                 let root_cnode_obj = libnova::cap::CNode::new(seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr, 64);
+                 
+                 let res = libnova::cap::untyped_retype(
                          mc.cap_cptr,
                          seL4_X86_4K,
                          12,
-                         seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr,
-                        0,
-                        0,
-                        slot,
-                        1
-                    )
-                };
-                if err != seL4_Error::seL4_NoError {
-                    return Err(err);
+                         &root_cnode_obj,
+                         0,
+                         0,
+                         slot,
+                         1
+                    );
+                
+                if res.is_err() {
+                    return Err(seL4_Error::seL4_NotEnoughMemory);
                 }
                 
                 let page_vaddr = mc.vaddr_start + current_limit + (i * 4096);
@@ -576,7 +573,7 @@ pub fn map_phys(
                    boot_info,
                    slot,
                    page_vaddr,
-                   seL4_CapRights_new(0, 1, 1, 1),
+                   libnova::cap::CapRights_new(false, true, true, true),
                    seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes
                )?;
             }

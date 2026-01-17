@@ -6,6 +6,9 @@
 pub mod syscall;
 pub mod cap;
 pub mod ipc;
+pub mod tcb;
+pub mod console;
+pub mod env;
 
 pub fn init() {
     // 初始化 libnova 环境

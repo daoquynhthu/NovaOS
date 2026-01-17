@@ -1,133 +1,103 @@
-use sel4_sys::{
-    seL4_BootInfo, seL4_CPtr, seL4_Error, seL4_PageBits,
-    seL4_RootCNodeCapSlots, seL4_X86_VMAttributes,
-};
-use crate::memory::{ObjectAllocator, SlotAllocator};
-use crate::utils::{seL4_CapRights_new, copy_cap, seL4_CNode_Delete, seL4_X86_4K};
-
-pub const MAX_SHARED_REGIONS: usize = 16;
-
-#[derive(Clone, Copy)]
-pub struct SharedRegion {
-    pub key: usize,
-    pub frame_cap: seL4_CPtr,
-    #[allow(dead_code)]
-    pub size: usize,
-}
+use sel4_sys::{seL4_CPtr, seL4_Error, seL4_Word};
+use crate::memory::{ObjectAllocator, SlotAllocator, MemoryRegion};
+use crate::process::Process;
 
 pub struct SharedMemoryManager {
-    regions: [Option<SharedRegion>; MAX_SHARED_REGIONS],
-    next_key: usize,
+    regions: [Option<MemoryRegion>; 32],
 }
 
 impl SharedMemoryManager {
     pub const fn new() -> Self {
         SharedMemoryManager {
-            regions: [None; MAX_SHARED_REGIONS],
-            next_key: 100, // Start keys at 100
+            regions: [None; 32],
         }
     }
 
-    pub fn create_shared_region<T: ObjectAllocator>(
+    pub fn create_shared_region<A: ObjectAllocator>(
         &mut self,
-        allocator: &mut T,
+        allocator: &mut A,
         slot_allocator: &mut SlotAllocator,
-        boot_info: &seL4_BootInfo,
-        size_bytes: usize,
+        boot_info: &sel4_sys::seL4_BootInfo,
+        _size: usize,
     ) -> Result<usize, seL4_Error> {
-        // Only support 4K pages for now
-        if size_bytes != 4096 {
-            return Err(seL4_Error::seL4_InvalidArgument);
-        }
-
         // Find free slot
-        let mut idx = None;
-        for i in 0..MAX_SHARED_REGIONS {
-            if self.regions[i].is_none() {
-                idx = Some(i);
+        let mut idx = 0;
+        let mut found = false;
+        while idx < self.regions.len() {
+            if self.regions[idx].is_none() {
+                found = true;
                 break;
             }
+            idx += 1;
         }
 
-        if idx.is_none() {
+        if !found {
             return Err(seL4_Error::seL4_NotEnoughMemory);
         }
 
-        let idx = idx.unwrap();
-        let key = self.next_key;
-        self.next_key += 1;
-
-        // Allocate Frame
-        let frame_cap = allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator)
-            .map_err(|_| seL4_Error::seL4_NotEnoughMemory)?;
-
-        self.regions[idx] = Some(SharedRegion {
-            key,
+        // Allocate frame (assuming 4K for now regardless of size, or handling size)
+        // For simplicity, support only 4K requests or single frame
+        const SE_L4_X86_4K: seL4_Word = 8;
+        let frame_cap = allocator.allocate(boot_info, SE_L4_X86_4K, sel4_sys::seL4_PageBits.into(), slot_allocator)?;
+        
+        self.regions[idx] = Some(MemoryRegion {
             frame_cap,
-            size: size_bytes,
+            size_bits: 12,
         });
 
-        crate::println!("[SHM] Created shared region Key={} Cap={}", key, frame_cap);
-        Ok(key)
+        Ok(idx)
     }
 
-    pub fn map_shared_region<T: ObjectAllocator>(
-        &self,
+    pub fn map_shared_region<A: ObjectAllocator>(
+        &mut self,
         key: usize,
-        process: &mut crate::process::Process,
-        allocator: &mut T,
+        process: &mut Process,
+        allocator: &mut A,
         slot_allocator: &mut SlotAllocator,
-        boot_info: &seL4_BootInfo,
+        boot_info: &sel4_sys::seL4_BootInfo,
         vaddr: usize,
     ) -> Result<(), seL4_Error> {
-        // Find region
-        let region = self.regions.iter().find(|r| r.map_or(false, |x| x.key == key));
-        if region.is_none() {
-             return Err(seL4_Error::seL4_InvalidArgument);
+        if key >= self.regions.len() || self.regions[key].is_none() {
+            return Err(seL4_Error::seL4_FailedLookup);
         }
-        let region = region.unwrap().unwrap();
 
-        // 1. Allocate a new slot for the copy
+        let region = self.regions[key].unwrap();
+        
+        // Copy cap to process cspace
+        let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+        let cnode_depth = sel4_sys::seL4_WordBits as u8;
+
         let copy_cap_slot = slot_allocator.alloc()?;
-
-        // 2. Copy the cap
-        let root_cnode = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-        unsafe {
-            let err = copy_cap(
-                root_cnode,
-                copy_cap_slot,
-                64, // Depth
-                root_cnode,
-                region.frame_cap,
-                64,
-                seL4_CapRights_new(0, 1, 1, 1) // RW
-            );
-            if err != seL4_Error::seL4_NoError {
-                 slot_allocator.free(copy_cap_slot);
-                 return Err(err);
-            }
+        let root_node = libnova::cap::CNode::new(root_cnode, cnode_depth); 
+        
+        let rights = libnova::cap::CapRights_new(false, false, true, true); // RW
+        let err = root_node.copy(
+            copy_cap_slot,
+            &root_node,
+            region.frame_cap,
+            rights,
+        );
+            
+        if err.is_err() {
+             return Err(seL4_Error::seL4_DeleteFirst);
         }
 
-        // 3. Map into VSpace
+        // Map into VSpace
         let res = process.vspace.map_page(
             allocator,
             slot_allocator,
             boot_info,
             copy_cap_slot,
             vaddr,
-            seL4_CapRights_new(0, 1, 1, 1),
-            seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes
+            libnova::cap::CapRights_new(false, true, true, true),
+            sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes
         );
 
         if res.is_ok() {
-            // Track the frame so it gets deleted when process dies
-            // Note: This deletes the COPY, not the original.
             let _ = process.track_frame(copy_cap_slot);
-            crate::println!("[SHM] Mapped Key={} to PID={} VAddr=0x{:x} (CopyCap={})", key, 0, vaddr, copy_cap_slot); // PID 0 is placeholder
             Ok(())
         } else {
-            // Cleanup copy
-             unsafe { let _ = seL4_CNode_Delete(root_cnode, copy_cap_slot, 64); }
+             let _ = root_node.delete(copy_cap_slot);
              slot_allocator.free(copy_cap_slot);
              Err(seL4_Error::seL4_FailedLookup)
         }

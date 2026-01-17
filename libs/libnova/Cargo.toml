@@ -6,4 +6,5 @@ authors = ["NovaOS Team"]
 description = "Core library for NovaOS native system calls and abstractions"
 
 [dependencies]
-# Future dependencies: sel4-sys, spin, etc.
+sel4-sys = { path = "../seL4-sys" }
+spin = "0.9.8"

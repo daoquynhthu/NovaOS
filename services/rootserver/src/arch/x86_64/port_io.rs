@@ -1,7 +1,6 @@
 #![allow(dead_code)]
-use sel4_sys::*;
+use sel4_sys::{seL4_CPtr, seL4_Word};
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::println;
 
 // Invocation labels from bindings.rs
 const X86_IO_PORT_CONTROL_ISSUE: seL4_Word = 45;
@@ -35,24 +34,22 @@ pub fn issue_ioport_cap(
     dest_index: seL4_Word,
     dest_depth: seL4_Word,
 ) -> Result<(), seL4_Word> {
-    unsafe {
-        seL4_SetCap_My(0, root_cnode);
-        seL4_SetMR(0, first_port as seL4_Word);
-        seL4_SetMR(1, last_port as seL4_Word);
-        seL4_SetMR(2, dest_index);
-        seL4_SetMR(3, dest_depth);
+    libnova::ipc::set_cap(0, root_cnode);
+    libnova::ipc::set_mr(0, first_port as seL4_Word);
+    libnova::ipc::set_mr(1, last_port as seL4_Word);
+    libnova::ipc::set_mr(2, dest_index);
+    libnova::ipc::set_mr(3, dest_depth);
 
-        let info = seL4_MessageInfo_new(
-            X86_IO_PORT_CONTROL_ISSUE,
-            0,
-            1, // 1 extra cap
-            4, // 4 message registers
-        );
+    let info = libnova::ipc::MessageInfo::new(
+        X86_IO_PORT_CONTROL_ISSUE,
+        0,
+        1, // 1 extra cap
+        4, // 4 message registers
+    );
 
-        let resp = seL4_Call(control_cap, info);
-        let label = seL4_MessageInfo_get_label(resp);
-        if label == 0 { Ok(()) } else { Err(label) }
-    }
+    let resp = libnova::ipc::call(control_cap, info);
+    let label = resp.label();
+    if label == 0 { Ok(()) } else { Err(label) }
 }
 
 #[derive(Clone, Copy)]
@@ -68,140 +65,141 @@ impl PortIO {
     }
 
     pub fn in8(&self, port: u16) -> u8 {
-        unsafe { inb(port) }
+        inb(port)
     }
 
     pub fn out8(&self, port: u16, value: u8) {
-        unsafe { outb(port, value) }
+        outb(port, value)
     }
 }
 
 /// Helper for port I/O using seL4 capabilities
-pub unsafe fn inb(port: u16) -> u8 {
+pub fn inb(port: u16) -> u8 {
     let cap = IO_PORT_CAP.load(Ordering::Acquire) as seL4_CPtr;
     if cap == 0 {
         println!("[SECURITY] Port I/O attempted without IOPort capability");
         loop {
-            seL4_Yield();
+            libnova::syscall::yield_thread();
         }
     }
     
-    seL4_SetMR(0, port as seL4_Word);
+    libnova::ipc::set_mr(0, port as seL4_Word);
     
-    let info = seL4_MessageInfo_new(X86_IO_PORT_IN8, 0, 0, 1);
+    let info = libnova::ipc::MessageInfo::new(X86_IO_PORT_IN8, 0, 0, 1);
     
-    let resp = seL4_Call(cap, info);
+    let resp = libnova::ipc::call(cap, info);
     
-    if seL4_MessageInfo_get_label(resp) != 0 {
+    if resp.label() != 0 {
         return 0xFF;
     }
     
-    seL4_GetMR(0) as u8
+    libnova::ipc::get_mr(0) as u8
 }
 
-pub unsafe fn outb(port: u16, value: u8) {
+/// Helper for port I/O using seL4 capabilities
+pub fn outb(port: u16, value: u8) {
     let cap = IO_PORT_CAP.load(Ordering::Acquire) as seL4_CPtr;
     if cap == 0 {
         println!("[SECURITY] Port I/O attempted without IOPort capability");
         loop {
-            seL4_Yield();
+             libnova::syscall::yield_thread();
         }
     }
     
-    seL4_SetMR(0, port as seL4_Word);
-    seL4_SetMR(1, value as seL4_Word);
+    libnova::ipc::set_mr(0, port as seL4_Word);
+    libnova::ipc::set_mr(1, value as seL4_Word);
     
-    let info = seL4_MessageInfo_new(X86_IO_PORT_OUT8, 0, 0, 2);
+    let info = libnova::ipc::MessageInfo::new(X86_IO_PORT_OUT8, 0, 0, 2);
     
-    let resp = seL4_Call(cap, info);
+    let resp = libnova::ipc::call(cap, info);
     
-    if seL4_MessageInfo_get_label(resp) != 0 {
-        return;
+    if resp.label() != 0 {
+        println!("[PortIO] outb failed");
     }
 }
 
-pub unsafe fn inw(port: u16) -> u16 {
+pub fn inw(port: u16) -> u16 {
     let cap = IO_PORT_CAP.load(Ordering::Acquire) as seL4_CPtr;
     if cap == 0 {
         println!("[SECURITY] Port I/O attempted without IOPort capability");
         loop {
-            seL4_Yield();
+            libnova::syscall::yield_thread();
         }
     }
     
-    seL4_SetMR(0, port as seL4_Word);
+    libnova::ipc::set_mr(0, port as seL4_Word);
     
-    let info = seL4_MessageInfo_new(X86_IO_PORT_IN16, 0, 0, 1);
+    let info = libnova::ipc::MessageInfo::new(X86_IO_PORT_IN16, 0, 0, 1);
     
-    let resp = seL4_Call(cap, info);
+    let resp = libnova::ipc::call(cap, info);
     
-    if seL4_MessageInfo_get_label(resp) != 0 {
+    if resp.label() != 0 {
         return 0xFFFF;
     }
     
-    seL4_GetMR(0) as u16
+    libnova::ipc::get_mr(0) as u16
 }
 
-pub unsafe fn outw(port: u16, value: u16) {
+pub fn outw(port: u16, value: u16) {
     let cap = IO_PORT_CAP.load(Ordering::Acquire) as seL4_CPtr;
     if cap == 0 {
         println!("[SECURITY] Port I/O attempted without IOPort capability");
         loop {
-            seL4_Yield();
+            libnova::syscall::yield_thread();
         }
     }
     
-    seL4_SetMR(0, port as seL4_Word);
-    seL4_SetMR(1, value as seL4_Word);
+    libnova::ipc::set_mr(0, port as seL4_Word);
+    libnova::ipc::set_mr(1, value as seL4_Word);
     
-    let info = seL4_MessageInfo_new(X86_IO_PORT_OUT16, 0, 0, 2);
+    let info = libnova::ipc::MessageInfo::new(X86_IO_PORT_OUT16, 0, 0, 2);
     
-    let resp = seL4_Call(cap, info);
+    let resp = libnova::ipc::call(cap, info);
     
-    if seL4_MessageInfo_get_label(resp) != 0 {
+    if resp.label() != 0 {
         return;
     }
 }
 
-pub unsafe fn inl(port: u16) -> u32 {
+pub fn inl(port: u16) -> u32 {
     let cap = IO_PORT_CAP.load(Ordering::Acquire) as seL4_CPtr;
     if cap == 0 {
         println!("[SECURITY] Port I/O attempted without IOPort capability");
         loop {
-            seL4_Yield();
+            libnova::syscall::yield_thread();
         }
     }
     
-    seL4_SetMR(0, port as seL4_Word);
+    libnova::ipc::set_mr(0, port as seL4_Word);
     
-    let info = seL4_MessageInfo_new(X86_IO_PORT_IN32, 0, 0, 1);
+    let info = libnova::ipc::MessageInfo::new(X86_IO_PORT_IN32, 0, 0, 1);
     
-    let resp = seL4_Call(cap, info);
+    let resp = libnova::ipc::call(cap, info);
     
-    if seL4_MessageInfo_get_label(resp) != 0 {
+    if resp.label() != 0 {
         return 0xFFFFFFFF;
     }
     
-    seL4_GetMR(0) as u32
+    libnova::ipc::get_mr(0) as u32
 }
 
-pub unsafe fn outl(port: u16, value: u32) {
+pub fn outl(port: u16, value: u32) {
     let cap = IO_PORT_CAP.load(Ordering::Acquire) as seL4_CPtr;
     if cap == 0 {
         println!("[SECURITY] Port I/O attempted without IOPort capability");
         loop {
-            seL4_Yield();
+            libnova::syscall::yield_thread();
         }
     }
     
-    seL4_SetMR(0, port as seL4_Word);
-    seL4_SetMR(1, value as seL4_Word);
+    libnova::ipc::set_mr(0, port as seL4_Word);
+    libnova::ipc::set_mr(1, value as seL4_Word);
     
-    let info = seL4_MessageInfo_new(X86_IO_PORT_OUT32, 0, 0, 2);
+    let info = libnova::ipc::MessageInfo::new(X86_IO_PORT_OUT32, 0, 0, 2);
     
-    let resp = seL4_Call(cap, info);
+    let resp = libnova::ipc::call(cap, info);
     
-    if seL4_MessageInfo_get_label(resp) != 0 {
+    if resp.label() != 0 {
         return;
     }
 }

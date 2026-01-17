@@ -1,14 +1,17 @@
 use sel4_sys::*;
 use xmas_elf::{ElfFile, program};
-use crate::memory::{SlotAllocator, ObjectAllocator};
+use crate::memory::{SlotAllocator, ObjectAllocator, FrameAllocator};
 use crate::vspace::VSpace;
-use crate::utils::{seL4_CapRights_new, seL4_X86_4K};
-use crate::println;
+use libnova::cap::CapRights_new;
+
+// Temporary constant until we confirm sel4_sys export
+#[allow(dead_code, non_upper_case_globals)]
+const seL4_X86_4K: seL4_Word = 8;
 
 const PAGE_SIZE: usize = 4096;
 // Use a virtual address that is unlikely to conflict with RootServer code/stack
 // 0x4000_0000 = 1GB mark.
-const COPY_WINDOW_ADDR: usize = 0x4000_0000; 
+pub const COPY_WINDOW_ADDR: usize = 0x5000_0000; 
 const MAX_ELF_SIZE: usize = 64 * 1024; // 64KB
 
 #[repr(align(8))]
@@ -29,10 +32,10 @@ impl<'a> ElfLoader<'a> {
         &self,
         allocator: &mut A,
         slot_allocator: &mut SlotAllocator,
+        frame_allocator: &mut FrameAllocator,
         target_vspace: &mut VSpace,
         elf_data: &[u8],
-        mapped_frames: &mut [seL4_CPtr],
-        mapped_frame_count: &mut usize,
+        mapped_frames: &mut alloc::vec::Vec<seL4_CPtr>,
     ) -> Result<usize, seL4_Error> {
         println!("[Loader] load_elf called. Data len: {}", elf_data.len());
         if elf_data.len() > MAX_ELF_SIZE {
@@ -79,18 +82,24 @@ impl<'a> ElfLoader<'a> {
                 let end_page = (vaddr + mem_size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
 
                 for page_vaddr in (start_page..end_page).step_by(PAGE_SIZE) {
-                    // 1. Allocate Frame
-                    let frame_cap = allocator.allocate(
-                        self.boot_info, 
-                        seL4_X86_4K, // Assuming 4K pages for now
-                        seL4_PageBits.into(), 
+                    // 1. Allocate Frame using FrameAllocator
+                    let frame_cap = frame_allocator.alloc(
+                        allocator,
+                        self.boot_info,
                         slot_allocator
                     )?;
+                    
+                    if frame_cap == 0 {
+                        println!("[Loader] FrameAllocator returned 0!");
+                        return Err(seL4_Error::seL4_NotEnoughMemory);
+                    }
+                    
+                    println!("[Loader] Allocated frame {} for vaddr {:x}", frame_cap, page_vaddr);
 
                     let res = (|| -> Result<(), seL4_Error> {
                         // 2. Map to RootServer for copying
                         // We use Read/Write for RootServer to write data
-                        let rw_rights = seL4_CapRights_new(0, 0, 1, 1);
+                        let rw_rights = libnova::cap::CapRights_new(false, false, true, true);
                         let default_attr = sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
                         
                         // We map to the same COPY_WINDOW_ADDR repeatedly.
@@ -149,7 +158,7 @@ impl<'a> ElfLoader<'a> {
                         let write = flags.is_write();
                         // let exec = flags.is_execute(); // seL4 x86 often ignores this or ties to Read
                         
-                        let target_rights = seL4_CapRights_new(0, 0, read as u64, write as u64); 
+                        let target_rights = CapRights_new(false, false, read, write); 
                         
                         target_vspace.map_page(
                             allocator,
@@ -165,28 +174,17 @@ impl<'a> ElfLoader<'a> {
                     })();
 
                     if let Err(e) = res {
-                         // Cleanup frame_cap on failure
-                         let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-                         unsafe {
-                             crate::utils::seL4_CNode_Delete(root_cnode, frame_cap, seL4_WordBits as u8);
-                         }
-                         slot_allocator.free(frame_cap);
+                         // Cleanup frame_cap on failure using FrameAllocator
+                         // NOTE: We don't delete the cap here because FrameAllocator might want to reuse the slot?
+                         // Actually, FrameAllocator::free pushes it to free_list.
+                         // But if we allocated it via FrameAllocator::alloc -> it might have called allocator.allocate.
+                         // If we just return it, it's fine.
+                         frame_allocator.free(frame_cap);
                          return Err(e);
                     }
                     
                     // Track the allocated frame
-                    if *mapped_frame_count < mapped_frames.len() {
-                        mapped_frames[*mapped_frame_count] = frame_cap;
-                        *mapped_frame_count += 1;
-                    } else {
-                        println!("[Loader] Error: Max mapped frames limit reached!");
-                        let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-                        unsafe {
-                            crate::utils::seL4_CNode_Delete(root_cnode, frame_cap, seL4_WordBits as u8);
-                        }
-                        slot_allocator.free(frame_cap);
-                        return Err(seL4_Error::seL4_NotEnoughMemory);
-                    }
+                    mapped_frames.push(frame_cap);
                 }
             }
         }

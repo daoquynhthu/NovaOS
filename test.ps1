@@ -1,7 +1,8 @@
 $ErrorActionPreference = "Stop"
 
 # Set up environment variables for seL4-sys build
-$root = Get-Location
+Set-Location $PSScriptRoot
+$root = $PSScriptRoot
 $env:SEL4_OUT_DIR = "$root\build\kernel"
 $env:SEL4_KERNEL_DIR = "$root\kernel\seL4"
 
@@ -61,11 +62,19 @@ if (-not (Get-Command $qemu -ErrorAction SilentlyContinue) -and -not (Test-Path 
 
 Write-Host "Using QEMU: $qemu" -ForegroundColor Gray
 
+# Create Disk Image for Testing
+$diskImg = "$PWD/disk.img"
+if (-not (Test-Path $diskImg)) {
+    Write-Host "Creating 10MB disk image..." -ForegroundColor Gray
+    fsutil file createnew $diskImg 10485760 | Out-Null
+}
+
 # QEMU Arguments
 $qemuArgs = @(
     "-kernel", "build/kernel/kernel32.elf",
     "-initrd", $executable,
     "-serial", "file:$outputFile",
+    "-drive", "file=$diskImg,format=raw,index=0,media=disk",
     "-monitor", "tcp:127.0.0.1:45454,server,nowait",
     "-display", "none",
     "-m", "128M",

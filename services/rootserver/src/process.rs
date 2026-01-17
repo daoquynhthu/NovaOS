@@ -1,16 +1,59 @@
+#[allow(unused_imports)]
 use sel4_sys::{
-    seL4_BootInfo, seL4_CPtr, seL4_Error, seL4_Word,
-    seL4_MessageInfo_new, seL4_SetMR, seL4_Call, seL4_SetCap_My,
-    seL4_PageBits,
-    invocation_label_TCBSetPriority, invocation_label_TCBWriteRegisters,
-    invocation_label_TCBResume, invocation_label_TCBSuspend,
-    invocation_label_TCBConfigure, api_object_seL4_TCBObject, seL4_TCBBits,
+    seL4_BootInfo, seL4_CPtr, seL4_Word, seL4_CapRights,
+    api_object_seL4_TCBObject, seL4_TCBBits,
+    api_object_seL4_EndpointObject, seL4_EndpointBits,
     seL4_RootCNodeCapSlots, seL4_X86_VMAttributes,
+    seL4_UserContext,
 };
-use crate::memory::{ObjectAllocator, SlotAllocator};
+use crate::memory::{ObjectAllocator, SlotAllocator, FrameAllocator};
 use crate::vspace::VSpace;
-use crate::println;
-use crate::utils::{seL4_CapRights_new, seL4_X86_4K};
+use libnova::cap::{CNode, CapRights_new};
+use libnova::syscall::{Result, Error};
+use libnova::tcb::Tcb;
+
+// Helper to write data to a frame by mapping it into RootServer temporarily
+fn write_to_frame<A: ObjectAllocator>(
+    allocator: &mut A,
+    slots: &mut SlotAllocator,
+    boot_info: &seL4_BootInfo,
+    frame_cap: seL4_CPtr,
+    offset: usize,
+    data: &[u8]
+) -> Result<()> {
+    let root_pml4 = seL4_RootCNodeCapSlots::seL4_CapInitThreadVSpace as seL4_CPtr;
+    // Create a VSpace wrapper for the current RootServer
+    // Note: VSpace::new(pml4) creates a wrapper, doesn't allocate new PML4
+    let mut root_vspace = VSpace::new(root_pml4);
+    
+    let window = crate::elf_loader::COPY_WINDOW_ADDR;
+    
+    // Map the frame to the window address
+    root_vspace.map_page(
+        allocator,
+        slots,
+        boot_info,
+        frame_cap,
+        window,
+        CapRights_new(false, false, true, true), // RW
+        seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes,
+    ).map_err(Error::from)?;
+    
+    // Copy data
+    unsafe {
+        let ptr = (window + offset) as *mut u8;
+        core::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+    }
+    
+    // Unmap to clean up
+    root_vspace.unmap_page(frame_cap).map_err(Error::from)?;
+    
+    Ok(())
+}
+
+// Temporary constant until we confirm sel4_sys export
+#[allow(dead_code, non_upper_case_globals)]
+const seL4_X86_4K: seL4_Word = 8;
 
 #[derive(Debug, Clone, Copy)]
 pub struct IpcMessage {
@@ -35,7 +78,6 @@ pub enum ProcessState {
 }
 
 pub const MAX_PROCESSES: usize = 32;
-pub const MAX_MAPPED_FRAMES: usize = 256;
 pub const MAX_FDS: usize = 16;
 const HEAP_START: usize = 0x4000_0000;
 
@@ -64,7 +106,6 @@ pub struct Process {
     pub state: ProcessState,
     pub heap_brk: usize,
     pub mapped_frames: alloc::vec::Vec<seL4_CPtr>,
-    pub mapped_frame_count: usize,
     pub wake_at_tick: u64,
     pub saved_reply_cap: seL4_CPtr,
     pub mailbox: Option<IpcMessage>,
@@ -90,16 +131,16 @@ impl ProcessManager {
         }
     }
 
-    pub fn allocate_pid(&self) -> Result<usize, seL4_Error> {
+    pub fn allocate_pid(&self) -> Result<usize> {
         for (pid, slot) in self.processes.iter().enumerate() {
             if slot.is_none() {
                 return Ok(pid);
             }
         }
-        Err(seL4_Error::seL4_NotEnoughMemory)
+        Err(Error::NotEnoughMemory)
     }
 
-    pub fn add_process(&mut self, process: Process) -> Result<usize, seL4_Error> {
+    pub fn add_process(&mut self, process: Process) -> Result<usize> {
         let pid = self.allocate_pid()?;
         self.processes[pid] = Some(process);
         Ok(pid)
@@ -130,7 +171,6 @@ impl ProcessManager {
     }
 }
 
-use crate::utils::check_syscall_result;
 
 impl Process {
     pub fn create<A: ObjectAllocator>(
@@ -138,12 +178,12 @@ impl Process {
         slots: &mut SlotAllocator,
         boot_info: &seL4_BootInfo,
         asid_pool: seL4_CPtr,
-    ) -> Result<Self, seL4_Error> {
+    ) -> Result<Self> {
         // 1. Create VSpace
-        let vspace = VSpace::new_from_scratch(allocator, slots, boot_info, asid_pool)?;
+        let vspace = VSpace::new_from_scratch(allocator, slots, boot_info, asid_pool).map_err(Error::from)?;
         
         // 2. Create TCB
-        let tcb_cap = allocator.allocate(boot_info, api_object_seL4_TCBObject.into(), seL4_TCBBits.into(), slots)?;
+        let tcb_cap = allocator.allocate(boot_info, api_object_seL4_TCBObject.into(), seL4_TCBBits.into(), slots).map_err(Error::from)?;
         
         println!("[Process] Created Process: TCB={}, PML4={}", tcb_cap, vspace.pml4_cap);
         
@@ -155,8 +195,7 @@ impl Process {
             ipc_buffer_cap: 0,
             state: ProcessState::Created,
             heap_brk: HEAP_START,
-            mapped_frames: alloc::vec![0; MAX_MAPPED_FRAMES],
-            mapped_frame_count: 0,
+            mapped_frames: alloc::vec::Vec::new(),
             wake_at_tick: 0,
             saved_reply_cap: 0,
             mailbox: None,
@@ -174,8 +213,7 @@ impl Process {
             ipc_buffer_cap: 0, 
             state: ProcessState::Created, 
             heap_brk: HEAP_START,
-            mapped_frames: alloc::vec![0; MAX_MAPPED_FRAMES],
-            mapped_frame_count: 0,
+            mapped_frames: alloc::vec::Vec::new(),
             wake_at_tick: 0,
             saved_reply_cap: 0,
             mailbox: None,
@@ -184,33 +222,29 @@ impl Process {
         }
     }
 
-    pub fn save_caller(&mut self, cnode: seL4_CPtr, slots: &mut SlotAllocator) -> Result<(), seL4_Error> {
+    pub fn save_caller(&mut self, cnode: seL4_CPtr, slots: &mut SlotAllocator) -> Result<()> {
+        let root = CNode::new(cnode, 64);
         if self.saved_reply_cap == 0 {
-            self.saved_reply_cap = slots.alloc().map_err(|_| seL4_Error::seL4_NotEnoughMemory)?;
+            self.saved_reply_cap = slots.alloc().map_err(|_| Error::NotEnoughMemory)?;
         } else {
              // Try to delete just in case it's occupied (ignore error)
-             unsafe {
-                let _ = crate::utils::seL4_CNode_Delete(cnode, self.saved_reply_cap, 64);
-             }
+             let _ = root.delete(self.saved_reply_cap);
         }
-        unsafe {
-             let err = crate::utils::seL4_CNode_SaveCaller(cnode, self.saved_reply_cap, 64);
-             if err == seL4_Error::seL4_NoError {
+        
+        match root.save_caller(self.saved_reply_cap) {
+             Ok(_) => {
                  println!("[Process] SaveCaller success. Saved to cap {}", self.saved_reply_cap);
                  Ok(())
-             } else {
-                 println!("[Process] SaveCaller FAILED for cap {}: {:?}", self.saved_reply_cap, err);
-                 Err(err)
+             },
+             Err(e) => {
+                 println!("[Process] SaveCaller FAILED for cap {}: {:?}", self.saved_reply_cap, e);
+                 Err(e)
              }
         }
     }
 
-    pub fn track_frame(&mut self, cap: seL4_CPtr) -> Result<(), seL4_Error> {
-        if self.mapped_frame_count >= MAX_MAPPED_FRAMES {
-            return Err(seL4_Error::seL4_NotEnoughMemory);
-        }
-        self.mapped_frames[self.mapped_frame_count] = cap;
-        self.mapped_frame_count += 1;
+    pub fn track_frame(&mut self, frame_cap: seL4_CPtr) -> Result<()> {
+        self.mapped_frames.push(frame_cap);
         Ok(())
     }
 
@@ -220,67 +254,47 @@ impl Process {
         fault_ep: seL4_CPtr,
         ipc_buffer_addr: seL4_Word,
         ipc_buffer_cap: seL4_CPtr,
-    ) -> Result<(), seL4_Error> {
+    ) -> Result<()> {
         // Update tracked caps
         self.fault_ep_cap = fault_ep;
         self.ipc_buffer_cap = ipc_buffer_cap;
 
-        unsafe {
-            let info = seL4_MessageInfo_new(
-                invocation_label_TCBConfigure as seL4_Word,
-                0, // 0 unwraped caps
-                3, // 3 extra caps: CSpace, VSpace, Buffer
-                4, // 4 arguments: FaultEP (MR0), CSpaceData (MR1), VSpaceData (MR2), BufferAddr (MR3)
-            );
+        // Formal verification: Check caps are valid
+        debug_assert!(cspace_root != 0, "CSpace Root cannot be 0");
+        debug_assert!(self.vspace.pml4_cap != 0, "VSpace Root cannot be 0");
 
-            // MR0: Fault Endpoint
-            seL4_SetMR(0, fault_ep);
-            // MR1: CSpace Root Data (Guard) - 0
-            seL4_SetMR(1, 0);
-            // MR2: VSpace Root Data - 0
-            seL4_SetMR(2, 0);
-            // MR3: IPC Buffer Address
-            seL4_SetMR(3, ipc_buffer_addr);
-
-            // Formal verification: Check caps are valid
-            debug_assert!(cspace_root != 0, "CSpace Root cannot be 0");
-            debug_assert!(self.vspace.pml4_cap != 0, "VSpace Root cannot be 0");
-
-            // Extra Caps
-            // Cap 0: CSpace Root
-            seL4_SetCap_My(0, cspace_root);
-            // Cap 1: VSpace Root
-            seL4_SetCap_My(1, self.vspace.pml4_cap);
-            // Cap 2: IPC Buffer Frame
-            seL4_SetCap_My(2, ipc_buffer_cap);
-
-            let resp = seL4_Call(self.tcb_cap, info);
-            check_syscall_result(resp)?;
-            
-            self.state = ProcessState::Configured;
-            // Invariant: Active TCB must have valid VSpace Root
-            debug_assert!(self.vspace.pml4_cap != 0, "Invariant: VSpace Root Valid");
-            
-            Ok(())
-        }
+        Tcb::new(self.tcb_cap).configure(
+            cspace_root,
+            self.vspace.pml4_cap,
+            fault_ep,
+            ipc_buffer_addr,
+            ipc_buffer_cap,
+        )?;
+        
+        self.state = ProcessState::Configured;
+        // Invariant: Active TCB must have valid VSpace Root
+        debug_assert!(self.vspace.pml4_cap != 0, "Invariant: VSpace Root Valid");
+        
+        Ok(())
     }
 
     pub fn load_image<A: ObjectAllocator>(
         &mut self,
         allocator: &mut A,
         slots: &mut SlotAllocator,
+        frame_allocator: &mut FrameAllocator,
         boot_info: &seL4_BootInfo,
         image_data: &[u8],
-    ) -> Result<usize, seL4_Error> {
+    ) -> Result<usize> {
         let loader = crate::elf_loader::ElfLoader::new(boot_info);
         let entry = loader.load_elf(
             allocator, 
             slots, 
+            frame_allocator,
             &mut self.vspace, 
             image_data,
             &mut self.mapped_frames,
-            &mut self.mapped_frame_count
-        )?;
+        ).map_err(Error::from)?;
         self.state = ProcessState::Loaded;
         Ok(entry)
     }
@@ -288,11 +302,13 @@ impl Process {
     pub fn spawn<A: ObjectAllocator>(
         allocator: &mut A,
         slots: &mut SlotAllocator,
+        frame_allocator: &mut FrameAllocator,
         boot_info: &seL4_BootInfo,
         image_data: &[u8],
+        args: &[&str],
         priority: seL4_Word,
-        endpoint_cap: seL4_CPtr, // New argument: Endpoint Capability
-    ) -> Result<Self, seL4_Error> {
+        endpoint_cap: seL4_CPtr,
+    ) -> Result<Self> {
         let asid_pool = seL4_RootCNodeCapSlots::seL4_CapInitThreadASIDPool as seL4_CPtr;
         let cspace_root = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
         let authority = seL4_RootCNodeCapSlots::seL4_CapInitThreadTCB as seL4_CPtr;
@@ -300,18 +316,20 @@ impl Process {
         let mut process = Self::create(allocator, slots, boot_info, asid_pool)?;
 
         // Wrap initialization in a closure to handle cleanup on failure
-        let mut initialize = || -> Result<(), seL4_Error> {
-            let entry = process.load_image(allocator, slots, boot_info, image_data)?;
+        let mut initialize = || -> Result<()> {
+            let entry = process.load_image(allocator, slots, frame_allocator, boot_info, image_data)?;
 
-            let rights_rw = seL4_CapRights_new(0, 0, 1, 1);
+            let rights_rw = CapRights_new(false, false, true, true);
             let default_attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
 
             let stack_vaddr: usize = 0x2000_0000;
             let stack_pages = 4; // 16KB stack
             let stack_top: usize = stack_vaddr + (stack_pages * 4096);
             
+            let mut top_stack_frame_cap = 0;
+
             for i in 0..stack_pages {
-                let stack_frame_cap = allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slots)?;
+                let stack_frame_cap = frame_allocator.alloc(allocator, boot_info, slots).map_err(Error::from)?;
                 process.vspace.map_page(
                     allocator,
                     slots,
@@ -320,12 +338,72 @@ impl Process {
                     stack_vaddr + (i * 4096),
                     rights_rw,
                     default_attr,
-                )?;
+                ).map_err(Error::from)?;
                 process.track_frame(stack_frame_cap)?;
+                if i == stack_pages - 1 {
+                    top_stack_frame_cap = stack_frame_cap;
+                }
             }
 
+            // Setup Stack with Args
+            let mut sp = stack_top;
+            
+            // 1. Strings
+            let mut string_pointers = alloc::vec::Vec::new();
+            let mut data_block = alloc::vec::Vec::new();
+            
+            for arg in args {
+                 let bytes = arg.as_bytes();
+                 data_block.extend_from_slice(bytes);
+                 data_block.push(0);
+            }
+            
+            let strings_start_vaddr = sp - data_block.len();
+            sp = strings_start_vaddr;
+            
+            let mut current_vaddr = strings_start_vaddr;
+            for arg in args {
+                 string_pointers.push(current_vaddr);
+                 current_vaddr += arg.len() + 1;
+            }
+            
+            // 2. Argv Array
+            // [ptr0, ptr1, ..., NULL]
+            let argv_size = (args.len() + 1) * 8;
+            sp -= argv_size;
+            sp = sp & !0xF; // Align 16
+            
+            let argv_start_vaddr = sp;
+            let mut argv_data = alloc::vec::Vec::new();
+            for ptr in string_pointers {
+                 argv_data.extend_from_slice(&(ptr as u64).to_le_bytes());
+            }
+            argv_data.extend_from_slice(&0u64.to_le_bytes());
+            
+            // Write to top stack page
+            // Assume all args fit in top page for now
+            if stack_top - sp > 4096 {
+                println!("[Process] Args too large for single stack page!");
+                return Err(Error::NotEnoughMemory);
+            }
+
+            let _offset_in_page = sp % 4096;
+            // Combined data: argv_data + data_block
+            // But there might be gap due to alignment
+            // Easier to write separately?
+            // strings are at strings_start_vaddr
+            // argv is at argv_start_vaddr
+            
+            // Write Strings
+            let strings_offset = strings_start_vaddr % 4096;
+            write_to_frame(allocator, slots, boot_info, top_stack_frame_cap, strings_offset, &data_block)?;
+            
+            // Write Argv
+            let argv_offset = argv_start_vaddr % 4096;
+            write_to_frame(allocator, slots, boot_info, top_stack_frame_cap, argv_offset, &argv_data)?;
+
             let ipc_vaddr: usize = 0x3000_0000;
-            let ipc_frame_cap = allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slots)?;
+            let ipc_frame_cap = frame_allocator.alloc(allocator, boot_info, slots).map_err(Error::from)?;
             process.vspace.map_page(
                 allocator,
                 slots,
@@ -334,15 +412,8 @@ impl Process {
                 ipc_vaddr,
                 rights_rw,
                 default_attr,
-            )?;
+            ).map_err(Error::from)?;
             process.track_frame(ipc_frame_cap)?;
-
-            // let fault_ep_cap = allocator.allocate(
-            //     boot_info,
-            //     api_object_seL4_EndpointObject.into(),
-            //     seL4_EndpointBits.into(),
-            //     slots,
-            // )?;
 
             // Use the passed endpoint capability for syscalls and faults
             process.syscall_ep_cap = endpoint_cap;
@@ -350,7 +421,16 @@ impl Process {
 
             process.configure(cspace_root, fault_ep_cap, ipc_vaddr as seL4_Word, ipc_frame_cap)?;
             process.set_priority(authority, priority)?;
-            process.write_registers(entry as seL4_Word, stack_top as seL4_Word, 0x202, endpoint_cap as seL4_Word)?;
+            
+            // RDI = argc, RSI = argv, RDX = endpoint_cap
+            process.write_registers_ext(
+                entry as seL4_Word, 
+                sp as seL4_Word, 
+                0x202, 
+                args.len() as seL4_Word, 
+                argv_start_vaddr as seL4_Word, 
+                endpoint_cap as seL4_Word
+            )?;
             process.resume()?;
             
             Ok(())
@@ -358,7 +438,7 @@ impl Process {
 
         if let Err(e) = initialize() {
             println!("[Process] Spawn failed, cleaning up...");
-            let _ = process.terminate(cspace_root, slots);
+            let _ = process.terminate(cspace_root, slots, frame_allocator);
             return Err(e);
         }
 
@@ -367,23 +447,10 @@ impl Process {
         Ok(process)
     }
 
-    pub fn set_priority(&mut self, authority: seL4_CPtr, priority: seL4_Word) -> Result<(), seL4_Error> {
-        unsafe {
-            let info = seL4_MessageInfo_new(
-                invocation_label_TCBSetPriority as seL4_Word,
-                0,
-                1, // Authority cap
-                1, // Priority (MR0)
-            );
-
-            seL4_SetMR(0, priority);
-            seL4_SetCap_My(0, authority);
-
-            let resp = seL4_Call(self.tcb_cap, info);
-            check_syscall_result(resp)?;
-            self.priority = priority;
-            Ok(())
-        }
+    pub fn set_priority(&mut self, authority: seL4_CPtr, priority: seL4_Word) -> Result<()> {
+        Tcb::new(self.tcb_cap).set_priority(authority, priority)?;
+        self.priority = priority;
+        Ok(())
     }
 
     pub fn write_registers(
@@ -392,91 +459,81 @@ impl Process {
         rsp: seL4_Word,
         rflags: seL4_Word,
         rdi: seL4_Word, // Argument 1
-    ) -> Result<(), seL4_Error> {
+    ) -> Result<()> {
+        Tcb::new(self.tcb_cap).write_registers(rip, rsp, rflags, rdi)
+    }
+
+    pub fn write_registers_ext(
+        &self,
+        rip: seL4_Word,
+        rsp: seL4_Word,
+        rflags: seL4_Word,
+        rdi: seL4_Word,
+        rsi: seL4_Word,
+        rdx: seL4_Word,
+    ) -> Result<()> {
         unsafe {
-            // Context structure (x86_64)
-            // seL4_UserContext:
-            // rip, rsp, rflags, rax, rbx, rcx, rdx, rsi, rdi, rbp, r8-r15, fs_base, gs_base
-            // Note: The order depends on seL4_UserContext definition.
-            // On x64, typically:
-            // 0: rip, 1: rsp, 2: rflags, 3: rax, 4: rbx, 5: rcx, 6: rdx, 7: rsi, 8: rdi, 9: rbp, ...
-            
+            // Standard x86_64 seL4 register order
             let mut regs = [0u64; 20];
-            regs[0] = rip.try_into().unwrap();
-            regs[1] = rsp.try_into().unwrap();
-            regs[2] = rflags.try_into().unwrap();
-            regs[3] = 0; // rbp
-            regs[4] = 0; // rbx
-            regs[5] = 0; // r12
-            regs[6] = 0; // r13
-            regs[7] = 0; // r14
-            regs[8] = rdi.try_into().unwrap(); // Set RDI (First argument in System V AMD64 ABI)
-            regs[9] = 0; // r15
-            regs[10] = 0; // rax
+            regs[0] = rip;
+            regs[1] = rsp;
+            regs[2] = rflags;
+            regs[6] = rdx;
+            regs[7] = rsi;
+            regs[8] = rdi;
 
             let num_regs = 20;
 
-            let info = seL4_MessageInfo_new(
-                invocation_label_TCBWriteRegisters as seL4_Word,
+            let info = sel4_sys::seL4_MessageInfo_new(
+                sel4_sys::invocation_label_TCBWriteRegisters as seL4_Word,
                 0,
                 0,
-                (num_regs + 2) as seL4_Word, // flags, num_regs, regs...
+                (num_regs + 2) as seL4_Word,
             );
 
-            seL4_SetMR(0, 0); // flags (0=Restart, 1=Resume?) No, 0 usually.
-            seL4_SetMR(1, num_regs as seL4_Word);
+            sel4_sys::seL4_SetMR(0, 0); // flags: 0=Restart
+            sel4_sys::seL4_SetMR(1, num_regs as seL4_Word);
 
-            for (i, &reg) in regs.iter().enumerate().take(num_regs) {
-                seL4_SetMR(i + 2, reg.try_into().unwrap());
+            for (i, &reg) in regs.iter().enumerate() {
+                sel4_sys::seL4_SetMR(i + 2, reg);
             }
 
-            let resp = seL4_Call(self.tcb_cap, info);
-            check_syscall_result(resp)?;
-            Ok(())
+            let resp = sel4_sys::seL4_Call(self.tcb_cap, info);
+            if sel4_sys::seL4_MessageInfo_get_label(resp) != 0 {
+                 return Err(Error::Unknown(0));
+            }
         }
+        Ok(())
     }
 
-    pub fn resume(&mut self) -> Result<(), seL4_Error> {
+    pub fn resume(&mut self) -> Result<()> {
         // Pre-condition: Must be Configured or Suspended
         debug_assert!(
             self.state == ProcessState::Configured || self.state == ProcessState::Suspended,
             "Process must be Configured or Suspended to Resume"
         );
 
-        unsafe {
-            let info = seL4_MessageInfo_new(
-                invocation_label_TCBResume as seL4_Word,
-                0, 0, 0
-            );
-            let resp = seL4_Call(self.tcb_cap, info);
-            check_syscall_result(resp)?;
-            
-            self.state = ProcessState::Running;
-            Ok(())
-        }
+        Tcb::new(self.tcb_cap).resume()?;
+        
+        self.state = ProcessState::Running;
+        Ok(())
     }
 
-    pub fn suspend(&mut self) -> Result<(), seL4_Error> {
-        unsafe {
-            let info = seL4_MessageInfo_new(
-                invocation_label_TCBSuspend as seL4_Word,
-                0, 0, 0
-            );
-            let resp = seL4_Call(self.tcb_cap, info);
-            check_syscall_result(resp)?;
-            
-            self.state = ProcessState::Suspended;
-            Ok(())
-        }
+    pub fn suspend(&mut self) -> Result<()> {
+        Tcb::new(self.tcb_cap).suspend()?;
+        
+        self.state = ProcessState::Suspended;
+        Ok(())
     }
 
     pub fn brk<A: ObjectAllocator>(
         &mut self,
         allocator: &mut A,
         slots: &mut SlotAllocator,
+        frame_allocator: &mut FrameAllocator,
         boot_info: &seL4_BootInfo,
         new_brk: usize,
-    ) -> Result<usize, seL4_Error> {
+    ) -> Result<usize> {
         // If addr is 0, return current break
         if new_brk == 0 {
             return Ok(self.heap_brk);
@@ -493,117 +550,131 @@ impl Process {
         // Safety: Check for reasonable user space limit (2GB)
         if aligned_new_brk >= 0x8000_0000 {
             println!("[Process] Heap limit exceeded (2GB). Request: {:x}", aligned_new_brk);
-            return Err(seL4_Error::seL4_NotEnoughMemory);
+            return Err(Error::NotEnoughMemory);
         }
         
         // Calculate needed pages
         let current_brk = self.heap_brk;
-        let required_size = aligned_new_brk - current_brk;
-        let required_pages = required_size / 4096;
         
-        if self.mapped_frame_count + required_pages > MAX_MAPPED_FRAMES {
-            println!("[Process] Heap limit exceeded. Max pages: {}, Used: {}, Requested: {}", 
-                MAX_MAPPED_FRAMES, self.mapped_frame_count, required_pages);
-            return Err(seL4_Error::seL4_NotEnoughMemory);
-        }
-        
-        // Allocate and map pages
+        // Allocate and map pages with rollback support
         let mut vaddr = current_brk;
+        let mut allocated_caps = alloc::vec::Vec::new();
+        
         while vaddr < aligned_new_brk {
-             let frame_cap = allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slots)?;
+             // 1. Allocate Frame
+             let frame_cap = match frame_allocator.alloc(allocator, boot_info, slots) {
+                 Ok(cap) => cap,
+                 Err(e) => {
+                     println!("[Process] Heap expansion failed (Alloc): {:?}", e);
+                     // Rollback previous allocations
+                     for (cap, _va) in allocated_caps {
+                         let _ = self.vspace.unmap_page(cap);
+                         frame_allocator.free(cap);
+                     }
+                     return Err(Error::from(e));
+                 }
+             };
              
-             let rights_rw = seL4_CapRights_new(0, 0, 1, 1);
+             let rights_rw = CapRights_new(false, false, true, true);
              let default_attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
              
+             // 2. Map Frame
              match self.vspace.map_page(allocator, slots, boot_info, frame_cap, vaddr, rights_rw, default_attr) {
-                Ok(_) => {},
+                Ok(_) => {
+                    allocated_caps.push((frame_cap, vaddr));
+                },
                 Err(e) => {
-                    // TODO: Rollback on failure?
-                    println!("[Process] Failed to map heap page at {:x}: {:?}", vaddr, e);
-                    return Err(e);
+                    println!("[Process] Heap expansion failed (Map) at {:x}: {:?}", vaddr, e);
+                    // Rollback this frame
+                    frame_allocator.free(frame_cap);
+                    
+                    // Rollback previous frames
+                    for (cap, _va) in allocated_caps {
+                        // Best effort unmap
+                        let _ = self.vspace.unmap_page(cap); 
+                        frame_allocator.free(cap);
+                        // Note: We don't remove from mapped_frames because we haven't added them yet.
+                    }
+                    return Err(Error::from(e));
                 }
              }
              
-             self.track_frame(frame_cap)?;
              vaddr += 4096;
         }
         
+        // Commit: Add all successfully mapped frames to tracking
+        for (cap, _) in allocated_caps {
+            self.track_frame(cap)?;
+        }
+        
         self.heap_brk = aligned_new_brk;
-        println!("[Process] Heap expanded to {:x} ({} frames total)", self.heap_brk, self.mapped_frame_count);
+        println!("[Process] Heap expanded to {:x} ({} frames total)", self.heap_brk, self.mapped_frames.len());
         Ok(self.heap_brk)
     }
 
-    pub fn terminate(&mut self, cnode: seL4_CPtr, slots: &mut SlotAllocator) -> Result<(), seL4_Error> {
+    pub fn terminate(
+        &mut self, 
+        cnode: seL4_CPtr, 
+        slots: &mut SlotAllocator, 
+        frame_allocator: &mut FrameAllocator
+    ) -> Result<()> {
         // Invariant: Cannot terminate an already terminated process
         debug_assert!(self.state != ProcessState::Terminated, "Double termination detected");
 
-        unsafe {
-            // Suspend first
-            let _ = self.suspend();
+        let root = CNode::new(cnode, 64);
 
-            // Delete TCB
-            let mut err = crate::utils::seL4_CNode_Delete(cnode, self.tcb_cap, 64);
-            if err != 0.into() {
-                 return Err(err);
-            }
-            slots.free(self.tcb_cap);
-            
-            // Delete VSpace (PML4)
-            err = crate::utils::seL4_CNode_Delete(cnode, self.vspace.pml4_cap, 64);
-            if err != 0.into() {
-                 return Err(err);
-            }
-            slots.free(self.vspace.pml4_cap);
+        // Suspend first
+        let _ = self.suspend();
 
-            // Delete Paging Structures (Resource Leak Fix)
-            for i in 0..self.vspace.paging_cap_count {
-                let cap = self.vspace.paging_caps[i];
-                if cap != 0 {
-                    let err = crate::utils::seL4_CNode_Delete(cnode, cap, 64);
-                    if err != 0.into() {
-                        println!("[WARN] Failed to delete Paging Structure Cap {}: {:?}", cap, err);
-                    }
-                    slots.free(cap);
+        // Delete TCB
+        root.delete(self.tcb_cap)?;
+        slots.free(self.tcb_cap);
+        
+        // Delete VSpace (PML4)
+        root.delete(self.vspace.pml4_cap)?;
+        slots.free(self.vspace.pml4_cap);
+
+        // Delete Paging Structures (Resource Leak Fix)
+        for i in 0..self.vspace.paging_cap_count {
+            let cap = self.vspace.paging_caps[i];
+            if cap != 0 {
+                if let Err(e) = root.delete(cap) {
+                    println!("[WARN] Failed to delete Paging Structure Cap {}: {:?}", cap, e);
                 }
+                slots.free(cap);
             }
-
-            // Delete Mapped Frames (Heap, Stack, IPC, Code)
-            for i in 0..self.mapped_frame_count {
-                let cap = self.mapped_frames[i];
-                if cap != 0 {
-                    let err = crate::utils::seL4_CNode_Delete(cnode, cap, 64);
-                    if err != 0.into() {
-                        println!("[WARN] Failed to delete Mapped Frame Cap {}: {:?}", cap, err);
-                    }
-                    slots.free(cap);
-                }
-            }
-
-            // Delete Fault Endpoint if present
-            if self.fault_ep_cap != 0 {
-                err = crate::utils::seL4_CNode_Delete(cnode, self.fault_ep_cap, 64);
-                if err != 0.into() {
-                     println!("[WARN] Failed to delete Fault EP: {:?}", err);
-                }
-                slots.free(self.fault_ep_cap);
-            }
-
-            // Delete Syscall Endpoint Cap (Badged) if present
-            // Note: If fault_ep and syscall_ep are the same (common in unified setup),
-            // we must not free it twice.
-            if self.syscall_ep_cap != 0 && self.syscall_ep_cap != self.fault_ep_cap {
-                err = crate::utils::seL4_CNode_Delete(cnode, self.syscall_ep_cap, 64);
-                if err != 0.into() {
-                     println!("[WARN] Failed to delete Syscall EP Cap: {:?}", err);
-                }
-                slots.free(self.syscall_ep_cap);
-            }
-
-            self.state = ProcessState::Terminated;
-            
-            println!("[Process] Terminated (Caps deleted: TCB={}, PML4={}, FaultEP={}, IPCBuf={})", 
-                self.tcb_cap, self.vspace.pml4_cap, self.fault_ep_cap, self.ipc_buffer_cap);
-            Ok(())
         }
+
+        // Recycle Frames (Resource Leak Fix)
+        while let Some(cap) = self.mapped_frames.pop() {
+            frame_allocator.free(cap);
+        }
+
+        // Delete Fault EP
+        if self.fault_ep_cap != 0 {
+            root.delete(self.fault_ep_cap)?;
+            slots.free(self.fault_ep_cap);
+        }
+
+        // Delete Syscall EP
+        if self.syscall_ep_cap != 0 && self.syscall_ep_cap != self.fault_ep_cap {
+            root.delete(self.syscall_ep_cap)?;
+            slots.free(self.syscall_ep_cap);
+        }
+
+        // Delete IPC Buffer Frame (if separate)
+        if self.ipc_buffer_cap != 0 {
+             // Check if it was already recycled in mapped_frames?
+             // Usually IPC buffer is allocated separately or part of mapped_frames.
+             // If it's not in mapped_frames, we should free it.
+             // But for now, we assume it's tracked or we let it leak (small leak).
+             // To be safe, we don't double-free.
+        }
+
+        self.state = ProcessState::Terminated;
+
+        println!("[Process] Terminated (Caps deleted: TCB={}, PML4={}, FaultEP={}, IPCBuf={})", 
+            self.tcb_cap, self.vspace.pml4_cap, self.fault_ep_cap, self.ipc_buffer_cap);
+        Ok(())
     }
 }

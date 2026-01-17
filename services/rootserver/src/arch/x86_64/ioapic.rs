@@ -1,8 +1,7 @@
 #![allow(dead_code)]
-use sel4_sys::{seL4_BootInfo, seL4_GetIPCBuffer, seL4_MessageInfo_new, seL4_Call, seL4_SetMR, seL4_MessageInfo_get_label};
+use sel4_sys::seL4_BootInfo;
 use crate::memory::{UntypedAllocator, SlotAllocator};
 use crate::arch::acpi::AcpiContext;
-use crate::println;
 
 // Invocation label for X86IRQIssueIRQHandlerIOAPIC
 // Based on typical seL4 x86 generation:
@@ -14,20 +13,19 @@ pub const X86_IRQ_ISSUE_IRQ_HANDLER_IOAPIC: usize = 52;
 pub const IRQ_ACK_IRQ: usize = 27;
 pub const IRQ_SET_IRQ_HANDLER: usize = 28;
 
-pub unsafe fn ack_irq(irq_handler: usize) -> Result<(), usize> {
-    let info = seL4_MessageInfo_new((IRQ_ACK_IRQ as u64).try_into().unwrap(), 0, 0, 0);
-    let resp = seL4_Call(irq_handler.try_into().unwrap(), info);
-    let label = seL4_MessageInfo_get_label(resp);
+pub fn ack_irq(irq_handler: usize) -> Result<(), usize> {
+    let info = libnova::ipc::MessageInfo::new((IRQ_ACK_IRQ as u64).try_into().unwrap(), 0, 0, 0);
+    let resp = libnova::ipc::call(irq_handler.try_into().unwrap(), info);
+    let label = resp.label();
     if label == 0 { Ok(()) } else { Err(label as usize) }
 }
 
-pub unsafe fn set_irq_handler(irq_handler: usize, notification: usize) -> Result<(), usize> {
-    let ipc_buffer = seL4_GetIPCBuffer();
-    (*ipc_buffer).caps_or_badges[0] = (notification as u64).try_into().unwrap();
+pub fn set_irq_handler(irq_handler: usize, notification: usize) -> Result<(), usize> {
+    libnova::ipc::set_cap(0, (notification as u64).try_into().unwrap());
     
-    let info = seL4_MessageInfo_new((IRQ_SET_IRQ_HANDLER as u64).try_into().unwrap(), 0, 1, 0);
-    let resp = seL4_Call(irq_handler.try_into().unwrap(), info);
-    let label = seL4_MessageInfo_get_label(resp);
+    let info = libnova::ipc::MessageInfo::new((IRQ_SET_IRQ_HANDLER as u64).try_into().unwrap(), 0, 1, 0);
+    let resp = libnova::ipc::call(irq_handler.try_into().unwrap(), info);
+    let label = resp.label();
     if label == 0 { Ok(()) } else { Err(label as usize) }
 }
 
@@ -72,7 +70,7 @@ impl IoApic {
 
 /// Manually invoke X86IRQIssueIRQHandlerIOAPIC because bindings are missing
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn get_ioapic_handler(
+pub fn get_ioapic_handler(
     irq_control: usize,
     ioapic: usize,
     pin: usize,
@@ -83,40 +81,39 @@ pub unsafe fn get_ioapic_handler(
     depth: usize,
     vector: usize,
 ) -> Result<(), usize> {
-    let ipc_buffer = seL4_GetIPCBuffer();
     
     // Set extra cap (root CNode) at index 0
-    (*ipc_buffer).caps_or_badges[0] = (root as u64).try_into().unwrap();
+    libnova::ipc::set_cap(0, (root as u64).try_into().unwrap());
     
     // Set Message Registers based on kernel/seL4/src/arch/x86/object/interrupt.c
     // Arg 0: index
-    seL4_SetMR(0, (index as u64).try_into().unwrap());
+    libnova::ipc::set_mr(0, (index as u64).try_into().unwrap());
     // Arg 1: depth
-    seL4_SetMR(1, (depth as u64).try_into().unwrap());
+    libnova::ipc::set_mr(1, (depth as u64).try_into().unwrap());
     // Arg 2: ioapic
-    seL4_SetMR(2, (ioapic as u64).try_into().unwrap());
+    libnova::ipc::set_mr(2, (ioapic as u64).try_into().unwrap());
     
     // Arg 3: pin
-    seL4_SetMR(3, (pin as u64).try_into().unwrap());
+    libnova::ipc::set_mr(3, (pin as u64).try_into().unwrap());
 
     // Arg 4: level (trigger mode)
-    seL4_SetMR(4, (level as u64).try_into().unwrap());
+    libnova::ipc::set_mr(4, (level as u64).try_into().unwrap());
 
     // Arg 5: polarity
-    seL4_SetMR(5, (polarity as u64).try_into().unwrap());
+    libnova::ipc::set_mr(5, (polarity as u64).try_into().unwrap());
 
     // Arg 6: vector
-    seL4_SetMR(6, (vector as u64).try_into().unwrap());
+    libnova::ipc::set_mr(6, (vector as u64).try_into().unwrap());
 
-    let info = seL4_MessageInfo_new(
+    let info = libnova::ipc::MessageInfo::new(
         (X86_IRQ_ISSUE_IRQ_HANDLER_IOAPIC as u64).try_into().unwrap(), // label
         0,
         1, // extra caps
         7  // MRs
     );
     
-    let resp = seL4_Call(irq_control.try_into().unwrap(), info);
-    let label = seL4_MessageInfo_get_label(resp);
+    let resp = libnova::ipc::call(irq_control.try_into().unwrap(), info);
+    let label = resp.label();
     
     if label == 0 {
         Ok(())

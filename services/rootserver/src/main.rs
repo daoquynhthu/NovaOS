@@ -8,6 +8,8 @@
 #![reexport_test_harness_main = "test_main"]
 
 extern crate alloc;
+#[macro_use]
+extern crate libnova;
 
 mod runtime;
 mod memory;
@@ -16,29 +18,28 @@ mod vspace;
 mod process;
 mod ipc;
 mod elf_loader;
-mod utils;
 mod tests;
 mod arch;
-mod keyboard;
+mod drivers;
 mod shell;
 mod filesystem;
 mod shared_memory;
 mod vfs;
+mod fs;
+mod services;
 
-use sel4_sys::*;
+use alloc::boxed::Box;
 use sel4_sys::{
-    seL4_BootInfo, seL4_CPtr, seL4_MessageInfo_new, seL4_Word,
-    seL4_Call, seL4_Wait, seL4_SetMR, seL4_SetCap_My,
-    seL4_PageBits
+    seL4_BootInfo, seL4_CPtr, seL4_Word,
 };
-use crate::utils::seL4_X86_4K;
+// Temporary constant until we confirm sel4_sys export
+#[allow(dead_code, non_upper_case_globals)]
+const seL4_X86_4K: seL4_Word = 8;
+
 use crate::arch::{port_io, ioapic, acpi, serial};
-use sel4_sys::seL4_RootCNodeCapSlots::{
-    seL4_CapInitThreadCNode,
-    seL4_CapInitThreadVSpace
-};
+
 use core::arch::global_asm;
-use memory::{SlotAllocator, UntypedAllocator, ObjectAllocator};
+use memory::{SlotAllocator, UntypedAllocator, ObjectAllocator, FrameAllocator};
 use crate::process::{Process, get_process_manager, FileMode, FileDescriptor, MAX_FDS};
 use crate::ipc::Endpoint;
 use crate::shared_memory::SharedMemoryManager;
@@ -57,17 +58,16 @@ extern "C" fn irq_worker_entry(notification: usize, endpoint: usize) {
     println!("[WORKER] Thread started. Notification: {}, Endpoint: {}", notification, endpoint);
 
     loop {
-        let mut badge: seL4_Word = 0;
-        unsafe {
-            seL4_Wait(notification.try_into().unwrap(), &mut badge);
-            // Debug: print '!'
-            // crate::serial::send_char('!');
-            // println!("[WORKER] Received Notification! Badge: {}", badge);
-            
-            seL4_SetMR(0, badge);
-            let info = seL4_MessageInfo_new(0, 0, 0, 1);
-            seL4_Call(endpoint.try_into().unwrap(), info);
-        }
+        // Wait for notification
+        let badge = libnova::ipc::wait(notification.try_into().unwrap());
+        
+        // Debug: print '!'
+        // crate::serial::send_char('!');
+        // println!("[WORKER] Received Notification! Badge: {}", badge);
+        
+        libnova::ipc::set_mr(0, badge);
+        let info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+        libnova::ipc::call(endpoint.try_into().unwrap(), info);
     }
 }
 
@@ -93,7 +93,7 @@ global_asm!(
     r#"
     .section .text.start
     .global _start
-    .type _start, @function
+    // .type _start, @function
     _start:
         /* 设置栈指针 */
         lea stack_top(%rip), %rsp
@@ -153,7 +153,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
         // panic!("Failed to get BootInfo! System halted."); 
         // For now, let's just assume it's good or crash.
         loop {
-            sel4_sys::seL4_Yield();
+            libnova::syscall::yield_thread();
         }
     }
     
@@ -166,6 +166,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     // 2. 初始化内存分配器
     let mut slot_allocator = SlotAllocator::new(boot_info);
     let mut allocator = UntypedAllocator::new(boot_info);
+    let mut frame_allocator = FrameAllocator::new();
 
     println!("Initializing IO Port Capability...");
     
@@ -191,7 +192,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
         Err(e) => {
             println!("Failed to issue IO Port Capability. Error: {:?}", e);
             loop {
-                sel4_sys::seL4_Yield();
+                libnova::syscall::yield_thread();
             }
         }
     }
@@ -228,6 +229,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
 
     let mut irq_handler_cap: usize = 0;
     let mut timer_irq_cap: usize = 0;
+    let mut serial_irq_cap: usize = 0;
 
     // Initialize ACPI
     let mut acpi_context = acpi::AcpiContext::new();
@@ -275,6 +277,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                                  if let Err(e) = crate::arch::acpi::map_phys(boot_info, p_paddr, 0, &mut allocator, &mut slot_allocator, &mut acpi_context) {
                                                      println!("[ACPI] Failed to map extra page for MADT: {:?}", e);
                                                  }
+
                                              }
                                          }
                                          
@@ -328,12 +331,10 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                                let ioapic_idx = 0; 
                                                let vector = 33; // 0x21
                                                
-                                               let err = unsafe {
-                                                   crate::arch::ioapic::get_ioapic_handler(
+                                               let err = crate::arch::ioapic::get_ioapic_handler(
                                                        irq_control_cap, ioapic_idx as usize, pin as usize, level, polarity,
                                                        root_cnode_cap, irq_slot.try_into().unwrap(), depth, vector
-                                                   )
-                                               };
+                                                   );
                                                 if err.is_ok() {
                                                     println!("[KERNEL] IRQ Handler for Keyboard created.");
                                                     
@@ -378,12 +379,10 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                                let ioapic_idx = 0;
                                                let vector = 40; // 0x28
                                                
-                                               let err = unsafe {
-                                                   crate::arch::ioapic::get_ioapic_handler(
-                                                       irq_control_cap, ioapic_idx as usize, pin as usize, level, polarity,
-                                                       root_cnode_cap, irq_slot.try_into().unwrap(), depth, vector
-                                                   )
-                                               };
+                                               let err = crate::arch::ioapic::get_ioapic_handler(
+                                                   irq_control_cap, ioapic_idx as usize, pin as usize, level, polarity,
+                                                   root_cnode_cap, irq_slot.try_into().unwrap(), depth, vector
+                                               );
 
                                                 if err.is_ok() {
                                                     timer_irq_cap = irq_slot as usize;
@@ -391,6 +390,42 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                                 } else {
                                                     println!("[KERNEL] Failed to get Timer IRQ Handler.");
                                                 }
+                                             }
+
+                                             // 3. Serial Port IRQ (IRQ 4 / COM1)
+                                             if let Ok(irq_slot) = slot_allocator.alloc() {
+                                                let irq = 4;
+                                                let (gsi, level, polarity) = if let Some(iso) = crate::arch::acpi::find_iso_for_irq(madt, irq) {
+                                                    let iso_gsi = iso.gsi;
+                                                    let iso_flags = iso.flags;
+                                                    println!("[KERNEL] Found ISO for IRQ 4: GSI={}, Flags=0x{:x}", iso_gsi, iso_flags);
+                                                    let p_flag = iso_flags & 0x3;
+                                                    let t_flag = (iso_flags >> 2) & 0x3;
+                                                    
+                                                    let pol = if p_flag == 3 { 1 } else { 0 }; 
+                                                    let lev = if t_flag == 3 { 1 } else { 0 };
+                                                    
+                                                    (iso_gsi as usize, lev, pol)
+                                                } else {
+                                                    (4, 0, 0)
+                                                };
+                                                
+                                                println!("[KERNEL] Config Serial IRQ {} -> GSI {}", irq, gsi);
+
+                                                let pin = gsi;
+                                                let ioapic_idx = 0; 
+                                                let vector = 52; 
+                                                
+                                                let err = crate::arch::ioapic::get_ioapic_handler(
+                                                        irq_control_cap, ioapic_idx as usize, pin as usize, level, polarity,
+                                                        root_cnode_cap, irq_slot.try_into().unwrap(), depth, vector
+                                                    );
+                                                 if err.is_ok() {
+                                                     serial_irq_cap = irq_slot as usize;
+                                                     println!("[KERNEL] Serial IRQ Handler obtained.");
+                                                 } else {
+                                                     println!("[KERNEL] Failed to get Serial IRQ Handler.");
+                                                 }
                                              }
                                              
                                          } else {
@@ -422,19 +457,46 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
 
     // 3. System Self-Test (POST)
     println!("[KERNEL] Performing Power-On Self-Test (POST)...");
-    tests::run_all(boot_info, &mut allocator, &mut slot_allocator);
+    tests::run_all(boot_info, &mut allocator, &mut slot_allocator, &mut frame_allocator);
     println!("[KERNEL] POST Completed Successfully.");
 
     // 4. Initialize Syscall Endpoint and Processes
     println!("[KERNEL] Initializing Process Manager...");
     
     // Allocate Syscall Endpoint
-    let syscall_ep_cap = allocator.allocate(boot_info, api_object_seL4_EndpointObject.into(), seL4_EndpointBits.into(), &mut slot_allocator).expect("Failed to alloc EP");
+    let syscall_ep_cap = allocator.allocate(boot_info, sel4_sys::api_object_seL4_EndpointObject.into(), sel4_sys::seL4_EndpointBits.into(), &mut slot_allocator).expect("Failed to alloc EP");
     
+    // Initialize Service Registry
+    services::init();
+    
+    // Create and Register "test" service (Badge 200)
+    let test_service_slot = slot_allocator.alloc().expect("Failed to alloc slot for test service");
+    let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+    let cnode_depth = sel4_sys::seL4_WordBits;
+    
+    let err = unsafe {
+        sel4_sys::seL4_CNode_Mint(
+            root_cnode,
+            test_service_slot,
+            cnode_depth as u8,
+            root_cnode,
+            syscall_ep_cap,
+            cnode_depth as u8,
+            libnova::cap::CapRights_new(false, true, true, true),
+            200 // Badge 200 for Test Service
+        )
+    };
+    if err != 0.into() {
+        println!("[KERNEL] Failed to mint test service endpoint: {:?}", err);
+    } else {
+        services::register("test", test_service_slot);
+        println!("[KERNEL] Service 'test' registered (Badge 200).");
+    }
+
     // Mint Badged Endpoint for Process 1
     let badged_ep_slot = slot_allocator.alloc().expect("Failed to alloc slot for badged EP");
     let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-    let cnode_depth = seL4_WordBits; 
+    let cnode_depth = sel4_sys::seL4_WordBits; 
     
     let err = unsafe {
         sel4_sys::seL4_CNode_Mint(
@@ -444,7 +506,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
             root_cnode,
             syscall_ep_cap,
             cnode_depth as u8,
-            crate::utils::seL4_CapRights_new(0, 1, 1, 1),
+            libnova::cap::CapRights_new(false, true, true, true),
             100 // Badge for Process 1
         )
     };
@@ -458,8 +520,10 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     let process = Process::spawn(
         &mut allocator,
         &mut slot_allocator,
+        &mut frame_allocator,
         boot_info,
         hello_elf,
+        &[],
         100, // Priority
         badged_ep_slot // Give badged cap
     ).expect("Failed to spawn process");
@@ -478,7 +542,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
             root_cnode,
             syscall_ep_cap,
             cnode_depth as u8,
-            crate::utils::seL4_CapRights_new(0, 1, 1, 1),
+            libnova::cap::CapRights_new(false, true, true, true),
             101 // Badge for Process 2
         )
     };
@@ -489,8 +553,10 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     let process2 = Process::spawn(
         &mut allocator,
         &mut slot_allocator,
+        &mut frame_allocator,
         boot_info,
         hello_elf,
+        &[], // No args
         100, // Priority
         badged_ep_slot_2
     ).expect("Failed to spawn process 2");
@@ -502,31 +568,34 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     // 5. Setup Interrupts
     println!("[KERNEL] Setting up Interrupts...");
     
+    // Initialize PCI
+    crate::arch::pci::init();
+
     // let mut notification_cap = 0; // Removed unused variable
-    let mut keyboard_driver = keyboard::Keyboard::new();
+    let mut driver_manager = drivers::DriverManager::new();
     let mut shell = shell::Shell::new();
     let mut system_tick: u64 = 0;
     
-    match allocator.allocate(boot_info, api_object_seL4_NotificationObject.into(), seL4_NotificationBits.into(), &mut slot_allocator) {
+    match allocator.allocate(boot_info, sel4_sys::api_object_seL4_NotificationObject.into(), sel4_sys::seL4_NotificationBits.into(), &mut slot_allocator) {
         Ok(notification_cap) => {
             // notification_cap = cap;
             println!("[KERNEL] Allocated Notification at slot {}", notification_cap);
             
             // Spawn IRQ Worker Thread
             println!("[KERNEL] Spawning IRQ Worker Thread...");
-            let worker_tcb_cap = allocator.allocate(boot_info, api_object_seL4_TCBObject.into(), seL4_TCBBits.into(), &mut slot_allocator).expect("Failed to alloc worker TCB");
+            let worker_tcb_cap = allocator.allocate(boot_info, sel4_sys::api_object_seL4_TCBObject.into(), sel4_sys::seL4_TCBBits.into(), &mut slot_allocator).expect("Failed to alloc worker TCB");
             let worker_badged_ep = slot_allocator.alloc().expect("Failed to alloc worker EP slot");
 
-            let root_cnode = seL4_CapInitThreadCNode as seL4_CPtr;
-            let cnode_depth = seL4_WordBits as u8;
-            let vspace_root = seL4_CapInitThreadVSpace as usize;
+            let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+            let cnode_depth = sel4_sys::seL4_WordBits as u8;
+            let vspace_root = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadVSpace as usize;
 
             unsafe {
                 // Mint Badged Endpoint (Badge 999)
                 sel4_sys::seL4_CNode_Mint(
                     root_cnode, worker_badged_ep, cnode_depth,
                     root_cnode, syscall_ep_cap, cnode_depth,
-                    crate::utils::seL4_CapRights_new(0, 1, 1, 1),
+                    libnova::cap::CapRights_new(false, true, true, true),
                     999
                 );
 
@@ -535,26 +604,26 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 // Args: FaultEP, CSpaceRootData, VSpaceRootData, BufferAddr
                 // Extra Caps: CSpaceRoot, VSpaceRoot, BufferFrame(Optional)
                 
-                seL4_SetMR(0, 0); // Fault EP
-                seL4_SetMR(1, 0); // CSpace Data
-                seL4_SetMR(2, 0); // VSpace Data
-                seL4_SetMR(3, 0); // Buffer Address (No IPC Buffer)
+                libnova::ipc::set_mr(0, 0); // Fault EP
+                libnova::ipc::set_mr(1, 0); // CSpace Data
+                libnova::ipc::set_mr(2, 0); // VSpace Data
+                libnova::ipc::set_mr(3, 0); // Buffer Address (No IPC Buffer)
                 
-                seL4_SetCap_My(0, root_cnode);
-            seL4_SetCap_My(1, vspace_root as seL4_CPtr);
-            seL4_SetCap_My(2, 0); // BufferFrame (Null)
+                libnova::ipc::set_cap(0, root_cnode);
+            libnova::ipc::set_cap(1, vspace_root as seL4_CPtr);
+            libnova::ipc::set_cap(2, 0); // BufferFrame (Null)
 
-            let info = seL4_MessageInfo_new(
+            let info = libnova::ipc::MessageInfo::new(
                 sel4_sys::invocation_label_TCBConfigure as seL4_Word,
                 0,
                 3, // ExtraCaps: CSpace, VSpace, BufferFrame
                 5, // Length
             );
-                seL4_Call(worker_tcb_cap, info);
+                libnova::ipc::call(worker_tcb_cap, info);
 
                 // Set Priority
                 let authority = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadTCB as seL4_CPtr;
-                seL4_SetMR(0, 255); // Priority
+                libnova::ipc::set_mr(0, 255); // Priority
                 
                 // We need to pass authority as an extra cap?
                 // No, seL4_TCB_SetPriority(tcb, auth, prio)
@@ -569,14 +638,14 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 // Usually: SetMR(0, priority). SetCap(0, authority). ExtraCaps=1.
                 // Let's assume ExtraCap 0 is authority.
                 
-                seL4_SetCap_My(0, authority);
-                let info = seL4_MessageInfo_new(
+                libnova::ipc::set_cap(0, authority);
+                let info = libnova::ipc::MessageInfo::new(
                     sel4_sys::invocation_label_TCBSetPriority as seL4_Word,
                     0,
                     1, // ExtraCaps: Authority
                     1, // Length: Priority
                 );
-                seL4_Call(worker_tcb_cap, info);
+                libnova::ipc::call(worker_tcb_cap, info);
 
                 // Write Registers
                 let stack_top = (core::ptr::addr_of_mut!(WORKER_STACK) as usize) + 4096;
@@ -590,25 +659,25 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 // 7: rsi (endpoint)
                 regs[7] = worker_badged_ep as u64;
 
-                let info = seL4_MessageInfo_new(
+                let info = libnova::ipc::MessageInfo::new(
                     sel4_sys::invocation_label_TCBWriteRegisters as seL4_Word,
                     0,
                     0,
                     2 + 20, // Length: flags(1) + count(1) + regs(20)
                 );
-                seL4_SetMR(0, 0); // Resume=false
-                seL4_SetMR(1, 20); // Count
+                libnova::ipc::set_mr(0, 0); // Resume=false
+                libnova::ipc::set_mr(1, 20); // Count
                 for i in 0..20 {
-                    seL4_SetMR(i+2, regs[i]);
+                    libnova::ipc::set_mr(i+2, regs[i].try_into().unwrap());
                 }
-                seL4_Call(worker_tcb_cap, info);
+                libnova::ipc::call(worker_tcb_cap, info);
 
                 // Resume
-                let info = seL4_MessageInfo_new(
+                let info = libnova::ipc::MessageInfo::new(
                     sel4_sys::invocation_label_TCBResume as seL4_Word,
                     0, 0, 0
                 );
-                seL4_Call(worker_tcb_cap, info);
+                libnova::ipc::call(worker_tcb_cap, info);
 
                 println!("[KERNEL] IRQ Worker Thread Started.");
             }
@@ -617,28 +686,27 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
             if irq_handler_cap != 0 {
                 let kb_badge_cap = slot_allocator.alloc().unwrap();
                 let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-                let cnode_depth = seL4_WordBits as u8;
+                let cnode_depth = sel4_sys::seL4_WordBits as u8;
                 
                 let err = unsafe {
                     sel4_sys::seL4_CNode_Mint(
                         root_cnode, kb_badge_cap, cnode_depth,
                         root_cnode, notification_cap, cnode_depth,
-                        crate::utils::seL4_CapRights_new(0, 1, 1, 1),
+                        libnova::cap::CapRights_new(false, true, true, true),
                         1 // Badge 1
                     )
                 };
                 
                 if err == 0.into() {
-                    unsafe {
-                        if let Err(e) = ioapic::set_irq_handler(irq_handler_cap, kb_badge_cap as usize) {
-                            println!("[KERNEL] Failed to SetKBIRQHandler: {}", e);
+                    if let Err(e) = ioapic::set_irq_handler(irq_handler_cap, kb_badge_cap as usize) {
+                        println!("[KERNEL] Failed to SetKBIRQHandler: {}", e);
+                    } else {
+                        if let Err(e) = ioapic::ack_irq(irq_handler_cap) {
+                            println!("[KERNEL] Failed to Ack KB IRQ: {}", e);
                         } else {
-                            if let Err(e) = ioapic::ack_irq(irq_handler_cap) {
-                                println!("[KERNEL] Failed to Ack KB IRQ: {}", e);
-                            } else {
-                                println!("[KERNEL] Keyboard IRQ Configured.");
-                                shell.init(boot_info, &mut allocator, &mut slot_allocator, syscall_ep_cap);
-                            }
+                            println!("[KERNEL] Keyboard IRQ Configured.");
+                            shell.init(boot_info, &mut allocator, &mut slot_allocator, &mut frame_allocator, syscall_ep_cap);
+                            driver_manager.register_irq_driver(1, Box::new(drivers::keyboard::Keyboard::new(irq_handler_cap)));
                         }
                     }
                 } else {
@@ -650,33 +718,72 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
             if timer_irq_cap != 0 {
                 let timer_badge_cap = slot_allocator.alloc().unwrap();
                 let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-                let cnode_depth = seL4_WordBits as u8;
+                let cnode_depth = sel4_sys::seL4_WordBits as u8;
                 
                 let err = unsafe {
                     sel4_sys::seL4_CNode_Mint(
                         root_cnode, timer_badge_cap, cnode_depth,
                         root_cnode, notification_cap, cnode_depth,
-                        crate::utils::seL4_CapRights_new(0, 1, 1, 1),
+                        libnova::cap::CapRights_new(false, true, true, true),
                         2 // Badge 2
                     )
                 };
                 
                 if err == 0.into() {
-                    unsafe {
-                        if let Err(e) = ioapic::set_irq_handler(timer_irq_cap, timer_badge_cap as usize) {
-                             println!("[KERNEL] Failed to SetTimerIRQHandler: {}", e);
+                    if let Err(e) = ioapic::set_irq_handler(timer_irq_cap, timer_badge_cap as usize) {
+                            println!("[KERNEL] Failed to SetTimerIRQHandler: {}", e);
+                    } else {
+                        if let Err(e) = ioapic::ack_irq(timer_irq_cap) {
+                            println!("[KERNEL] Failed to Ack Timer IRQ: {}", e);
                         } else {
-                            if let Err(e) = ioapic::ack_irq(timer_irq_cap) {
-                                println!("[KERNEL] Failed to Ack Timer IRQ: {}", e);
-                            } else {
-                                println!("[KERNEL] Timer IRQ Configured.");
-                            }
+                            println!("[KERNEL] Timer IRQ Configured.");
+                            driver_manager.register_irq_driver(2, Box::new(drivers::timer::TimerDriver::new(timer_irq_cap)));
                         }
                     }
                 } else {
                     println!("[KERNEL] Failed to mint Timer notification badge: {:?}", err);
                 }
             }
+
+            // 3. Configure Serial (Badge 4)
+            if serial_irq_cap != 0 {
+                let serial_badge_cap = slot_allocator.alloc().unwrap();
+                let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+                let cnode_depth = sel4_sys::seL4_WordBits as u8;
+                
+                let err = unsafe {
+                    sel4_sys::seL4_CNode_Mint(
+                        root_cnode, serial_badge_cap, cnode_depth,
+                        root_cnode, notification_cap, cnode_depth,
+                        libnova::cap::CapRights_new(false, true, true, true),
+                        4 // Badge 4
+                    )
+                };
+                
+                if err == 0.into() {
+                    if let Err(e) = ioapic::set_irq_handler(serial_irq_cap, serial_badge_cap as usize) {
+                            println!("[KERNEL] Failed to SetSerialIRQHandler: {}", e);
+                    } else {
+                        if let Err(e) = ioapic::ack_irq(serial_irq_cap) {
+                            println!("[KERNEL] Failed to Ack Serial IRQ: {}", e);
+                        } else {
+                            println!("[KERNEL] Serial IRQ Configured.");
+                        // Driver is registered in main loop setup, but we should probably move it here or ensure consistency.
+                        // Actually, let's keep registration here to be consistent with others.
+                        // But wait, I already have registration code later: 
+                        // driver_manager.register_irq_driver(4, Box::new(drivers::serial::SerialDriver::new(0x3F8)));
+                        // Duplicate registration might be fine if BTreeMap overwrites, but let's avoid it.
+                        // I will remove the later registration and put it here.
+                        driver_manager.register_irq_driver(4, Box::new(drivers::serial::SerialDriver::new(0x3F8, serial_irq_cap)));
+                        }
+                    }
+                } else {
+                    println!("[KERNEL] Failed to mint Serial notification badge: {:?}", err);
+                }
+            }
+
+            // 4. Register RTC Driver (Badge 8) - No IRQ yet
+            driver_manager.register_irq_driver(8, Box::new(drivers::rtc::RtcDriver::new()));
         },
         Err(e) => println!("[KERNEL] Failed to allocate Notification: {:?}", e),
     }
@@ -684,27 +791,39 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     // 6. Unified Event Loop
     println!("[KERNEL] Entering Unified Event Loop...");
     
+    // Run Disk Driver Test (Temporary Verification)
+    crate::tests::test_disk_driver();
+
     // Disable Legacy PIC (Mask all) to prevent interference with IOAPIC
-    unsafe {
-        port_io::outb(0x21, 0xFF);
-        port_io::outb(0xA1, 0xFF);
-        println!("[KERNEL] Legacy PIC Masked.");
-    }
+    port_io::outb(0x21, 0xFF);
+    port_io::outb(0xA1, 0xFF);
+    println!("[KERNEL] Legacy PIC Masked.");
     
     // Initialize PIT for 100Hz Timer
-    unsafe {
-        port_io::outb(0x43, 0x34);
-        let divisor = 11931; // 100Hz
-        port_io::outb(0x40, (divisor & 0xFF) as u8);
-        port_io::outb(0x40, (divisor >> 8) as u8);
-        println!("[KERNEL] PIT Initialized (100Hz)");
-        
-        let ipc_buf = sel4_sys::seL4_GetIPCBuffer();
-        println!("[KERNEL] RootServer IPC Buffer: {:p}", ipc_buf);
-    }
+    port_io::outb(0x43, 0x34);
+    let divisor = 11931; // 100Hz
+    port_io::outb(0x40, (divisor & 0xFF) as u8);
+    port_io::outb(0x40, (divisor >> 8) as u8);
+    println!("[KERNEL] PIT Initialized (100Hz)");
+    
+    let ipc_buf = unsafe { sel4_sys::seL4_GetIPCBuffer() };
+    println!("[KERNEL] RootServer IPC Buffer: {:p}", ipc_buf);
+
+
+
+    driver_manager.init_all();
 
     let syscall_ep = Endpoint::new(syscall_ep_cap);
-    let mut reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 0);
+
+    // Allocate slot for receiving caps during syscalls
+    let syscall_recv_slot = slot_allocator.alloc().expect("Failed to alloc syscall recv slot");
+    let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+    let cnode_depth = sel4_sys::seL4_WordBits; 
+    
+    // Set receive path
+    libnova::ipc::set_cap_receive_path(root_cnode, syscall_recv_slot, cnode_depth.into());
+
+    let mut reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0);
     let mut need_reply = false;
     let mut reply_mrs = [0u64; 4];
 
@@ -722,62 +841,48 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
             // Worker Thread Interrupt Forwarding
             let irq_badge = mrs[0] as seL4_Word;
             
-            // Check Keyboard (Badge 1)
-            if irq_badge & 1 != 0 {
-                for _ in 0..32 {
-                    if unsafe { port_io::inb(0x64) } & 0x01 == 0 {
-                        break;
-                    }
+            let events = driver_manager.handle_interrupt(irq_badge);
+            for event in events {
+                match event {
+                    drivers::DriverEvent::KeyboardInput(k) => shell.on_key(k),
+                    drivers::DriverEvent::SerialInput(byte) => {
+                         // Serial to Key mapping
+                         let key = match byte {
+                             b'\r' | b'\n' => Some(drivers::keyboard::Key::Enter),
+                             b'\x08' | 0x7F => Some(drivers::keyboard::Key::Backspace),
+                             b'\t' => Some(drivers::keyboard::Key::Tab),
+                             0x1B => Some(drivers::keyboard::Key::Esc),
+                             c if c >= 32 && c <= 126 => Some(drivers::keyboard::Key::Char(c as char)),
+                             _ => None,
+                         };
 
-                    let scancode = unsafe { port_io::inb(0x60) };
-                    if let Some(k) = keyboard_driver.process_scancode(scancode) {
-                        shell.on_key(k);
-                    }
-                }
-                unsafe {
-                    if let Err(e) = ioapic::ack_irq(irq_handler_cap) {
-                         println!("[KERNEL] Failed to Ack KB IRQ in loop: {}", e);
-                    }
-                }
-            }
-            
-            // Check Timer (Badge 2)
-            if irq_badge & 2 != 0 {
-                system_tick += 1;
-                // if system_tick % 100 == 0 {
-                //      println!("[KERNEL] Tick {}", system_tick);
-                // }
-
-                unsafe {
-                    if let Err(e) = ioapic::ack_irq(timer_irq_cap) {
-                         println!("[KERNEL] Failed to Ack Timer IRQ in loop: {}", e);
-                    }
-                }
-                
-                // Wake up sleeping processes
-                let pm = get_process_manager();
-                for pid in 0..crate::process::MAX_PROCESSES {
-                    if let Some(p) = pm.get_process_mut(pid) {
-                        if p.state == process::ProcessState::Sleeping && system_tick >= p.wake_at_tick {
-                            // println!("[KERNEL] Waking up PID {} at tick {}", pid, system_tick);
-                            p.state = process::ProcessState::Running;
-
-                            // Send reply to wake up the process
-                            let wake_msg = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
-                            unsafe {
-                                // println!("[KERNEL] Sending wake reply to cap: {}", p.saved_reply_cap);
-                                // sel4_sys::seL4_SetMR(0, 0); // Not needed with custom seL4_Send
-                                crate::utils::seL4_Send(p.saved_reply_cap, wake_msg.words[0], [0; 4]);
-                                // println!("[KERNEL] Wake reply sent.");
+                         if let Some(k) = key {
+                             shell.on_key(k);
+                         }
+                    },
+                    drivers::DriverEvent::Tick => {
+                        system_tick += 1;
+                        
+                        // Wake up sleeping processes
+                        let pm = get_process_manager();
+                        for pid in 0..crate::process::MAX_PROCESSES {
+                            if let Some(p) = pm.get_process_mut(pid) {
+                                if p.state == process::ProcessState::Sleeping && system_tick >= p.wake_at_tick {
+                                    p.state = process::ProcessState::Running;
+                                    let wake_msg = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                                    libnova::ipc::set_mr(0, 0);
+                                    libnova::ipc::send(p.saved_reply_cap, wake_msg);
+                                }
                             }
                         }
-                    }
+                    },
+                    drivers::DriverEvent::None => {}
                 }
             }
             
             // Reply to Worker to unblock it for next IRQ
             need_reply = true;
-            reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 0);
+            reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0);
             continue;
         }
 
@@ -786,7 +891,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
         } else if badge >= 100 {
             let pid = (badge - 100) as usize;
             // Syscall from Process
-             let label = sel4_sys::seL4_MessageInfo_get_label(info);
+             let label = info.label();
 
             match label {
                 1 => { // sys_write (debug_print)
@@ -802,7 +907,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         if b == 0 { break; }
                         print!("{}", b as char);
                     }
-                    reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                     need_reply = true;
                 }
                 2 => { // sys_exit
@@ -815,7 +920,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
 
                     if let Some(p) = get_process_manager().get_process_mut(pid) {
                          let cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-                         let _ = p.terminate(cnode, &mut slot_allocator);
+                         let _ = p.terminate(cnode, &mut slot_allocator, &mut frame_allocator);
                     }
                     // Remove process from manager
                     get_process_manager().remove_process(pid);
@@ -829,20 +934,20 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     if new_addr >= 0x8000_0000 {
                          println!("[KERNEL] sys_brk invalid address: 0x{:x}", new_addr);
                          reply_mrs[0] = 0;
-                         reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                         reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                          need_reply = true;
                     } else {
                         if let Some(p) = get_process_manager().get_process_mut(pid) {
-                             match p.brk(&mut allocator, &mut slot_allocator, boot_info, new_addr) {
+                             match p.brk(&mut allocator, &mut slot_allocator, &mut frame_allocator, boot_info, new_addr) {
                              Ok(new_brk) => {
                                  reply_mrs[0] = new_brk as u64;
-                                 reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                                 reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                                  need_reply = true;
                              },
                              Err(e) => {
                                  println!("[KERNEL] sys_brk failed for pid {}: {:?}", pid, e);
                                  reply_mrs[0] = 0; 
-                                 reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                                 reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                                  need_reply = true;
                              }
                          }
@@ -854,7 +959,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 }
                 4 => { // sys_yield
                     // reply immediately
-                    reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 0);
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0);
                     need_reply = true;
                 }
                 50 => { // sys_shutdown
@@ -875,7 +980,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         
                         if let Some(p) = get_process_manager().get_process_mut(pid) {
                              // Allocate frame
-                             if let Ok(frame_cap) = allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), &mut slot_allocator) {
+                             if let Ok(frame_cap) = frame_allocator.alloc(&mut allocator, boot_info, &mut slot_allocator) {
                                  // Map it
                                  if let Ok(_) = p.vspace.map_page(
                                     &mut allocator,
@@ -883,34 +988,35 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                     boot_info,
                                     frame_cap,
                                     aligned_addr,
-                                    crate::utils::seL4_CapRights_new(0, 1, 1, 1),
+                                    libnova::cap::CapRights_new(false, true, true, true),
                                     sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes
                                  ) {
                                      let _ = p.track_frame(frame_cap);
-                                     reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 0);
+                                     reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0);
                                      need_reply = true;
                                  } else {
                                      println!("[KERNEL] Failed to map page.");
                                      let cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-                                     let _ = p.terminate(cnode, &mut slot_allocator);
+                                     let _ = p.terminate(cnode, &mut slot_allocator, &mut frame_allocator);
                                      get_process_manager().remove_process(pid);
                                      need_reply = false;
                                  }
                              } else {
                                  println!("[KERNEL] Failed to allocate frame.");
                                  let cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-                                 let _ = p.terminate(cnode, &mut slot_allocator);
+                                 let _ = p.terminate(cnode, &mut slot_allocator, &mut frame_allocator);
                                  get_process_manager().remove_process(pid);
                                  need_reply = false;
                              }
                         } else {
-                             need_reply = true;
+                             println!("[KERNEL] Process {} not found for VMFault", pid);
+                             need_reply = false;
                         }
                     } else {
                         println!("[KERNEL] Unhandled VM Fault at 0x{:x} (IP: 0x{:x}). Terminating.", fault_addr, ip);
                          if let Some(p) = get_process_manager().get_process_mut(pid) {
                              let cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-                             let _ = p.terminate(cnode, &mut slot_allocator);
+                             let _ = p.terminate(cnode, &mut slot_allocator, &mut frame_allocator);
                          }
                          get_process_manager().remove_process(pid);
                          need_reply = false;
@@ -918,13 +1024,13 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 }
                 6 => { // sys_get_time
                     reply_mrs[0] = system_tick;
-                    reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                     need_reply = true;
                 }
                 10 => { // sys_sleep (MR0 = ticks)
                     let ticks = mrs[0];
                     if ticks == 0 {
-                        reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 0);
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0);
                         need_reply = true;
                     } else {
                         if let Some(p) = get_process_manager().get_process_mut(pid) {
@@ -934,7 +1040,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                             let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
                             if let Err(e) = p.save_caller(root_cnode, &mut slot_allocator) {
                                 println!("[KERNEL] Failed to save caller for sys_sleep: {:?}", e);
-                                reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1); // Error
+                                reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1); // Error
                                 need_reply = true;
                             } else {
                                 // Successful suspend
@@ -956,14 +1062,15 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                             size
                         ) {
                             Ok(key) => {
-                                reply_mrs[0] = key as u64;
+                                reply_mrs[0] = (key + 1) as u64;
                             },
-                            Err(_) => {
+                            Err(e) => {
+                                println!("[KERNEL] sys_shm_alloc failed: {:?}", e);
                                 reply_mrs[0] = 0; 
                             }
                         }
                     }
-                    reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                     need_reply = true;
                 }
                 12 => { // sys_shm_map(key, vaddr)
@@ -971,26 +1078,97 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     let vaddr = mrs[1] as usize;
                     if let Some(p) = get_process_manager().get_process_mut(pid) {
                         unsafe {
-                             match (*addr_of_mut!(SHARED_MEMORY_MANAGER)).map_shared_region(
-                                key, 
-                                p, 
-                                &mut allocator, 
-                                &mut slot_allocator, 
-                                boot_info, 
-                                vaddr
-                             ) {
-                                Ok(_) => {
-                                    reply_mrs[0] = 0; // Success
-                                },
-                                Err(e) => {
-                                    reply_mrs[0] = e as u64; // Error code
+                            if key == 0 {
+                                reply_mrs[0] = 1; // Error
+                            } else {
+                                match (*addr_of_mut!(SHARED_MEMORY_MANAGER)).map_shared_region(
+                                    key - 1, 
+                                    p, 
+                                    &mut allocator, 
+                                    &mut slot_allocator, 
+                                    boot_info, 
+                                    vaddr
+                                ) {
+                                    Ok(_) => {
+                                        reply_mrs[0] = 0; // Success
+                                    },
+                                    Err(e) => {
+                                        reply_mrs[0] = e as u64; // Error code
+                                    }
                                 }
-                             }
+                            }
                         }
                     } else {
-                         reply_mrs[0] = 1; // Error
+                        reply_mrs[0] = 1; // Error
                     }
-                    reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                30 => { // sys_service_register (MR0=len, MR1..=name, ExtraCap=service)
+                    let len = mrs[0] as usize;
+                    let mut name_bytes = alloc::vec::Vec::with_capacity(len);
+                    let mut current_len = 0;
+                    let mut mr_idx = 1;
+                    while current_len < len {
+                        let word = mrs[mr_idx];
+                        let bytes = word.to_le_bytes();
+                        for b in bytes.iter() {
+                            if current_len < len {
+                                name_bytes.push(*b);
+                                current_len += 1;
+                            }
+                        }
+                        mr_idx += 1;
+                    }
+                    let name_str = alloc::string::String::from_utf8(name_bytes).unwrap_or_default();
+
+                    unsafe {
+                        if sel4_sys::seL4_MessageInfo_get_extraCaps(info.inner) > 0 {
+                            // Move cap from syscall_recv_slot to new slot
+                            let new_slot = slot_allocator.alloc().expect("Failed to alloc slot for service");
+                            let err = sel4_sys::seL4_CNode_Move(
+                                root_cnode, new_slot, cnode_depth as u8,
+                                root_cnode, syscall_recv_slot, cnode_depth as u8
+                            );
+                            if err == 0.into() {
+                                services::register(&name_str, new_slot);
+                                println!("[KERNEL] Service '{}' registered via syscall.", name_str);
+                                reply_mrs[0] = 0;
+                            } else {
+                                println!("[KERNEL] Failed to move service cap: {:?}", err);
+                                reply_mrs[0] = 1;
+                            }
+                        } else {
+                            reply_mrs[0] = 2; // No cap
+                        }
+                    }
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                31 => { // sys_service_lookup (MR0=len, MR1..=name)
+                    let len = mrs[0] as usize;
+                    let mut name_bytes = alloc::vec::Vec::with_capacity(len);
+                    let mut current_len = 0;
+                    let mut mr_idx = 1;
+                    while current_len < len {
+                        let word = mrs[mr_idx];
+                        let bytes = word.to_le_bytes();
+                        for b in bytes.iter() {
+                            if current_len < len {
+                                name_bytes.push(*b);
+                                current_len += 1;
+                            }
+                        }
+                        mr_idx += 1;
+                    }
+                    let name_str = alloc::string::String::from_utf8(name_bytes).unwrap_or_default();
+                    
+                    if let Some(ep) = services::lookup(&name_str) {
+                        libnova::ipc::set_cap(0, ep);
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 1, 0); // 1 Extra Cap
+                    } else {
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0); // Error
+                    }
                     need_reply = true;
                 }
                 20 => { // sys_file_open (MR0=len|mode<<32, MR1..=path)
@@ -1068,7 +1246,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     } else {
                         reply_mrs[0] = u64::MAX;
                     }
-                    reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                     need_reply = true;
                 }
                 21 => { // sys_file_close (MR0=fd)
@@ -1081,7 +1259,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                             reply_mrs[0] = 1;
                         }
                     }
-                    reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                     need_reply = true;
                 }
                 22 => { // sys_file_read (MR0=fd|len<<32)
@@ -1126,7 +1304,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         mr_idx += 1;
                     }
                     
-                    reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, mr_idx as u64);
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, (mr_idx as u64).try_into().unwrap());
                     need_reply = true;
                 }
                 23 => { // sys_file_write (MR0=fd|len<<32, MR1..=data)
@@ -1167,7 +1345,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                          }
                     }
                     reply_mrs[0] = bytes_written as u64;
-                    reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                     need_reply = true;
                 }
                 7 => { // sys_send (MR0=TargetPID, MR1..3=Msg)
@@ -1178,15 +1356,18 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         if target_p.state == process::ProcessState::BlockedOnRecv {
                             // Target is waiting, wake it up directly with data
                             target_p.state = process::ProcessState::Running;
-                            let reply_msg = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 4);
+                            let reply_msg = libnova::ipc::MessageInfo::new(0, 0, 0, 4);
                             let reply_data = [pid as u64, msg_content[0], msg_content[1], msg_content[2]];
-                            unsafe {
-                                crate::utils::seL4_Send(target_p.saved_reply_cap, reply_msg.words[0], reply_data);
-                            }
+                            
+                            libnova::ipc::set_mr(0, reply_data[0].try_into().unwrap());
+                            libnova::ipc::set_mr(1, reply_data[1].try_into().unwrap());
+                            libnova::ipc::set_mr(2, reply_data[2].try_into().unwrap());
+                            libnova::ipc::set_mr(3, reply_data[3].try_into().unwrap());
+                            libnova::ipc::send(target_p.saved_reply_cap, reply_msg);
                             
                             // Reply to sender: Success
                             reply_mrs[0] = 0; // Success
-                            reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                            reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                             need_reply = true;
                         } else {
                             // Target not waiting, store in mailbox
@@ -1197,13 +1378,13 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                             });
                             // Reply to sender: Success
                             reply_mrs[0] = 0; // Success
-                            reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                            reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                             need_reply = true;
                         }
                     } else {
                         // Target not found
                         reply_mrs[0] = 1; // Error
-                        reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                         need_reply = true;
                     }
                 }
@@ -1219,7 +1400,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                             if let Err(e) = p.save_caller(root_cnode, &mut slot_allocator) {
                                 println!("[KERNEL] Failed to save caller for sys_recv: {:?}", e);
                                 reply_mrs[0] = 2; // Error
-                                reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                                reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                                 need_reply = true;
                             } else {
                                 need_reply = false;
@@ -1232,13 +1413,13 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                          reply_mrs[1] = msg.content[0];
                          reply_mrs[2] = msg.content[1];
                          reply_mrs[3] = msg.content[2];
-                         reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 4);
+                         reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 4);
                          need_reply = true;
                     }
                 }
                 9 => { // sys_get_pid
                     reply_mrs[0] = pid as u64;
-                    reply_info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 1);
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                     need_reply = true;
                 }
                 _ => {

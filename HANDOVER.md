@@ -32,14 +32,12 @@ RootServer 是 seL4 启动后的第一个用户态进程，负责接管系统资
 
 ## 3. 当前阻碍与待修复问题 (Critical Issues)
 
-### 🔴 `sys_sleep` 唤醒失败
-- **现象**: 运行 `test.ps1` 时，User App 输出 "Sleeping for 100 ticks..." 后不再有响应。测试脚本最终超时失败。
-- **分析**:
-  - 代码逻辑位于 `services/rootserver/src/main.rs` 的事件循环中。
-  - 可能性 A: IOAPIC 配置的 Vector 40 中断未被 CPU/seL4 接收（需检查 `seL4_IRQHandler_SetNotification` 绑定）。
-  - 可能性 B: 中断发生但 RootServer 未正确 Ack，导致后续中断被屏蔽。
-  - 可能性 C: 逻辑错误导致 `process.wake_at_tick` 条件从未满足。
-- **复现**: 运行 `.\test.ps1`。
+### 🟠 RootServer 重构验证
+- **状态**: 刚刚完成了从裸 seL4 接口到 `libnova` 抽象的大规模迁移。
+- **风险**: 虽然编译错误已基本解决，但需重点关注运行时回归测试，特别是：
+  - 进程创建 (`Process::spawn`) 时的 Capability 复制与 Mint 操作。
+  - 异常处理 (`sys_reply_recv`) 的参数传递是否正确。
+- **行动**: 运行 `test.ps1` 进行全量回归测试。
 
 ## 4. 环境与构建
 - **构建**: `.\build.ps1` (编译 Kernel + RootServer + UserApp)
@@ -47,7 +45,10 @@ RootServer 是 seL4 启动后的第一个用户态进程，负责接管系统资
 - **依赖**: Rust (Stable/Nightly), QEMU, Python, CMake, Ninja.
 
 ## 5. 接下来的工作建议 (Next Steps)
-1. **修复时钟中断**:
+1. **完成重构收尾**:
+   - `services/rootserver/src/elf_loader.rs` 和 `shell.rs` 中仍有少量直接的 `sel4_sys` 调用，建议将其替换为 `libnova` 调用。
+   - 运行完整测试套件，确保重构没有引入 Regression。
+2. **修复时钟中断**:
    - 在 `main.rs` 的 Timer 分支添加调试打印，确认是否收到 Badge 为 1 (或其他 Timer Badge) 的通知。
    - 确认 `seL4_IRQHandler_Ack` 是否被调用。
 2. **完善 IPC**:

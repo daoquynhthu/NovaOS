@@ -1,7 +1,6 @@
 use crate::arch::acpi::AcpiContext;
 use crate::memory::{SlotAllocator, UntypedAllocator};
 use sel4_sys::seL4_BootInfo;
-use crate::println;
 
 pub struct LocalApic {
     base_vaddr: usize,
