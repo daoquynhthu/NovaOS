@@ -11,6 +11,8 @@ extern crate alloc;
 #[macro_use]
 extern crate libnova;
 
+use crate::vfs::FileSystem;
+
 mod runtime;
 mod memory;
 mod allocator;
