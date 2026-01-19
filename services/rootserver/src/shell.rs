@@ -10,7 +10,7 @@ const HISTORY_LEN: usize = 16;
 
 const COMMANDS: &[&str] = &[
     "help", "clear", "echo", "cat", "whoami", "status", "bootinfo", "alloc", "meminfo",
-    "ps", "ls", "kill", "exec", "history", "post", "runhello", "cd", "mkdir", "rm", "touch", "pwd",
+    "ps", "ls", "kill", "exec", "history", "post", "runhello", "cd", "mkdir", "rm", "cp", "mv", "touch", "pwd",
     "renice", "pci", "date", "disk_read", "disk_write", "mkfs", "mount", "write"
 ];
 
@@ -542,6 +542,8 @@ impl Shell {
             println!("  touch     - Create empty file");
             println!("  ls        - List directory");
             println!("  rm        - Remove file/directory");
+            println!("  cp        - Copy file");
+            println!("  mv        - Move/Rename file");
             println!("  pwd       - Print working directory");
             println!("  whoami    - Show user info");
             println!("  status    - Show system status");
@@ -1119,6 +1121,114 @@ impl Shell {
                     }
                 } else {
                     println!("rm: Filesystem not mounted");
+                }
+            }
+        } else if self.word_eq(word_start, word_end, "cp") {
+            let len = end - rest_start;
+            if len == 0 {
+                println!("Usage: cp <src> <dest>");
+            } else {
+                let mut space_idx = None;
+                for i in rest_start..end {
+                    if self.buffer[i] == ' ' {
+                        space_idx = Some(i);
+                        break;
+                    }
+                }
+
+                if let Some(sp) = space_idx {
+                     let src_s = &self.buffer[rest_start..sp];
+                     let src_str = src_s.iter().collect::<alloc::string::String>();
+                     
+                     let mut dest_start = sp + 1;
+                     while dest_start < end && self.buffer[dest_start] == ' ' {
+                         dest_start += 1;
+                     }
+                     let dest_s = &self.buffer[dest_start..end];
+                     let dest_str = dest_s.iter().collect::<alloc::string::String>();
+                     
+                     let src_path = self.resolve_path(&src_str);
+                     let dest_path = self.resolve_path(&dest_str);
+                     
+                     let fs_lock = crate::fs::DISK_FS.lock();
+                     if let Some(fs) = fs_lock.as_ref() {
+                          match fs.read_file(&src_path) {
+                              Ok(data) => {
+                                  match fs.write_file(&dest_path, &data) {
+                                      Ok(_) => println!("Copied '{}' to '{}'", src_path, dest_path),
+                                      Err(e) => println!("cp: write error: {}", e),
+                                  }
+                              },
+                              Err(e) => println!("cp: read error: {}", e),
+                          }
+                     } else {
+                         println!("cp: Filesystem not mounted");
+                     }
+                } else {
+                    println!("Usage: cp <src> <dest>");
+                }
+            }
+        } else if self.word_eq(word_start, word_end, "mv") {
+            let len = end - rest_start;
+            if len == 0 {
+                println!("Usage: mv <src> <dest>");
+            } else {
+                let mut space_idx = None;
+                for i in rest_start..end {
+                    if self.buffer[i] == ' ' {
+                        space_idx = Some(i);
+                        break;
+                    }
+                }
+
+                if let Some(sp) = space_idx {
+                     let src_s = &self.buffer[rest_start..sp];
+                     let src_str = src_s.iter().collect::<alloc::string::String>();
+                     
+                     let mut dest_start = sp + 1;
+                     while dest_start < end && self.buffer[dest_start] == ' ' {
+                         dest_start += 1;
+                     }
+                     let dest_s = &self.buffer[dest_start..end];
+                     let dest_str = dest_s.iter().collect::<alloc::string::String>();
+                     
+                     let src_path = self.resolve_path(&src_str);
+                     let dest_path = self.resolve_path(&dest_str);
+                     
+                     let fs_lock = crate::fs::DISK_FS.lock();
+                     if let Some(fs) = fs_lock.as_ref() {
+                          match fs.read_file(&src_path) {
+                              Ok(data) => {
+                                  match fs.write_file(&dest_path, &data) {
+                                      Ok(_) => {
+                                           // Remove source
+                                           let (parent_path, name) = if let Some(idx) = src_path.rfind('/') {
+                                                if idx == 0 { ("/", &src_path[1..]) }
+                                                else { (&src_path[..idx], &src_path[idx+1..]) }
+                                            } else {
+                                                ("/", src_path.as_str())
+                                            };
+                                            
+                                            match crate::vfs::resolve_path(fs, &self.cwd, parent_path) {
+                                                Ok(parent) => {
+                                                    match parent.remove(name) {
+                                                        Ok(_) => println!("Moved '{}' to '{}'", src_path, dest_path),
+                                                        Err(e) => println!("mv: copied but failed to remove source: {}", e),
+                                                    }
+                                                },
+                                                Err(e) => println!("mv: copied but failed to resolve source parent: {}", e),
+                                            }
+                                      },
+                                      Err(e) => println!("mv: write error: {}", e),
+                                  }
+                              },
+                              Err(e) => println!("mv: read error: {}", e),
+                          }
+                     } else {
+                         println!("mv: Filesystem not mounted");
+                     }
+                } else {
+                    println!("Usage: mv <src> <dest>");
                 }
             }
         } else if self.word_eq(word_start, word_end, "touch") {
