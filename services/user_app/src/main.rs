@@ -45,6 +45,46 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
         println!("Process 0: Started.");
         println!("Hello from Rust User App via Syscall!");
         
+        // Test File System Syscalls
+        println!("Testing File System Syscalls...");
+        let filename = "/test_fs.txt";
+        // 1 = WriteOnly (Implies Create in our simplified logic for now)
+        let fd = sys_open(ep_cap, filename, 1); 
+        
+        if fd >= 0 {
+            println!("File opened successfully. FD: {}", fd);
+            let content = b"Hello NovaFS!";
+            let written = sys_file_write(ep_cap, fd as usize, content);
+            println!("Written {} bytes.", written);
+            
+            sys_close(ep_cap, fd as usize);
+            println!("File closed.");
+            
+            // Re-open for reading
+            let fd_read = sys_open(ep_cap, filename, 0); // 0 = ReadOnly
+            if fd_read >= 0 {
+                 println!("File re-opened for reading. FD: {}", fd_read);
+                 let mut read_buf = [0u8; 32];
+                 let read_bytes = sys_read(ep_cap, fd_read as usize, &mut read_buf);
+                 if read_bytes > 0 {
+                     let read_str = core::str::from_utf8(&read_buf[..read_bytes as usize]).unwrap_or("<invalid utf8>");
+                     println!("Read content: {}", read_str);
+                     if read_str == "Hello NovaFS!" {
+                         println!("FS Test Passed!");
+                     } else {
+                         println!("FS Test Failed: Content mismatch.");
+                     }
+                 } else {
+                     println!("FS Test Failed: Read returned {}", read_bytes);
+                 }
+                 sys_close(ep_cap, fd_read as usize);
+            } else {
+                println!("FS Test Failed: Could not re-open file.");
+            }
+        } else {
+             println!("FS Test Failed: Could not open file (FD={}).", fd);
+        }
+        
         // Test Dynamic Memory
         let current_brk = sys_brk(ep_cap, 0);
         let new_brk_req = current_brk + 4096;

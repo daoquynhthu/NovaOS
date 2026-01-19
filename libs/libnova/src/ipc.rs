@@ -57,12 +57,8 @@ pub fn reply_recv(src: seL4_CPtr, info: MessageInfo) -> Result<(seL4_Word, Messa
     unsafe {
         let mut sender: seL4_Word = 0;
         let result = seL4_ReplyRecv(src, info.inner, &mut sender);
-        let label = seL4_MessageInfo_get_label(result);
-        if label != 0 {
-            Err(core::mem::transmute(label as i32))
-        } else {
-            Ok((sender, MessageInfo { inner: result }))
-        }
+        // Do not check label for error, as the received message may have a non-zero label (e.g. syscall)
+        Ok((sender, MessageInfo { inner: result }))
     }
 }
 

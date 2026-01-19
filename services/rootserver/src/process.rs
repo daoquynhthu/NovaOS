@@ -8,7 +8,7 @@ use sel4_sys::{
 };
 use crate::memory::{ObjectAllocator, SlotAllocator, FrameAllocator};
 use crate::vspace::VSpace;
-use libnova::cap::{CNode, CapRights_new};
+use libnova::cap::{CNode, cap_rights_new};
 use libnova::syscall::{Result, Error};
 use libnova::tcb::Tcb;
 
@@ -26,18 +26,37 @@ fn write_to_frame<A: ObjectAllocator>(
     // Note: VSpace::new(pml4) creates a wrapper, doesn't allocate new PML4
     let mut root_vspace = VSpace::new(root_pml4);
     
-    let window = crate::elf_loader::COPY_WINDOW_ADDR;
+    // Use a unique address to avoid conflicts (similar to elf_loader)
+    // We can use the same COPY_WINDOW_ADDR base, offset by frame_cap
+    let window = crate::elf_loader::COPY_WINDOW_ADDR + (frame_cap as usize * 4096);
     
+    // FIX: Use a copy of the capability for mapping to RootServer
+    let copy_cap = slots.alloc().map_err(|_| Error::NotEnoughMemory)?;
+    let root_cnode_cap = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+    let root_cnode = CNode::new(root_cnode_cap, 64);
+    
+    root_cnode.copy(copy_cap, &root_cnode, frame_cap, cap_rights_new(false, false, true, true))
+        .map_err(|e| {
+            slots.free(copy_cap);
+            Error::from(e)
+        })?;
+
     // Map the frame to the window address
-    root_vspace.map_page(
+    let map_res = root_vspace.map_page(
         allocator,
         slots,
         boot_info,
-        frame_cap,
+        copy_cap,
         window,
-        CapRights_new(false, false, true, true), // RW
+        cap_rights_new(false, false, true, true), // RW
         seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes,
-    ).map_err(Error::from)?;
+    ).map_err(Error::from);
+
+    if let Err(e) = map_res {
+        root_cnode.delete(copy_cap).ok();
+        slots.free(copy_cap);
+        return Err(e);
+    }
     
     // Copy data
     unsafe {
@@ -46,7 +65,9 @@ fn write_to_frame<A: ObjectAllocator>(
     }
     
     // Unmap to clean up
-    root_vspace.unmap_page(frame_cap).map_err(Error::from)?;
+    root_vspace.unmap_page(copy_cap).map_err(Error::from)?;
+    root_cnode.delete(copy_cap).map_err(Error::from)?;
+    slots.free(copy_cap);
     
     Ok(())
 }
@@ -320,7 +341,7 @@ impl Process {
         let mut initialize = || -> Result<()> {
             let entry = process.load_image(allocator, slots, frame_allocator, boot_info, image_data)?;
 
-            let rights_rw = CapRights_new(false, false, true, true);
+            let rights_rw = cap_rights_new(false, false, true, true);
             let default_attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
 
             let stack_vaddr: usize = 0x2000_0000;
@@ -424,6 +445,9 @@ impl Process {
             process.set_priority(authority, priority)?;
             
             // RDI = argc, RSI = argv, RDX = endpoint_cap
+            println!("[Process] Setting registers: Entry={:x}, SP={:x}, Argc={}, Argv={:x}, EP={}", 
+                entry, sp, args.len(), argv_start_vaddr, endpoint_cap);
+
             process.write_registers_ext(
                 entry as seL4_Word, 
                 sp as seL4_Word, 
@@ -576,7 +600,7 @@ impl Process {
                  }
              };
              
-             let rights_rw = CapRights_new(false, false, true, true);
+             let rights_rw = cap_rights_new(false, false, true, true);
              let default_attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
              
              // 2. Map Frame
@@ -637,8 +661,8 @@ impl Process {
 
         // Delete Paging Structures (Resource Leak Fix)
         for i in 0..self.vspace.paging_cap_count {
-            let cap = self.vspace.paging_caps[i];
-            if cap != 0 {
+            if let Some(paging_cap) = self.vspace.paging_caps[i] {
+                let cap = paging_cap.cap;
                 if let Err(e) = root.delete(cap) {
                     println!("[WARN] Failed to delete Paging Structure Cap {}: {:?}", cap, e);
                 }

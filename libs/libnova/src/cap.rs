@@ -13,7 +13,7 @@ use sel4_sys::{
 };
 
 /// Create a new CapRights structure
-pub fn CapRights_new(grant_reply: bool, grant: bool, read: bool, write: bool) -> seL4_CapRights {
+pub fn cap_rights_new(grant_reply: bool, grant: bool, read: bool, write: bool) -> seL4_CapRights {
     let mut word: seL4_Word = 0;
     if write { word |= 1 << 0; }
     if read { word |= 1 << 1; }

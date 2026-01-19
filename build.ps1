@@ -30,6 +30,6 @@ if (-not (Test-Path "build/kernel/kernel32.elf")) {
 }
 
 Write-Host "Build Complete!" -ForegroundColor Green
-Write-Host "User App:   services/user_app/target/x86_64-unknown-none/release/user_app"
-Write-Host "RootServer: services/rootserver/target/x86_64-unknown-none/release/rootserver"
+Write-Host "User App:   target/x86_64-unknown-none/release/user_app"
+Write-Host "RootServer: target/x86_64-unknown-none/release/rootserver"
 Write-Host "Kernel:     build/kernel/kernel32.elf"

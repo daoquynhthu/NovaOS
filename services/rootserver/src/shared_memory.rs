@@ -1,5 +1,5 @@
 use sel4_sys::{seL4_CPtr, seL4_Error, seL4_Word};
-use libnova::cap::CapRights_new;
+use libnova::cap::cap_rights_new;
 use crate::memory::{ObjectAllocator, SlotAllocator, MemoryRegion};
 use crate::process::Process;
 
@@ -71,7 +71,7 @@ impl SharedMemoryManager {
         let copy_cap_slot = slot_allocator.alloc()?;
         let root_node = libnova::cap::CNode::new(root_cnode, cnode_depth); 
         
-        let rights = CapRights_new(false, false, true, true); // RW
+        let rights = cap_rights_new(false, false, true, true); // RW
         let err = root_node.copy(
             copy_cap_slot,
             &root_node,
@@ -90,7 +90,7 @@ impl SharedMemoryManager {
             boot_info,
             copy_cap_slot,
             vaddr,
-            CapRights_new(false, true, true, true),
+            cap_rights_new(false, true, true, true),
             sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes
         );
 

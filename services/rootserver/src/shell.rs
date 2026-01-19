@@ -1,6 +1,6 @@
 
 use crate::drivers::keyboard::Key;
-use libnova::cap::CapRights_new;
+use libnova::cap::cap_rights_new;
 use crate::memory::{SlotAllocator, UntypedAllocator, FrameAllocator};
 use crate::tests;
 use sel4_sys::seL4_BootInfo;
@@ -665,7 +665,7 @@ impl Shell {
                      println!("Formatting disk with NovaFS ({} blocks)...", total_blocks);
                      let drv = alloc::sync::Arc::new(crate::drivers::ata::AtaDriver::new(0x1F0));
                      let fs = crate::fs::novafs::NovaFS::format(drv, 0, total_blocks as u32);
-                     *crate::fs::DISK_FS.lock() = Some(fs);
+                     *crate::fs::DISK_FS.lock() = Some(alloc::sync::Arc::new(fs));
                      println!("Format successful! Mounted as root.");
                 }
             }
@@ -674,7 +674,7 @@ impl Shell {
              let drv = alloc::sync::Arc::new(crate::drivers::ata::AtaDriver::new(0x1F0));
              match crate::fs::novafs::NovaFS::new(drv, 0) {
                  Ok(fs) => {
-                     *crate::fs::DISK_FS.lock() = Some(fs);
+                     *crate::fs::DISK_FS.lock() = Some(alloc::sync::Arc::new(fs));
                      println!("Mount successful.");
                  },
                  Err(e) => {
@@ -1261,7 +1261,7 @@ impl Shell {
             badged_ep_slot,
             &root_cnode,
             self.syscall_ep_cap,
-            CapRights_new(false, true, true, true),
+            cap_rights_new(false, true, true, true),
             badge as seL4_Word
         ) {
             println!("[RUN] Failed to mint badged endpoint: {:?}", e);

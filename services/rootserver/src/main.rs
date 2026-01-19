@@ -34,7 +34,7 @@ use alloc::boxed::Box;
 use sel4_sys::{
     seL4_BootInfo, seL4_CPtr, seL4_Word,
 };
-use libnova::cap::CapRights_new;
+use libnova::cap::cap_rights_new;
 // Temporary constant until we confirm sel4_sys export
 #[allow(dead_code, non_upper_case_globals)]
 const seL4_X86_4K: seL4_Word = 8;
@@ -43,7 +43,7 @@ use crate::arch::{port_io, ioapic, acpi, serial};
 
 use core::arch::global_asm;
 use memory::{SlotAllocator, UntypedAllocator, ObjectAllocator, FrameAllocator};
-use crate::process::{Process, get_process_manager, FileMode, FileDescriptor, MAX_FDS};
+use crate::process::{Process, get_process_manager};
 use crate::ipc::Endpoint;
 use crate::shared_memory::SharedMemoryManager;
 
@@ -132,70 +132,6 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     allocator::init_heap();
     println!("[KERNEL] Heap Initialized (1MB).");
     
-    // Initialize Disk Driver
-    println!("[KERNEL] Initializing Disk Driver...");
-    let mut ata_driver = drivers::ata::AtaDriver::new(0x1F0);
-    let disk_size_sectors = if let Err(e) = ata_driver.init() {
-        println!("[KERNEL] ATA Driver Init Failed: {}", e);
-        // Fallback size (e.g. 5MB)
-        1024 * 10
-    } else {
-        ata_driver.sector_count as u32
-    };
-    
-    let ata = alloc::sync::Arc::new(ata_driver);
-    
-    // Initialize NovaFS (Mount)
-    println!("[KERNEL] Mounting NovaFS...");
-    let mut need_format = false;
-    
-    match crate::fs::novafs::NovaFS::new(ata.clone(), 0) {
-        Ok(fs) => {
-             *crate::fs::DISK_FS.lock() = Some(fs.clone());
-             if fs.root_inode().lookup("bin").is_err() {
-                 println!("[KERNEL] /bin not found.");
-                 need_format = true;
-             }
-        },
-        Err(e) => {
-             println!("[KERNEL] Mount failed: {}. Will format.", e);
-             need_format = true;
-        }
-    }
-
-    if need_format {
-         println!("[KERNEL] Disk uninitialized or system missing. Formatting...");
-         // Use detected size if valid, else default 5MB
-         let format_size = if disk_size_sectors > 0 { disk_size_sectors } else { 1024 * 10 };
-         let fs_new = crate::fs::novafs::NovaFS::format(ata.clone(), 0, format_size); 
-         *crate::fs::DISK_FS.lock() = Some(fs_new.clone());
-         
-         if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
-             let root = fs.root_inode();
-             println!("[KERNEL] Creating /bin...");
-             let bin = root.create("bin", crate::vfs::FileType::Directory).expect("Failed to create /bin");
-             
-             println!("[KERNEL] Installing system binaries...");
-             for file in filesystem::FILES {
-                 let inode = bin.create(file.name, crate::vfs::FileType::File).expect("Failed to create file");
-                 inode.write_at(0, file.data).expect("Failed to write data");
-                 println!("  - Installed: {}", file.name);
-             }
-             
-             // Create README
-             let readme = root.create("README.TXT", crate::vfs::FileType::File).unwrap();
-             readme.write_at(0, b"Welcome to NovaOS (Persistent Mode)!").unwrap();
-             readme.sync().ok();
-         }
-         
-         if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
-             fs.sync().ok();
-         }
-    } else {
-         println!("[KERNEL] Filesystem healthy.");
-    }
-    println!("[KERNEL] VFS Initialized.");
-    
     // 1. Get BootInfo
     if boot_info_ptr.is_null() {
         // We can't print safely yet, so just hang or rely on DebugPutChar if we had it separately.
@@ -248,6 +184,76 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     
     // 3. Use the cap
     port_io::init(io_port_slot);
+
+    // Initialize Disk Driver
+    println!("[KERNEL] Initializing Disk Driver...");
+    let mut ata_driver = drivers::ata::AtaDriver::new(0x1F0);
+    let disk_size_sectors = if let Err(e) = ata_driver.init() {
+        println!("[KERNEL] ATA Driver Init Failed: {}", e);
+        // Fallback size (e.g. 5MB)
+        1024 * 10
+    } else {
+        ata_driver.sector_count as u32
+    };
+    
+    let ata = alloc::sync::Arc::new(ata_driver);
+    
+    // Initialize NovaFS (Mount)
+    println!("[KERNEL] Mounting NovaFS...");
+    let mut need_format = false;
+    
+    match crate::fs::novafs::NovaFS::new(ata.clone(), 0) {
+        Ok(fs) => {
+             *crate::fs::DISK_FS.lock() = Some(alloc::sync::Arc::new(fs.clone()));
+             if fs.root_inode().lookup("bin").is_err() {
+                 println!("[KERNEL] /bin not found.");
+                 need_format = true;
+             }
+        },
+        Err(e) => {
+             println!("[KERNEL] Mount failed: {}. Will format.", e);
+             need_format = true;
+        }
+    }
+
+    if need_format {
+         println!("[KERNEL] Disk uninitialized or system missing. Formatting...");
+         // Use detected size if valid, else default 5MB
+         let format_size = if disk_size_sectors > 0 { disk_size_sectors } else { 1024 * 10 };
+         let fs_new = crate::fs::novafs::NovaFS::format(ata.clone(), 0, format_size); 
+         *crate::fs::DISK_FS.lock() = Some(alloc::sync::Arc::new(fs_new.clone()));
+         
+         if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+             let root = fs.root_inode();
+             println!("[KERNEL] Creating /bin...");
+             let bin = root.create("bin", crate::vfs::FileType::Directory).expect("Failed to create /bin");
+             
+             println!("[KERNEL] Installing system binaries...");
+             for file in filesystem::FILES {
+                 println!("[KERNEL] Installing: {}", file.name);
+                 let inode = bin.create(file.name, crate::vfs::FileType::File).expect("Failed to create file");
+                 println!("[KERNEL] Writing data for: {}", file.name);
+                 inode.write_at(0, file.data).expect("Failed to write data");
+                 println!("  - Installed: {}", file.name);
+             }
+             
+             // Create README
+             println!("[KERNEL] Creating README.TXT...");
+             let readme = root.create("README.TXT", crate::vfs::FileType::File).unwrap();
+             println!("[KERNEL] Writing README.TXT...");
+             readme.write_at(0, b"Welcome to NovaOS (Persistent Mode)!").unwrap();
+             println!("[KERNEL] Syncing README...");
+             readme.sync().ok();
+         }
+         
+         if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+             println!("[KERNEL] Syncing Filesystem...");
+             fs.sync().ok();
+         }
+    } else {
+         println!("[KERNEL] Filesystem healthy.");
+    }
+    println!("[KERNEL] VFS Initialized.");
 
     // Initialize Serial Port
     serial::init();
@@ -531,7 +537,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
             root_cnode,
             syscall_ep_cap,
             cnode_depth as u8,
-            CapRights_new(false, true, true, true),
+            cap_rights_new(false, true, true, true),
             200 // Badge 200 for Test Service
         )
     };
@@ -555,7 +561,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
             root_cnode,
             syscall_ep_cap,
             cnode_depth as u8,
-            CapRights_new(false, true, true, true),
+            cap_rights_new(false, true, true, true),
             100 // Badge for Process 1
         )
     };
@@ -591,7 +597,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
             root_cnode,
             syscall_ep_cap,
             cnode_depth as u8,
-            CapRights_new(false, true, true, true),
+            cap_rights_new(false, true, true, true),
             101 // Badge for Process 2
         )
     };
@@ -644,7 +650,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 sel4_sys::seL4_CNode_Mint(
                     root_cnode, worker_badged_ep, cnode_depth,
                     root_cnode, syscall_ep_cap, cnode_depth,
-                    CapRights_new(false, true, true, true),
+                    cap_rights_new(false, true, true, true),
                     999
                 );
 
@@ -741,7 +747,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     sel4_sys::seL4_CNode_Mint(
                         root_cnode, kb_badge_cap, cnode_depth,
                         root_cnode, notification_cap, cnode_depth,
-                        CapRights_new(false, true, true, true),
+                        cap_rights_new(false, true, true, true),
                         1 // Badge 1
                     )
                 };
@@ -773,7 +779,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     sel4_sys::seL4_CNode_Mint(
                         root_cnode, timer_badge_cap, cnode_depth,
                         root_cnode, notification_cap, cnode_depth,
-                        CapRights_new(false, true, true, true),
+                        cap_rights_new(false, true, true, true),
                         2 // Badge 2
                     )
                 };
@@ -804,7 +810,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     sel4_sys::seL4_CNode_Mint(
                         root_cnode, serial_badge_cap, cnode_depth,
                         root_cnode, notification_cap, cnode_depth,
-                        CapRights_new(false, true, true, true),
+                        cap_rights_new(false, true, true, true),
                         4 // Badge 4
                     )
                 };
@@ -874,17 +880,33 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
 
     let mut reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0);
     let mut need_reply = false;
+    let mut manual_reply = false;
     let mut reply_mrs = [0u64; 4];
 
     loop {
         let (info, badge, mrs) = if need_reply {
-            syscall_ep.reply_recv_with_mrs(reply_info, reply_mrs)
+            if manual_reply {
+                    // Manually set MR0, preserve other MRs (set by syscall handler)
+                    libnova::ipc::set_mr(0, reply_mrs[0]);
+                    
+                    let (badge, info) = libnova::ipc::reply_recv(syscall_ep.cptr, reply_info).expect("IPC ReplyRecv failed");
+                    
+                    let mr0 = libnova::ipc::get_mr(0);
+                let mr1 = libnova::ipc::get_mr(1);
+                let mr2 = libnova::ipc::get_mr(2);
+                let mr3 = libnova::ipc::get_mr(3);
+                
+                (info, badge, [mr0.into(), mr1.into(), mr2.into(), mr3.into()])
+            } else {
+                syscall_ep.reply_recv_with_mrs(reply_info, reply_mrs)
+            }
         } else {
             syscall_ep.recv_with_mrs()
         };
         
-        // Reset reply flag
+        // Reset reply flags
         need_reply = false;
+        manual_reply = false;
         
         if badge == 999 {
             // Worker Thread Interrupt Forwarding
@@ -1011,6 +1033,161 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0);
                     need_reply = true;
                 }
+                20 => { // sys_open(path, mode) -> fd
+                    let path_len = mrs[0] as usize;
+                    let mode = match mrs[1] {
+                        1 => crate::process::FileMode::WriteOnly,
+                        2 => crate::process::FileMode::ReadWrite,
+                        3 => crate::process::FileMode::Append,
+                        _ => crate::process::FileMode::ReadOnly,
+                    };
+                    
+                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                    // Path starts after MR0 and MR1 (16 bytes offset)
+                    let offset = 2 * core::mem::size_of::<seL4_Word>();
+                    
+                    // Limit path length to 256 bytes for safety
+                    let safe_len = if path_len > 256 { 256 } else { path_len };
+                    let path_bytes = unsafe { core::slice::from_raw_parts((ipc_buf.msg.as_ptr() as *const u8).add(offset), safe_len) };
+                    let path = alloc::string::String::from(core::str::from_utf8(path_bytes).unwrap_or(""));
+
+                    // Auto-create file if it doesn't exist and we are writing
+                    if mode != crate::process::FileMode::ReadOnly {
+                        if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                            if crate::vfs::resolve_path(fs, "/", &path).is_err() {
+                                // File missing, try to create
+                                let res = if let Some(idx) = path.rfind('/') {
+                                    let (parent_path, name) = path.split_at(idx);
+                                    let name = &name[1..];
+                                    let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
+                                    
+                                    match crate::vfs::resolve_path(fs, "/", parent_path) {
+                                        Ok(parent) => parent.create(name, crate::vfs::FileType::File).map(|_| ()),
+                                        Err(e) => Err(e),
+                                    }
+                                } else {
+                                    fs.root_inode().create(&path, crate::vfs::FileType::File).map(|_| ())
+                                };
+                                
+                                match res {
+                                    Ok(_) => println!("[KERNEL] sys_open: Created new file '{}'", path),
+                                    Err(e) => println!("[KERNEL] sys_open: Failed to create '{}': {}", path, e),
+                                }
+                            }
+                        }
+                    }
+
+                    let mut fd_idx = -1isize;
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                        if p.fds.len() < crate::process::MAX_FDS {
+                            p.fds.resize(crate::process::MAX_FDS, None);
+                        }
+                        for (i, slot) in p.fds.iter_mut().enumerate() {
+                            if slot.is_none() {
+                                *slot = Some(crate::process::FileDescriptor {
+                                    path,
+                                    offset: 0,
+                                    mode,
+                                });
+                                fd_idx = i as isize;
+                                break;
+                            }
+                        }
+                    }
+                    reply_mrs[0] = fd_idx as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                21 => { // sys_read(fd, len) -> bytes_read
+                    let fd = mrs[0] as usize;
+                    let len = mrs[1] as usize;
+                    // Cap read length to IPC buffer size (approx 900 bytes safe limit)
+                    let read_len = if len > 900 { 900 } else { len };
+                    
+                    let mut bytes_read = 0;
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                        if fd < p.fds.len() {
+                            if let Some(desc) = &mut p.fds[fd] {
+                                if desc.mode != crate::process::FileMode::WriteOnly {
+                                    if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                                        if let Ok(inode) = crate::vfs::resolve_path(fs, "/", &desc.path) {
+                                            let mut buf = alloc::vec![0u8; read_len];
+                                            if let Ok(n) = inode.read_at(desc.offset, &mut buf) {
+                                                desc.offset += n;
+                                                bytes_read = n;
+                                                // Copy to IPC Buffer
+                                                let ipc_buf = unsafe { &mut *sel4_sys::seL4_GetIPCBuffer() };
+                                                // Offset for MR0
+                                                let offset = core::mem::size_of::<seL4_Word>();
+                                                let msg_bytes = unsafe { core::slice::from_raw_parts_mut((ipc_buf.msg.as_mut_ptr() as *mut u8).add(offset), n) };
+                                                msg_bytes.copy_from_slice(&buf[..n]);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Calculate message length in words
+                    // Data words + 1 MR word
+                    let data_words = (bytes_read + 7) / 8;
+                    reply_mrs[0] = bytes_read as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1 + data_words as u64); // 1 MR (len) + Data
+                    need_reply = true;
+                    manual_reply = true;
+                }
+                22 => { // sys_write(fd, len) -> bytes_written
+                    let fd = mrs[0] as usize;
+                    let len = mrs[1] as usize;
+                    let write_len = if len > 900 { 900 } else { len };
+                    
+                    let mut bytes_written = 0;
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                         if fd < p.fds.len() {
+                            if let Some(desc) = &mut p.fds[fd] {
+                                if desc.mode != crate::process::FileMode::ReadOnly {
+                                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                                    // Offset for MR0, MR1
+                                    let offset = 2 * core::mem::size_of::<seL4_Word>();
+                                    let data = unsafe { core::slice::from_raw_parts((ipc_buf.msg.as_ptr() as *const u8).add(offset), write_len) };
+                                    
+                                    if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                                         // For write, we might need to create file if not exists?
+                                         // Or sys_open should handle creation?
+                                         // Assuming file exists or created by sys_open (if we add O_CREAT).
+                                         // For now, assume simple write to existing inode.
+                                         match crate::vfs::resolve_path(fs, "/", &desc.path) {
+                                             Ok(inode) => {
+                                                 match inode.write_at(desc.offset, data) {
+                                                     Ok(n) => {
+                                                         desc.offset += n;
+                                                         bytes_written = n;
+                                                     },
+                                                     Err(e) => println!("[KERNEL] sys_write: write_at failed: {}", e),
+                                                 }
+                                             },
+                                             Err(e) => println!("[KERNEL] sys_write: resolve_path failed for '{}': {}", desc.path, e),
+                                         }
+                                    }
+                                }
+                            }
+                         }
+                    }
+                    reply_mrs[0] = bytes_written as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                23 => { // sys_close(fd)
+                    let fd = mrs[0] as usize;
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                        if fd < p.fds.len() {
+                            p.fds[fd] = None;
+                        }
+                    }
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0);
+                    need_reply = true;
+                }
                 50 => { // sys_shutdown
                     println!("[KERNEL] Process {} requested system shutdown.", pid);
                     acpi::shutdown();
@@ -1037,8 +1214,8 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                     boot_info,
                                     frame_cap,
                                     aligned_addr,
-                                    CapRights_new(false, true, true, true),
-                                    sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes
+                                    cap_rights_new(false, true, true, true),
+                                   sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes
                                  ) {
                                      let _ = p.track_frame(frame_cap);
                                      reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0);
@@ -1220,183 +1397,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     }
                     need_reply = true;
                 }
-                20 => { // sys_file_open (MR0=len|mode<<32, MR1..=path)
-                    let len = (mrs[0] & 0xFFFFFFFF) as usize;
-                    let mode_val = (mrs[0] >> 32) as u8;
-                    let mode = match mode_val {
-                        0 => FileMode::ReadOnly,
-                        1 => FileMode::WriteOnly,
-                        2 => FileMode::ReadWrite,
-                        3 => FileMode::Append,
-                        _ => FileMode::ReadOnly,
-                    };
-                    
-                    let mut path_bytes = alloc::vec::Vec::with_capacity(len);
-                    let mut current_len = 0;
-                    let mut mr_idx = 1;
-                    
-                    while current_len < len {
-                        let word = mrs[mr_idx];
-                        let bytes = word.to_le_bytes();
-                        for b in bytes.iter() {
-                            if current_len < len {
-                                path_bytes.push(*b);
-                                current_len += 1;
-                            }
-                        }
-                        mr_idx += 1;
-                    }
-                    
-                    let path_str = alloc::string::String::from_utf8(path_bytes).unwrap_or_default();
-                    
-                    if let Some(p) = get_process_manager().get_process_mut(pid) {
-                        let mut fd_idx = None;
-                        for (i, fd) in p.fds.iter().enumerate() {
-                            if fd.is_none() {
-                                fd_idx = Some(i);
-                                break;
-                            }
-                        }
-                        
-                        if let Some(idx) = fd_idx {
-                            let mut success = false;
-                            {
-                                let mut lock = crate::vfs::VFS.lock();
-                                if let Some(fs) = lock.as_mut() {
-                                    if mode == FileMode::ReadOnly {
-                                        if fs.exists(&path_str) {
-                                            success = true;
-                                        }
-                                    } else {
-                                        if !fs.exists(&path_str) {
-                                             if fs.create_file(&path_str).is_ok() {
-                                                 success = true;
-                                             }
-                                        } else {
-                                             success = true;
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            if success {
-                                p.fds[idx] = Some(FileDescriptor {
-                                    path: path_str,
-                                    offset: 0,
-                                    mode: mode,
-                                });
-                                reply_mrs[0] = idx as u64;
-                            } else {
-                                reply_mrs[0] = u64::MAX;
-                            }
-                        } else {
-                            reply_mrs[0] = u64::MAX;
-                        }
-                    } else {
-                        reply_mrs[0] = u64::MAX;
-                    }
-                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
-                    need_reply = true;
-                }
-                21 => { // sys_file_close (MR0=fd)
-                    let fd = mrs[0] as usize;
-                    if let Some(p) = get_process_manager().get_process_mut(pid) {
-                        if fd < MAX_FDS {
-                            p.fds[fd] = None;
-                            reply_mrs[0] = 0;
-                        } else {
-                            reply_mrs[0] = 1;
-                        }
-                    }
-                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
-                    need_reply = true;
-                }
-                22 => { // sys_file_read (MR0=fd|len<<32)
-                    let fd = (mrs[0] & 0xFFFFFFFF) as usize;
-                    let len = (mrs[0] >> 32) as usize;
-                    
-                    let mut bytes_read = 0;
-                    let mut data = alloc::vec::Vec::new();
-                    
-                    if let Some(p) = get_process_manager().get_process_mut(pid) {
-                         if fd < MAX_FDS {
-                             if let Some(file_desc) = &mut p.fds[fd] {
-                                if file_desc.mode != FileMode::WriteOnly {
-                                    let lock = crate::vfs::VFS.lock();
-                                    if let Some(fs) = lock.as_ref() {
-                                        if let Ok(file_data) = fs.read_file(&file_desc.path) {
-                                            if file_desc.offset < file_data.len() {
-                                                let available = file_data.len() - file_desc.offset;
-                                                 let to_read = core::cmp::min(len, available);
-                                                 let max_mrs_bytes = 64; 
-                                                 let actual_read = core::cmp::min(to_read, max_mrs_bytes);
-                                                 
-                                                 data.extend_from_slice(&file_data[file_desc.offset..file_desc.offset + actual_read]);
-                                                 bytes_read = actual_read;
-                                                 file_desc.offset += actual_read;
-                                             }
-                                         }
-                                     }
-                                 }
-                             }
-                         }
-                    }
-                    
-                    reply_mrs[0] = bytes_read as u64;
-                    let mut mr_idx = 1;
-                    for chunk in data.chunks(8) {
-                        let mut word_bytes = [0u8; 8];
-                        for (i, b) in chunk.iter().enumerate() {
-                            word_bytes[i] = *b;
-                        }
-                        reply_mrs[mr_idx] = u64::from_le_bytes(word_bytes);
-                        mr_idx += 1;
-                    }
-                    
-                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, (mr_idx as u64).try_into().unwrap());
-                    need_reply = true;
-                }
-                23 => { // sys_file_write (MR0=fd|len<<32, MR1..=data)
-                    let fd = (mrs[0] & 0xFFFFFFFF) as usize;
-                    let len = (mrs[0] >> 32) as usize;
-                    let mut bytes_written = 0;
-                    
-                    if let Some(p) = get_process_manager().get_process_mut(pid) {
-                         if fd < MAX_FDS {
-                             if let Some(file_desc) = &mut p.fds[fd] {
-                                 if file_desc.mode != FileMode::ReadOnly {
-                                     let mut data = alloc::vec::Vec::with_capacity(len);
-                                     let mut current_len = 0;
-                                     let mut mr_idx = 1;
-                                     while current_len < len {
-                                         let word = mrs[mr_idx];
-                                         let bytes = word.to_le_bytes();
-                                         for b in bytes.iter() {
-                                             if current_len < len {
-                                                 data.push(*b);
-                                                 current_len += 1;
-                                             }
-                                         }
-                                         mr_idx += 1;
-                                     }
-                                     
-                                     let mut lock = crate::vfs::VFS.lock();
-                                    if let Some(fs) = lock.as_mut() {
-                                        if let Ok(_n) = fs.append_file(&file_desc.path, &data) {
-                                            // For now, append_file returns new size.
-                                            // We just assume all bytes written.
-                                             bytes_written = data.len();
-                                             file_desc.offset += bytes_written; // Update offset? Append always writes to end.
-                                         }
-                                     }
-                                 }
-                             }
-                         }
-                    }
-                    reply_mrs[0] = bytes_written as u64;
-                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
-                    need_reply = true;
-                }
+
                 7 => { // sys_send (MR0=TargetPID, MR1..3=Msg)
                     let target_pid = mrs[0] as usize;
                     let msg_content = [mrs[1], mrs[2], mrs[3], 0];

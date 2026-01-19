@@ -19,6 +19,7 @@ pub struct FileStat {
 }
 
 /// The Abstract File System Trait
+#[allow(dead_code)]
 pub trait FileSystem: Send + Sync {
     fn root_inode(&self) -> Arc<dyn Inode>;
     fn sync(&self) -> Result<(), &'static str>;
@@ -67,6 +68,7 @@ pub trait FileSystem: Send + Sync {
         }
     }
 
+    #[allow(dead_code)]
     fn list_dir(&self, path: &str) -> Result<Vec<String>, &'static str> {
         let inode = self.resolve_path("/", path)?;
         inode.list()

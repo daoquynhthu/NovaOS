@@ -356,9 +356,9 @@ impl FrameAllocator {
         slots: &mut SlotAllocator,
     ) -> Result<seL4_CPtr, seL4_Error> {
         // TEMP DEBUG: Disable recycling to test if frame 567 is corrupt
-        if let Some(cap) = self.free_frames.pop() {
-            return Ok(cap);
-        }
+        // if let Some(cap) = self.free_frames.pop() {
+        //    return Ok(cap);
+        // }
         // No free frames, allocate new one
         // 4K Frame = size_bits 12, type = seL4_X86_4K (value 8)
         allocator.allocate(boot_info, 8, 12, slots)

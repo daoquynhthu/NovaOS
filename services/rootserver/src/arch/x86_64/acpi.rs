@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use crate::memory::{SlotAllocator, UntypedAllocator};
 use crate::vspace::VSpace;
 use crate::arch::port_io;
-use libnova::cap::{CNode, CapRights_new};
+use libnova::cap::{CNode, cap_rights_new};
 
 // Temporary constant until we confirm sel4_sys export
 #[allow(non_upper_case_globals)]
@@ -46,6 +46,7 @@ pub struct MappedCap {
 pub struct AcpiContext {
     pub mapped_caps: [Option<MappedCap>; MAX_MAPPED_CAPS],
     pub next_vaddr: usize,
+    pub vspace: VSpace,
 }
 
 impl AcpiContext {
@@ -55,7 +56,8 @@ impl AcpiContext {
                 None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None
             ],
-            next_vaddr: 0x8000_0000,
+            next_vaddr: 0x80_0000_0000, // Start at 512GB (First entry of PML4 after kernel/rootserver)
+            vspace: VSpace::new(seL4_RootCNodeCapSlots::seL4_CapInitThreadVSpace as seL4_CPtr),
         }
     }
 
@@ -606,15 +608,14 @@ pub fn map_phys(
                 }
                 
                 let page_vaddr = mc.vaddr_start + current_limit + (i * 4096);
-                let mut vspace = VSpace::new(seL4_RootCNodeCapSlots::seL4_CapInitThreadVSpace as seL4_CPtr);
                 
-                vspace.map_page(
+                context.vspace.map_page(
                    allocator,
                    slots,
                    boot_info,
                    slot,
                    page_vaddr,
-                   CapRights_new(false, true, true, true),
+                   cap_rights_new(false, true, true, true),
                    seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes
                 )?;
             }

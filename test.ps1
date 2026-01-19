@@ -113,7 +113,7 @@ $testPassed = $false
                         if ($content -match "Hello from Rust User App") { $sawUserHello = $true }
                         if ($content -match "Heap memory write verified") { $sawHeap = $true }
                         if ($content -match "Woke up from sleep") { $sawSleep = $true }
-                        if ($content -match "Read content: HelloFile") { $sawFileIO = $true }
+                        if ($content -match "Read content: Hello NovaFS!") { $sawFileIO = $true }
                         if ($content -match "\[TEST\] PASSED") { $testPassed = $true }
                         if ($content -match "PANIC") {
                              Write-Host "Panic detected!" -ForegroundColor Red
@@ -143,7 +143,7 @@ $testPassed = $false
             if ($content -match "Hello from Rust User App") { $sawUserHello = $true }
             if ($content -match "Heap memory write verified") { $sawHeap = $true }
             if ($content -match "Woke up from sleep") { $sawSleep = $true }
-            if ($content -match "Read content: HelloFile") { $sawFileIO = $true }
+            if ($content -match "Read content: Hello NovaFS!") { $sawFileIO = $true }
             if ($content -match "\[TEST\] PASSED") { $testPassed = $true }
             
             if ($sawUserHello -and $sawHeap -and $sawSleep -and $sawFileIO) {

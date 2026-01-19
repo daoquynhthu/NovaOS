@@ -10,7 +10,7 @@ use crate::memory::{UntypedAllocator, SlotAllocator, ObjectAllocator, FrameAlloc
 use crate::vspace::VSpace;
 use crate::process::Process;
 use crate::ipc::Endpoint;
-use libnova::cap::{CapRights_new, CNode};
+use libnova::cap::{cap_rights_new, CNode};
 
 // Temporary constant until we confirm sel4_sys export
 #[allow(non_upper_case_globals)]
@@ -23,6 +23,7 @@ pub fn run_all(
     frame_allocator: &mut FrameAllocator,
 ) {
     test_allocation(boot_info, allocator, slot_allocator);
+    test_rootserver_mapping(boot_info, allocator, slot_allocator, frame_allocator);
     test_vspace_mapping(boot_info, allocator, slot_allocator);
     test_process_management(boot_info, allocator, slot_allocator);
     test_independent_vspace(boot_info, allocator, slot_allocator, frame_allocator);
@@ -32,6 +33,65 @@ pub fn run_all(
     benchmark_ipc_latency(boot_info, allocator, slot_allocator);
     stress_test_memory_allocation(boot_info, allocator, slot_allocator);
     test_disk_driver();
+}
+
+fn test_rootserver_mapping(
+    boot_info: &seL4_BootInfo,
+    allocator: &mut UntypedAllocator,
+    slot_allocator: &mut SlotAllocator,
+    frame_allocator: &mut FrameAllocator,
+) {
+    println!("[INFO] Testing RootServer VSpace Mapping...");
+    let frame_cap = match frame_allocator.alloc(allocator, boot_info, slot_allocator) {
+        Ok(c) => c,
+        Err(e) => {
+             println!("[FAIL] Failed to allocate frame: {:?}", e);
+             return;
+        }
+    };
+    
+    // On x86_64, InitThreadVSpace is the PML4
+    let root_pml4 = seL4_RootCNodeCapSlots::seL4_CapInitThreadVSpace as seL4_CPtr;
+    let mut root_vspace = VSpace::new(root_pml4);
+    
+    let vaddr = 0x1000_0000;
+    let rights = cap_rights_new(false, false, true, true);
+    let attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
+    
+    println!("[INFO] Mapping frame {} to vaddr 0x{:x} in PML4 {}...", frame_cap, vaddr, root_pml4);
+    
+    // Test Shared Mapping: Map to a new VSpace first
+    let asid_pool = seL4_RootCNodeCapSlots::seL4_CapInitThreadASIDPool as seL4_CPtr;
+    let mut temp_vspace = VSpace::new_from_scratch(allocator, slot_allocator, boot_info, asid_pool).unwrap();
+    println!("[INFO] Mapping frame {} to Temp VSpace first...", frame_cap);
+    match temp_vspace.map_page(allocator, slot_allocator, boot_info, frame_cap, 0x1000, rights, attr) {
+        Ok(_) => println!("[PASS] Mapped to Temp VSpace."),
+        Err(e) => println!("[FAIL] Failed to map to Temp VSpace: {:?}", e),
+    }
+
+    // Try copying the cap for the second mapping
+    let copied_cap = slot_allocator.alloc().unwrap();
+    let cnode_cap = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+    let root_cnode = CNode::new(cnode_cap, 64); // 64-bit root cnode size? No, depth. 
+    // Root CNode size is usually 12 bits? 
+    // Wait, CNode::new takes depth? Or size_bits?
+    // Let's check libnova::cap::CNode
+    // Assuming new(cnode, depth)
+    // Root CNode depth is likely 12 (4096 slots).
+    
+    // Copy frame_cap to copied_cap
+    let err = root_cnode.copy(copied_cap, &root_cnode, frame_cap, rights);
+    if let Err(e) = err {
+         println!("[FAIL] Failed to copy cap: {:?}", e);
+    } else {
+         println!("[INFO] Copied frame cap to {}", copied_cap);
+         match root_vspace.map_page(allocator, slot_allocator, boot_info, copied_cap, vaddr, rights, attr) {
+            Ok(_) => {
+                println!("[PASS] Mapped copied frame to RootServer at 0x{:x}", vaddr);
+            },
+            Err(e) => println!("[FAIL] Failed to map copied frame to RootServer: {:?}", e),
+        }
+    }
 }
 
 pub fn test_disk_driver() {
@@ -191,7 +251,7 @@ fn test_process_manager() {
     // Create a dummy process (invalid caps, just for structural test)
     let dummy_process = Process {
         tcb_cap: 999,
-        vspace: crate::vspace::VSpace { pml4_cap: 888, paging_caps: [0; 32], paging_cap_count: 0 },
+        vspace: crate::vspace::VSpace { pml4_cap: 888, paging_caps: [None; 32], paging_cap_count: 0 },
         fault_ep_cap: 0,
         syscall_ep_cap: 0,
         ipc_buffer_cap: 0,
@@ -269,12 +329,12 @@ fn benchmark_ipc_latency(
     let stack_vaddr = 0x40000000;
     let stack_top = stack_vaddr + 4096;
     let stack_frame_cap = allocator.allocate(boot_info, seL4_X86_4K.into(), seL4_PageBits.into(), slot_allocator).expect("Stack Alloc");
-    let rights = CapRights_new(false, false, true, true);
+    let rights = libnova::cap::cap_rights_new(false, false, true, true);
     let attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
     process.vspace.map_page(allocator, slot_allocator, boot_info, stack_frame_cap, stack_vaddr, rights, attr).expect("Stack Map");
 
     // Allocate IPC Buffer
-    let ipc_vaddr = 0x50000000;
+    let ipc_vaddr = 0xB0000000;
     let ipc_frame_cap = allocator.allocate(boot_info, seL4_X86_4K.into(), seL4_PageBits.into(), slot_allocator).expect("IPC Alloc");
     process.vspace.map_page(allocator, slot_allocator, boot_info, ipc_frame_cap, ipc_vaddr, rights, attr).expect("IPC Map");
     
@@ -435,9 +495,9 @@ fn test_vspace_mapping(
     println!("[INFO] Allocating frame for mapping...");
     match allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator) {
         Ok(frame_cap) => {
-            println!("[INFO] Frame allocated at slot {}. Mapping to 0x10000000...", frame_cap);
-            let vaddr = 0x10000000;
-            let rights = CapRights_new(false, false, true, true); // Read | Write
+            println!("[INFO] Frame allocated at slot {}. Mapping to 0x100_0000_0000...", frame_cap);
+                    let vaddr = 0x100_0000_0000;
+            let rights = libnova::cap::cap_rights_new(false, false, true, true); // Read | Write
             let attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
             
             match vspace.map_page(allocator, slot_allocator, boot_info, frame_cap, vaddr, rights, attr) {
@@ -484,7 +544,7 @@ fn test_process_management(
         match allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator) {
              Ok(cap) => {
                  stack_frame_cap = cap;
-                 let rights = CapRights_new(false, false, true, true);
+                 let rights = libnova::cap::cap_rights_new(false, false, true, true);
                  let attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
                  match process.vspace.map_page(allocator, slot_allocator, boot_info, cap, stack_vaddr, rights, attr) {
                      Ok(_) => println!("[INFO] Mapped stack at 0x{:x}", stack_vaddr),
@@ -500,7 +560,7 @@ fn test_process_management(
         match allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator) {
              Ok(cap) => {
                  ipc_frame_cap = cap;
-                 let rights = CapRights_new(false, false, true, true);
+                 let rights = libnova::cap::cap_rights_new(false, false, true, true);
                  let attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
                  match process.vspace.map_page(allocator, slot_allocator, boot_info, cap, ipc_vaddr, rights, attr) {
                      Ok(_) => println!("[INFO] Mapped IPC Buffer at 0x{:x}", ipc_vaddr),
@@ -528,7 +588,7 @@ fn test_process_management(
                     let root_cnode = CNode::new(root_cap, 64); // 64-bit CNode
                     let badge = 0xBEEF;
                     
-                    let rights = libnova::cap::CapRights_new(true, false, true, true);
+                    let rights = libnova::cap::cap_rights_new(true, false, true, true);
                     match root_cnode.mint(
                         badged_endpoint_cap,
                         &root_cnode,
@@ -602,7 +662,7 @@ fn test_independent_vspace(
              println!("[INFO] Allocated frame for Child Code at slot {}", code_frame_cap);
 
              let root_vaddr = 0x500000;
-             let rights_all = libnova::cap::CapRights_new(false, false, true, true);
+             let rights_all = libnova::cap::cap_rights_new(false, false, true, true);
              let attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
              
              let root_pml4 = seL4_RootCNodeCapSlots::seL4_CapInitThreadVSpace as seL4_CPtr;

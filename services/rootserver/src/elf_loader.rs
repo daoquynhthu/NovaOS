@@ -2,16 +2,16 @@ use sel4_sys::*;
 use xmas_elf::{ElfFile, program};
 use crate::memory::{SlotAllocator, ObjectAllocator, FrameAllocator};
 use crate::vspace::VSpace;
-use libnova::cap::CapRights_new;
+use libnova::cap::{cap_rights_new, CNode};
 
 // Temporary constant until we confirm sel4_sys export
 #[allow(dead_code, non_upper_case_globals)]
 const seL4_X86_4K: seL4_Word = 8;
 
 const PAGE_SIZE: usize = 4096;
-// Use a virtual address that is unlikely to conflict with RootServer code/stack
-// 0x4000_0000 = 1GB mark.
-pub const COPY_WINDOW_ADDR: usize = 0x5000_0000; 
+// Address where we map pages temporarily to copy data
+// Must be a valid user-space address that doesn't conflict with the loaded ELF or Heap
+pub const COPY_WINDOW_ADDR: usize = 0x1000_0000;
 const MAX_ELF_SIZE: usize = 64 * 1024; // 64KB
 
 #[repr(align(8))]
@@ -99,23 +99,43 @@ impl<'a> ElfLoader<'a> {
                     let res = (|| -> Result<(), seL4_Error> {
                         // 2. Map to RootServer for copying
                         // We use Read/Write for RootServer to write data
-                        let rw_rights = libnova::cap::CapRights_new(false, false, true, true);
+                        let rw_rights = cap_rights_new(false, false, true, true);
                         let default_attr = sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
                         
-                        // We map to the same COPY_WINDOW_ADDR repeatedly.
-                        // Since we unmap at the end of loop, this slot should be free.
-                        root_vspace.map_page(
+                        // We map to a unique address based on frame cap to avoid potential TLB/remapping issues
+                        // COPY_WINDOW_ADDR + (frame_cap * PAGE_SIZE)
+                        let copy_window = COPY_WINDOW_ADDR + (frame_cap as usize * PAGE_SIZE);
+
+                        // FIX: Use a copy of the capability for mapping to RootServer
+                        // This avoids "InvalidCapability" errors when mapping the same frame cap multiple times
+                        let copy_cap = slot_allocator.alloc().map_err(|_| seL4_Error::seL4_NotEnoughMemory)?;
+                        let root_cnode_cap = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+                        let root_cnode = CNode::new(root_cnode_cap, 64); // Depth 64 (ignored by copy wrapper usually)
+                        
+                        root_cnode.copy(copy_cap, &root_cnode, frame_cap, rw_rights)
+                            .map_err(|_| {
+                                slot_allocator.free(copy_cap);
+                                seL4_Error::seL4_IllegalOperation 
+                            })?;
+
+                        let map_res = root_vspace.map_page(
                             allocator, 
                             slot_allocator, 
                             self.boot_info, 
-                            frame_cap, 
-                            COPY_WINDOW_ADDR, 
+                            copy_cap, 
+                            copy_window, 
                             rw_rights, 
                             default_attr
-                        )?;
+                        );
+
+                        if let Err(e) = map_res {
+                            root_cnode.delete(copy_cap).ok();
+                            slot_allocator.free(copy_cap);
+                            return Err(e);
+                        }
 
                         // 3. Copy Data
-                        let dest_ptr = COPY_WINDOW_ADDR as *mut u8;
+                        let dest_ptr = copy_window as *mut u8;
                         
                         // Zero the page first (handle BSS implicitly)
                         unsafe { dest_ptr.write_bytes(0, PAGE_SIZE); }
@@ -142,15 +162,19 @@ impl<'a> ElfLoader<'a> {
                                  }
                             } else {
                                  println!("[Loader] Error: Segment out of bounds of ELF file");
-                                 // cleanup?
-                                 root_vspace.unmap_page(frame_cap)?;
+                                 // cleanup
+                                 root_vspace.unmap_page(copy_cap)?;
+                                 root_cnode.delete(copy_cap).ok();
+                                 slot_allocator.free(copy_cap);
                                  return Err(seL4_Error::seL4_InvalidArgument);
                             }
                         }
 
                         // 4. Unmap from RootServer
-                        // IMPORTANT: We must unmap so we can reuse COPY_WINDOW_ADDR
-                        root_vspace.unmap_page(frame_cap)?;
+                        // IMPORTANT: We must unmap so we can reuse COPY_WINDOW_ADDR (actually we use unique addrs now but good practice)
+                        root_vspace.unmap_page(copy_cap)?;
+                        root_cnode.delete(copy_cap).ok();
+                        slot_allocator.free(copy_cap);
 
                         // 5. Map to Target VSpace
                         // Convert ELF flags to seL4 rights
@@ -158,8 +182,11 @@ impl<'a> ElfLoader<'a> {
                         let write = flags.is_write();
                         // let exec = flags.is_execute(); // seL4 x86 often ignores this or ties to Read
                         
-                        let target_rights = CapRights_new(false, false, read, write); 
+                        let target_rights = cap_rights_new(false, false, read, write); 
                         
+                        println!("[Loader] Mapping frame {} to target vaddr {:x} with rights {:?} (R={}, W={}). PML4={}", 
+                            frame_cap, page_vaddr, target_rights, read, write, target_vspace.pml4_cap);
+
                         target_vspace.map_page(
                             allocator,
                             slot_allocator,

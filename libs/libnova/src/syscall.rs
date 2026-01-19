@@ -1,6 +1,7 @@
 use sel4_sys::*;
 use crate::ipc;
 
+#[allow(dead_code)]
 const WORD_BYTES: usize = core::mem::size_of::<seL4_Word>();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,4 +140,96 @@ pub fn sys_print_hex(ep: seL4_CPtr, val: usize) {
 /// Yield the current thread's timeslice (seL4_Yield)
 pub fn yield_thread() {
     unsafe { seL4_Yield(); }
+}
+
+// --- File System Syscalls ---
+
+pub fn sys_open(ep: seL4_CPtr, path: &str, flags: usize) -> isize {
+    let len = path.len();
+    if len > 255 { return -1; }
+    
+    // Set MR0, MR1
+    ipc::set_mr(0, len as u64);
+    ipc::set_mr(1, flags as u64);
+    
+    // Write Path to IPC Buffer at offset 16 (MR0, MR1)
+    unsafe {
+        let ipc_buf = &mut *seL4_GetIPCBuffer();
+        let offset = 2 * core::mem::size_of::<seL4_Word>();
+        let ptr = (ipc_buf.msg.as_mut_ptr() as *mut u8).add(offset);
+        core::ptr::copy_nonoverlapping(path.as_ptr(), ptr, len);
+    }
+    
+    let path_words = (len + 7) / 8;
+    // Length: 2 MRs + Path Data
+    let info = ipc::MessageInfo::new(20, 0, 0, 2 + path_words as u64);
+    
+    if ipc::call(ep, info).is_ok() {
+        ipc::get_mr(0) as isize
+    } else {
+        -1
+    }
+}
+
+pub fn sys_read(ep: seL4_CPtr, fd: usize, buf: &mut [u8]) -> isize {
+    let len = buf.len();
+    if len > 900 { return -1; }
+    
+    ipc::set_mr(0, fd as u64);
+    ipc::set_mr(1, len as u64);
+    
+    let info = ipc::MessageInfo::new(21, 0, 0, 2);
+    
+    if ipc::call(ep, info).is_ok() {
+        let bytes_read = ipc::get_mr(0) as usize;
+        if bytes_read > len { return -1; } 
+        
+        // Read data from IPC Buffer at offset 8 (MR0)
+        unsafe {
+            let ipc_buf = &*seL4_GetIPCBuffer();
+            let offset = core::mem::size_of::<seL4_Word>();
+            let ptr = (ipc_buf.msg.as_ptr() as *const u8).add(offset);
+            core::ptr::copy_nonoverlapping(ptr, buf.as_mut_ptr(), bytes_read);
+        }
+        
+        bytes_read as isize
+    } else {
+        -1
+    }
+}
+
+pub fn sys_file_write(ep: seL4_CPtr, fd: usize, buf: &[u8]) -> isize {
+    let len = buf.len();
+    if len > 900 { return -1; }
+    
+    ipc::set_mr(0, fd as u64);
+    ipc::set_mr(1, len as u64);
+    
+    // Write Data to IPC Buffer at offset 16 (MR0, MR1)
+    unsafe {
+        let ipc_buf = &mut *seL4_GetIPCBuffer();
+        let offset = 2 * core::mem::size_of::<seL4_Word>();
+        let ptr = (ipc_buf.msg.as_mut_ptr() as *mut u8).add(offset);
+        core::ptr::copy_nonoverlapping(buf.as_ptr(), ptr, len);
+    }
+    
+    let data_words = (len + 7) / 8;
+    let info = ipc::MessageInfo::new(22, 0, 0, 2 + data_words as u64);
+    
+    if ipc::call(ep, info).is_ok() {
+        ipc::get_mr(0) as isize
+    } else {
+        -1
+    }
+}
+
+pub fn sys_close(ep: seL4_CPtr, fd: usize) -> isize {
+    ipc::set_mr(0, fd as u64);
+    let info = ipc::MessageInfo::new(23, 0, 0, 1);
+    
+    if ipc::call(ep, info).is_ok() {
+        0
+    } else {
+        -1
+    }
 }
