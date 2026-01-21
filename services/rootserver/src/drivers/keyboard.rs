@@ -224,8 +224,8 @@ impl Driver for Keyboard {
         Ok(())
     }
 
-    fn handle_irq(&mut self, _irq: u8) -> DriverEvent {
-        let mut event = DriverEvent::None;
+    fn handle_irq(&mut self, _irq: u8) -> alloc::vec::Vec<DriverEvent> {
+        let mut events = alloc::vec::Vec::new();
         
          // Check status register
          for _ in 0..32 {
@@ -234,7 +234,7 @@ impl Driver for Keyboard {
             }
             let scancode = inb(0x60);
             if let Some(key) = self.process_scancode(scancode) {
-                event = DriverEvent::KeyboardInput(key);
+                events.push(DriverEvent::KeyboardInput(key));
             }
         }
         
@@ -242,6 +242,6 @@ impl Driver for Keyboard {
             // Log?
         }
         
-        event
+        events
     }
 }

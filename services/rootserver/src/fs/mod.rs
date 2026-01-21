@@ -1,4 +1,6 @@
 pub mod novafs;
+pub mod block_cache;
+pub mod strategy;
 
 use spin::Mutex;
 use crate::vfs::FileSystem;

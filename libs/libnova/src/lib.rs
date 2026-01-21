@@ -3,6 +3,8 @@
 //! libnova: NovaOS 核心抽象库
 //! 提供基于权能的系统调用封装和异步 IPC 接口
 
+extern crate alloc;
+
 pub mod syscall;
 pub mod cap;
 pub mod ipc;

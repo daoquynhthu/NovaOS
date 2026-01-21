@@ -65,9 +65,12 @@ fn write_to_frame<A: ObjectAllocator>(
     }
     
     // Unmap to clean up
-    root_vspace.unmap_page(copy_cap).map_err(Error::from)?;
-    root_cnode.delete(copy_cap).map_err(Error::from)?;
+    let unmap_res = root_vspace.unmap_page(copy_cap).map_err(Error::from);
+    let delete_res = root_cnode.delete(copy_cap).map_err(Error::from);
     slots.free(copy_cap);
+    
+    unmap_res?;
+    delete_res?;
     
     Ok(())
 }
@@ -77,6 +80,7 @@ fn write_to_frame<A: ObjectAllocator>(
 const seL4_X86_4K: seL4_Word = 8;
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct IpcMessage {
     pub sender_pid: usize,
     pub content: [u64; 4],
@@ -94,6 +98,7 @@ pub enum ProcessState {
     Suspended,
     Terminated,
     BlockedOnRecv,
+    BlockedOnWait,
     #[allow(dead_code)]
     BlockedOnInput,
 }
@@ -119,6 +124,7 @@ pub enum FileMode {
 
 #[derive(Debug, Clone)]
 pub struct Process {
+    pub name: alloc::string::String,
     pub tcb_cap: seL4_CPtr,
     pub vspace: VSpace,
     pub fault_ep_cap: seL4_CPtr,
@@ -132,6 +138,12 @@ pub struct Process {
     pub mailbox: Option<IpcMessage>,
     pub fds: alloc::vec::Vec<Option<FileDescriptor>>,
     pub priority: seL4_Word,
+    pub uid: u32,
+    pub gid: u32,
+    pub ppid: usize,
+    pub children: alloc::vec::Vec<usize>,
+    pub waiting_for_child: Option<usize>, // PID of child we are waiting for, or None (any)
+    pub exit_code: Option<isize>,
 }
 
 use spin::Mutex;
@@ -164,6 +176,15 @@ impl ProcessManager {
 
     pub fn add_process(&mut self, process: Process) -> Result<usize> {
         let pid = self.allocate_pid()?;
+        let ppid = process.ppid;
+        
+        // Update parent's children list
+        if ppid != pid && ppid < MAX_PROCESSES {
+             if let Some(parent) = self.get_process_mut(ppid) {
+                 parent.children.push(pid);
+             }
+        }
+
         self.processes[pid] = Some(process);
         Ok(pid)
     }
@@ -191,15 +212,130 @@ impl ProcessManager {
             None
         }
     }
+
+    pub fn wait_for_child(&mut self, parent_pid: usize, child_pid: isize) -> Result<Option<(usize, isize)>> {
+        let mut found_child = false;
+        let mut found_zombie: Option<(usize, isize)> = None;
+
+        for i in 0..MAX_PROCESSES {
+            if let Some(p) = &self.processes[i] {
+                if p.ppid == parent_pid {
+                    if child_pid == -1 || (child_pid as usize) == i {
+                        found_child = true;
+                        if p.state == ProcessState::Terminated {
+                            if let Some(code) = p.exit_code {
+                                found_zombie = Some((i, code));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some((pid, code)) = found_zombie {
+            self.remove_process(pid);
+            if let Some(parent) = self.get_process_mut(parent_pid) {
+                parent.children.retain(|&c| c != pid);
+            }
+            return Ok(Some((pid, code)));
+        }
+
+        if !found_child {
+            return Err(Error::InvalidArgument);
+        }
+
+        if let Some(parent) = self.get_process_mut(parent_pid) {
+            parent.state = ProcessState::BlockedOnWait;
+            parent.waiting_for_child = if child_pid == -1 { None } else { Some(child_pid as usize) };
+        }
+
+        Ok(None)
+    }
+
+    pub fn exit_process(
+        &mut self,
+        pid: usize,
+        exit_code: isize,
+        cnode: seL4_CPtr,
+        slots: &mut SlotAllocator,
+        frame_allocator: &mut FrameAllocator
+    ) -> Result<()> {
+        let ppid = self.get_process(pid).ok_or(Error::InvalidArgument)?.ppid;
+        
+        if let Some(p) = self.get_process_mut(pid) {
+            // Only terminate if not already terminated
+            if p.state != ProcessState::Terminated {
+                p.exit_code = Some(exit_code);
+                let _ = p.terminate(cnode, slots, frame_allocator);
+            }
+        }
+
+        let mut parent_waiting = false;
+        let mut parent_exists = false;
+        let mut parent_reply_cap = 0;
+        
+        if let Some(parent) = self.get_process(ppid) {
+            parent_exists = true;
+            if parent.state == ProcessState::BlockedOnWait {
+                if parent.waiting_for_child.is_none() || parent.waiting_for_child == Some(pid) {
+                    parent_waiting = true;
+                    parent_reply_cap = parent.saved_reply_cap;
+                }
+            }
+        }
+
+        if parent_waiting {
+            self.remove_process(pid);
+            
+            if let Some(parent) = self.get_process_mut(ppid) {
+                parent.children.retain(|&c| c != pid);
+                parent.state = ProcessState::Running;
+                parent.waiting_for_child = None;
+            }
+
+            if parent_reply_cap != 0 {
+                unsafe {
+                    let info = sel4_sys::seL4_MessageInfo_new(0, 0, 0, 2);
+                    sel4_sys::seL4_SetMR(0, pid as seL4_Word);
+                    sel4_sys::seL4_SetMR(1, exit_code as seL4_Word);
+                    sel4_sys::seL4_Send(parent_reply_cap, info);
+                }
+            }
+        } else if !parent_exists {
+            // Orphan process (parent died or non-existent) - reap immediately
+            println!("[Process] Reaping orphan process {} (Parent {} not found)", pid, ppid);
+            self.remove_process(pid);
+        }
+        
+        Ok(())
+    }
 }
 
 
 impl Process {
+    #[allow(dead_code)]
+    pub fn is_child_of(&self, potential_ppid: usize) -> bool {
+        self.ppid == potential_ppid
+    }
+
+    pub fn can_control(&self, target: &Process) -> bool {
+        // Root (UID 0) can control any process
+        if self.uid == 0 {
+            return true;
+        }
+        // Users can only control their own processes
+        self.uid == target.uid
+    }
+
     pub fn create<A: ObjectAllocator>(
         allocator: &mut A,
         slots: &mut SlotAllocator,
         boot_info: &seL4_BootInfo,
         asid_pool: seL4_CPtr,
+        name: &str,
+        uid: u32,
+        gid: u32,
     ) -> Result<Self> {
         // 1. Create VSpace
         let vspace = VSpace::new_from_scratch(allocator, slots, boot_info, asid_pool).map_err(Error::from)?;
@@ -207,9 +343,10 @@ impl Process {
         // 2. Create TCB
         let tcb_cap = allocator.allocate(boot_info, api_object_seL4_TCBObject.into(), seL4_TCBBits.into(), slots).map_err(Error::from)?;
         
-        println!("[Process] Created Process: TCB={}, PML4={}", tcb_cap, vspace.pml4_cap);
+        println!("[Process] Created Process: TCB={}, PML4={}, UID={}, GID={}", tcb_cap, vspace.pml4_cap, uid, gid);
         
         Ok(Process {
+            name: alloc::string::String::from(name),
             tcb_cap,
             vspace,
             fault_ep_cap: 0,
@@ -223,11 +360,18 @@ impl Process {
             mailbox: None,
             fds: alloc::vec![const { None }; MAX_FDS],
             priority: 0,
+            uid,
+            gid,
+            ppid: 0,
+            children: alloc::vec::Vec::new(),
+            waiting_for_child: None,
+            exit_code: None,
         })
     }
 
     pub fn new(tcb_cap: seL4_CPtr, vspace: VSpace) -> Self {
         Process { 
+            name: alloc::string::String::from("unknown"),
             tcb_cap, 
             vspace, 
             fault_ep_cap: 0, 
@@ -241,6 +385,12 @@ impl Process {
             mailbox: None,
             fds: alloc::vec![const { None }; MAX_FDS],
             priority: 0,
+            uid: 0,
+            gid: 0,
+            ppid: 0,
+            children: alloc::vec::Vec::new(),
+            waiting_for_child: None,
+            exit_code: None,
         }
     }
 
@@ -326,16 +476,22 @@ impl Process {
         slots: &mut SlotAllocator,
         frame_allocator: &mut FrameAllocator,
         boot_info: &seL4_BootInfo,
+        name: &str,
         image_data: &[u8],
         args: &[&str],
+        env: &[&str],
         priority: seL4_Word,
         endpoint_cap: seL4_CPtr,
+        ppid: usize,
+        uid: u32,
+        gid: u32,
     ) -> Result<Self> {
         let asid_pool = seL4_RootCNodeCapSlots::seL4_CapInitThreadASIDPool as seL4_CPtr;
         let cspace_root = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
         let authority = seL4_RootCNodeCapSlots::seL4_CapInitThreadTCB as seL4_CPtr;
 
-        let mut process = Self::create(allocator, slots, boot_info, asid_pool)?;
+        let mut process = Self::create(allocator, slots, boot_info, asid_pool, name, uid, gid)?;
+        process.ppid = ppid;
 
         // Wrap initialization in a closure to handle cleanup on failure
         let mut initialize = || -> Result<()> {
@@ -367,15 +523,23 @@ impl Process {
                 }
             }
 
-            // Setup Stack with Args
+            // Setup Stack with Args and Env
             let mut sp = stack_top;
             
-            // 1. Strings
-            let mut string_pointers = alloc::vec::Vec::new();
+            // 1. Strings (Args + Env)
+            let mut arg_string_pointers = alloc::vec::Vec::new();
+            let mut env_string_pointers = alloc::vec::Vec::new();
             let mut data_block = alloc::vec::Vec::new();
             
+            // Push Args strings
             for arg in args {
                  let bytes = arg.as_bytes();
+                 data_block.extend_from_slice(bytes);
+                 data_block.push(0);
+            }
+            // Push Env strings
+            for e in env {
+                 let bytes = e.as_bytes();
                  data_block.extend_from_slice(bytes);
                  data_block.push(0);
             }
@@ -385,41 +549,54 @@ impl Process {
             
             let mut current_vaddr = strings_start_vaddr;
             for arg in args {
-                 string_pointers.push(current_vaddr);
+                 arg_string_pointers.push(current_vaddr);
                  current_vaddr += arg.len() + 1;
             }
+            for e in env {
+                 env_string_pointers.push(current_vaddr);
+                 current_vaddr += e.len() + 1;
+            }
             
-            // 2. Argv Array
-            // [ptr0, ptr1, ..., NULL]
+            // 2. Arrays
+            // Envp: [ptr0, ..., NULL]
+            let envp_size = (env.len() + 1) * 8;
+            sp -= envp_size;
+            sp = sp & !0xF;
+            let envp_start_vaddr = sp;
+            
+            // Argv: [ptr0, ..., NULL]
             let argv_size = (args.len() + 1) * 8;
             sp -= argv_size;
-            sp = sp & !0xF; // Align 16
-            
+            sp = sp & !0xF;
             let argv_start_vaddr = sp;
+            
+            // Construct Data
             let mut argv_data = alloc::vec::Vec::new();
-            for ptr in string_pointers {
+            for ptr in arg_string_pointers {
                  argv_data.extend_from_slice(&(ptr as u64).to_le_bytes());
             }
             argv_data.extend_from_slice(&0u64.to_le_bytes());
+
+            let mut envp_data = alloc::vec::Vec::new();
+            for ptr in env_string_pointers {
+                 envp_data.extend_from_slice(&(ptr as u64).to_le_bytes());
+            }
+            envp_data.extend_from_slice(&0u64.to_le_bytes());
             
             // Write to top stack page
-            // Assume all args fit in top page for now
             if stack_top - sp > 4096 {
-                println!("[Process] Args too large for single stack page!");
+                println!("[Process] Args+Env too large for single stack page!");
                 return Err(Error::NotEnoughMemory);
             }
 
-            let _offset_in_page = sp % 4096;
-            // Combined data: argv_data + data_block
-            // But there might be gap due to alignment
-            // Easier to write separately?
-            // strings are at strings_start_vaddr
-            // argv is at argv_start_vaddr
-            
             // Write Strings
             let strings_offset = strings_start_vaddr % 4096;
             write_to_frame(allocator, slots, boot_info, top_stack_frame_cap, strings_offset, &data_block)?;
             
+            // Write Envp
+            let envp_offset = envp_start_vaddr % 4096;
+            write_to_frame(allocator, slots, boot_info, top_stack_frame_cap, envp_offset, &envp_data)?;
+
             // Write Argv
             let argv_offset = argv_start_vaddr % 4096;
             write_to_frame(allocator, slots, boot_info, top_stack_frame_cap, argv_offset, &argv_data)?;
@@ -444,9 +621,9 @@ impl Process {
             process.configure(cspace_root, fault_ep_cap, ipc_vaddr as seL4_Word, ipc_frame_cap)?;
             process.set_priority(authority, priority)?;
             
-            // RDI = argc, RSI = argv, RDX = endpoint_cap
-            println!("[Process] Setting registers: Entry={:x}, SP={:x}, Argc={}, Argv={:x}, EP={}", 
-                entry, sp, args.len(), argv_start_vaddr, endpoint_cap);
+            // RDI = argc, RSI = argv, RDX = endpoint_cap, RCX = envp
+            println!("[Process] Setting registers: Entry={:x}, SP={:x}, Argc={}, Argv={:x}, EP={}, Envp={:x}", 
+                entry, sp, args.len(), argv_start_vaddr, endpoint_cap, envp_start_vaddr);
 
             process.write_registers_ext(
                 entry as seL4_Word, 
@@ -454,7 +631,8 @@ impl Process {
                 0x202, 
                 args.len() as seL4_Word, 
                 argv_start_vaddr as seL4_Word, 
-                endpoint_cap as seL4_Word
+                endpoint_cap as seL4_Word,
+                envp_start_vaddr as seL4_Word
             )?;
             process.resume()?;
             
@@ -496,6 +674,7 @@ impl Process {
         rdi: seL4_Word,
         rsi: seL4_Word,
         rdx: seL4_Word,
+        rcx: seL4_Word,
     ) -> Result<()> {
         unsafe {
             // Standard x86_64 seL4 register order
@@ -503,6 +682,7 @@ impl Process {
             regs[0] = rip;
             regs[1] = rsp;
             regs[2] = rflags;
+            regs[5] = rcx;
             regs[6] = rdx;
             regs[7] = rsi;
             regs[8] = rdi;

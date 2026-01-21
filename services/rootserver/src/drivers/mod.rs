@@ -11,7 +11,6 @@ pub mod block;
 
 #[derive(Debug, Clone)]
 pub enum DriverEvent {
-    None,
     KeyboardInput(keyboard::Key),
     SerialInput(u8),
     Tick,
@@ -20,7 +19,7 @@ pub enum DriverEvent {
 pub trait Driver: Send {
     fn name(&self) -> &str;
     fn init(&mut self) -> Result<(), &'static str>;
-    fn handle_irq(&mut self, irq: u8) -> DriverEvent;
+    fn handle_irq(&mut self, irq: u8) -> Vec<DriverEvent>;
 }
 
 pub struct DriverManager {
@@ -51,10 +50,8 @@ impl DriverManager {
         let mut events = Vec::new();
         for (driver_badge, driver) in self.drivers.iter_mut() {
             if (badge_mask & *driver_badge) != 0 {
-                let event = driver.handle_irq(0);
-                if !matches!(event, DriverEvent::None) {
-                    events.push(event);
-                }
+                let driver_events = driver.handle_irq(0);
+                events.extend(driver_events);
             }
         }
         events

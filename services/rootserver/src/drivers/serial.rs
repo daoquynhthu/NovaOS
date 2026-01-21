@@ -31,21 +31,18 @@ impl Driver for SerialDriver {
         Ok(())
     }
 
-    fn handle_irq(&mut self, _irq: u8) -> DriverEvent {
-        if let Some(byte) = self.port.receive() {
-            if let Err(_) = ioapic::ack_irq(self.irq_cap) {
-                 // Log?
-            }
-            return DriverEvent::SerialInput(byte);
+    fn handle_irq(&mut self, _irq: u8) -> alloc::vec::Vec<DriverEvent> {
+        let mut events = alloc::vec::Vec::new();
+        
+        // Read all available bytes
+        while let Some(byte) = self.port.receive() {
+            events.push(DriverEvent::SerialInput(byte));
         }
         
-        // Even if no data (spurious?), we should probably ACK? 
-        // But usually serial IRQ is raised when data is available.
-        // If we don't ACK, we won't get more.
         if let Err(_) = ioapic::ack_irq(self.irq_cap) {
              // Log?
         }
         
-        DriverEvent::None
+        events
     }
 }

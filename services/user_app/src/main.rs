@@ -23,7 +23,7 @@ fn panic(_info: &PanicInfo) -> ! {
 pub static mut __sel4_ipc_buffer: *mut seL4_IPCBuffer = 0x3000_0000 as *mut seL4_IPCBuffer;
 
 #[no_mangle]
-pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usize) -> ! {
+pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usize, envp: *const *const u8) -> ! {
     let ep_cap = ep_cap_usize as seL4_CPtr;
     // Initialize libnova console
     libnova::console::init_console(ep_cap_usize);
@@ -35,6 +35,27 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
         let args_iter = libnova::env::Args::new(argc, argv);
         for (i, arg) in args_iter.enumerate() {
             println!("Arg {}: {}", i, arg);
+        }
+
+        // Print Environment Variables
+        println!("Environment Variables:");
+        if !envp.is_null() {
+            let mut curr = envp;
+            while !(*curr).is_null() {
+                let s_ptr = *curr;
+                // simple strlen
+                let mut len = 0;
+                while *s_ptr.add(len) != 0 {
+                    len += 1;
+                }
+                let s_slice = core::slice::from_raw_parts(s_ptr, len);
+                if let Ok(s) = core::str::from_utf8(s_slice) {
+                    println!("  {}", s);
+                }
+                curr = curr.add(1);
+            }
+        } else {
+            println!("  <none>");
         }
     }
     
@@ -80,6 +101,22 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
                  sys_close(ep_cap, fd_read as usize);
             } else {
                 println!("FS Test Failed: Could not re-open file.");
+            }
+            
+            // Test Rename
+            println!("Testing sys_rename...");
+            if sys_rename(ep_cap, filename, "/test_renamed.txt") == 0 {
+                println!("Rename successful.");
+                let fd_renamed = sys_open(ep_cap, "/test_renamed.txt", 0);
+                if fd_renamed >= 0 {
+                    println!("Renamed file opened successfully.");
+                    sys_close(ep_cap, fd_renamed as usize);
+                    println!("Rename Test Passed!");
+                } else {
+                    println!("Rename Test Failed: Could not open renamed file.");
+                }
+            } else {
+                println!("Rename Test Failed: sys_rename returned error.");
             }
         } else {
              println!("FS Test Failed: Could not open file (FD={}).", fd);
@@ -128,8 +165,71 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
         } else {
              println!("Failed to allocate heap for allocator!");
         }
+
+        // Test Process Management
+        println!("Testing Process Management...");
+        // Spawn self as child (will get pid != 0)
+        let child_pid = sys_spawn(ep_cap, "/bin/hello", &["arg1", "arg2"], &["TEST_ENV=NovaOS"]);
+        if child_pid >= 0 {
+            println!("Spawned child PID: {}", child_pid);
+            let (wpid, status) = sys_wait(ep_cap, child_pid, 0);
+            println!("Waited for child {}, status: {}", wpid, status);
+            
+            if wpid == child_pid && status == 123 {
+                println!("Process Management Test Passed!");
+            } else {
+                println!("Process Management Test Failed! (Expected status 123, got {})", status);
+            }
+        } else {
+            println!("Failed to spawn child!");
+        }
+
+        // Test sys_kill
+        println!("Testing sys_kill...");
+        let child_pid_kill = sys_spawn(ep_cap, "/bin/hello", &["loop"], &[]);
+        if child_pid_kill >= 0 {
+             println!("Spawned child to kill PID: {}", child_pid_kill);
+             sys_yield(ep_cap);
+             
+             println!("Killing child {}...", child_pid_kill);
+             if sys_kill(ep_cap, child_pid_kill as usize, 9) == 0 {
+                 println!("Kill signal sent.");
+                 let (wpid, status) = sys_wait(ep_cap, child_pid_kill, 0);
+                 println!("Waited for killed child {}, status: {}", wpid, status);
+                 
+                 // status -1 cast to usize is u64::MAX
+                 if wpid == child_pid_kill && (status as isize) == -1 {
+                     println!("Kill Test Passed!");
+                 } else {
+                     println!("Kill Test Failed! Status: {} (Expected -1)", status as isize);
+                 }
+             } else {
+                 println!("Kill Test Failed: sys_kill returned error.");
+             }
+        }
+
     } else {
         println!("Process {} (Child) Started!", pid);
+        
+        // Check if "loop" arg is present
+        let args_iter = unsafe { libnova::env::Args::new(argc, argv) };
+        let mut loop_mode = false;
+        for arg in args_iter {
+            if arg == "loop" {
+                loop_mode = true;
+                break;
+            }
+        }
+        
+        if loop_mode {
+             println!("Child entering infinite loop...");
+             loop {
+                 sys_yield(ep_cap);
+             }
+        } else {
+            println!("Child exiting with code 123...");
+            sys_exit(ep_cap, 123);
+        }
     }
     
     sys_exit(ep_cap, 0);

@@ -160,7 +160,7 @@ fn test_user_hello_program(
 
     let elf_data = crate::filesystem::get_file("hello").expect("hello binary not found");
     let args = ["hello", "test_arg"];
-    let mut process = match Process::spawn(allocator, slot_allocator, frame_allocator, boot_info, elf_data, &args, 100, syscall_ep_cap) {
+    let mut process = match Process::spawn(allocator, slot_allocator, frame_allocator, boot_info, "hello", elf_data, &args, &[], 100, syscall_ep_cap, 0, 0, 0) {
         Ok(p) => p,
         Err(e) => {
             println!("[ERROR] Failed to spawn hello program: {:?}", e);
@@ -263,6 +263,13 @@ fn test_process_manager() {
         mailbox: None,
         fds: alloc::vec![const { None }; crate::process::MAX_FDS],
         priority: 0,
+        uid: 0,
+        gid: 0,
+        ppid: 0,
+        children: alloc::vec::Vec::new(),
+        name: alloc::string::String::from("dummy"),
+        exit_code: None,
+        waiting_for_child: None,
     };
     
     // Test Add
@@ -414,9 +421,14 @@ fn test_process_spawn(
         slot_allocator, 
         frame_allocator,
         boot_info, 
+        "test_fail",
         &dummy_elf, 
         &[],
+        &[],
         100,
+        0,
+        32,
+        0,
         0
     ) {
         Ok(_) => println!("[INFO] Process spawned (unexpectedly success with empty ELF)"),
@@ -429,9 +441,14 @@ fn test_process_spawn(
         slot_allocator, 
         frame_allocator,
         boot_info, 
+        "test_args",
         &dummy_elf, 
         &["test_arg1", "test_arg2"],
+        &[],
         100,
+        0,
+        32,
+        0,
         0
     ) {
         Ok(_) => println!("[INFO] Process spawned with args (unexpectedly success)"),
@@ -698,7 +715,7 @@ fn test_independent_vspace(
 
                   let child_vaddr = 0x400000;
 
-                  match Process::create(allocator, slot_allocator, boot_info, asid_pool) {
+                  match Process::create(allocator, slot_allocator, boot_info, asid_pool, "test_child", 0, 0) {
                     Ok(mut child_process) => {
                         if child_code_frame_cap != 0 {
                              match child_process.vspace.map_page(allocator, slot_allocator, boot_info, child_code_frame_cap, child_vaddr, rights_all, attr) {

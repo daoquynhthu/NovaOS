@@ -67,6 +67,42 @@ impl RtcDriver {
          
          (day, month, full_year)
     }
+
+    pub fn get_unix_timestamp(&self) -> u64 {
+        let (d, m, y) = self.read_date();
+        let (h, min, s) = self.read_time();
+        
+        // Simple conversion to unix timestamp
+        // 1970-01-01 00:00:00 UTC
+        
+        let mut days = 0u64;
+        
+        // Years
+        for curr_y in 1970..y {
+            if (curr_y % 4 == 0 && curr_y % 100 != 0) || (curr_y % 400 == 0) {
+                days += 366;
+            } else {
+                days += 365;
+            }
+        }
+        
+        // Months
+        let is_leap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+        let days_in_month = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        
+        for i in 1..m {
+            if i == 2 && is_leap {
+                days += 29;
+            } else {
+                days += days_in_month[i as usize];
+            }
+        }
+        
+        days += (d - 1) as u64;
+        
+        let total_seconds = days * 86400 + h as u64 * 3600 + min as u64 * 60 + s as u64;
+        total_seconds
+    }
 }
 
 impl Driver for RtcDriver {
@@ -79,9 +115,9 @@ impl Driver for RtcDriver {
         Ok(())
     }
 
-    fn handle_irq(&mut self, _irq: u8) -> DriverEvent {
+    fn handle_irq(&mut self, _irq: u8) -> alloc::vec::Vec<DriverEvent> {
         // If we enabled IRQ 8, we would read Register C to clear it.
         // self.read_register(0x0C);
-        DriverEvent::None
+        alloc::vec::Vec::new()
     }
 }

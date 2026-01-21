@@ -34,6 +34,7 @@ pub struct AtaDriver {
     pub port_base: u16,
     pub sector_count: u64, // Detected via IDENTIFY
     pub model: [u8; 40],
+    pub is_ssd: bool,
 }
 
 use crate::drivers::block::BlockDevice;
@@ -55,6 +56,10 @@ impl BlockDevice for AtaDriver {
         }
         self.write_sectors(block_id, buf)
     }
+
+    fn is_rotational(&self) -> bool {
+        !self.is_ssd
+    }
 }
 
 impl AtaDriver {
@@ -63,6 +68,7 @@ impl AtaDriver {
             port_base,
             sector_count: 0,
             model: [0; 40],
+            is_ssd: false, // Default to HDD
         }
     }
     
@@ -125,10 +131,18 @@ impl AtaDriver {
             self.sector_count = lba28_sectors as u64;
         }
         
-        println!("[ATA] Drive Identified: Model='{}', Sectors={}, Size={}MB", 
+        // Check Nominal Media Rotation Rate (Word 217)
+        // 1 = Non-rotating media (SSD)
+        let rotation_rate = data[217];
+        if rotation_rate == 1 {
+            self.is_ssd = true;
+        }
+
+        println!("[ATA] Drive Identified: Model='{}', Sectors={}, Size={}MB, Type={}", 
             core::str::from_utf8(&self.model).unwrap_or("Unknown").trim(),
             self.sector_count,
-            (self.sector_count * 512) / 1024 / 1024
+            (self.sector_count * 512) / 1024 / 1024,
+            if self.is_ssd { "SSD" } else { "HDD" }
         );
         
         Ok(())

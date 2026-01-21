@@ -1,0 +1,13 @@
+[package]
+name = "fs_server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libnova = { path = "../../libs/libnova" }
+sel4-sys = { path = "../../libs/seL4-sys" }
+
+[[bin]]
+name = "fs_server"
+path = "src/main.rs"
+harness = false

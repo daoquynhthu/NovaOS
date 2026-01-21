@@ -1,5 +1,6 @@
 
 use crate::drivers::keyboard::Key;
+use alloc::string::ToString;
 use libnova::cap::cap_rights_new;
 use crate::memory::{SlotAllocator, UntypedAllocator, FrameAllocator};
 use crate::tests;
@@ -11,7 +12,8 @@ const HISTORY_LEN: usize = 16;
 const COMMANDS: &[&str] = &[
     "help", "clear", "echo", "cat", "whoami", "status", "bootinfo", "alloc", "meminfo",
     "ps", "ls", "kill", "exec", "history", "post", "runhello", "cd", "mkdir", "rm", "cp", "mv", "touch", "pwd",
-    "renice", "pci", "date", "disk_read", "disk_write", "mkfs", "mount", "write"
+    "renice", "pci", "date", "disk_read", "disk_write", "mkfs", "mount", "sync", "write", "encrypt", "decrypt", "ln", "chmod", "chown",
+    "env", "export", "unset"
 ];
 
 pub struct Shell {
@@ -33,10 +35,16 @@ pub struct Shell {
     draft_valid: bool,
     syscall_ep_cap: sel4_sys::seL4_CPtr,
     cwd: alloc::string::String,
+    env_vars: alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>,
 }
 
 impl Shell {
     pub fn new() -> Self {
+        let mut env_vars = alloc::collections::BTreeMap::new();
+        env_vars.insert("PATH".into(), "/bin".into());
+        env_vars.insert("HOME".into(), "/".into());
+        env_vars.insert("TERM".into(), "nova-term".into());
+
         Shell {
             buffer: ['\0'; MAX_CMD_LEN],
             len: 0,
@@ -56,7 +64,65 @@ impl Shell {
             draft_valid: false,
             syscall_ep_cap: 0,
             cwd: alloc::string::String::from("/"),
+            env_vars,
         }
+    }
+
+    fn format_mode(mode: u16) -> alloc::string::String {
+        let mut s = alloc::string::String::new();
+        // User
+        s.push(if mode & 0o400 != 0 { 'r' } else { '-' });
+        s.push(if mode & 0o200 != 0 { 'w' } else { '-' });
+        s.push(if mode & 0o100 != 0 { 'x' } else { '-' });
+        // Group
+        s.push(if mode & 0o040 != 0 { 'r' } else { '-' });
+        s.push(if mode & 0o020 != 0 { 'w' } else { '-' });
+        s.push(if mode & 0o010 != 0 { 'x' } else { '-' });
+        // Other
+        s.push(if mode & 0o004 != 0 { 'r' } else { '-' });
+        s.push(if mode & 0o002 != 0 { 'w' } else { '-' });
+        s.push(if mode & 0o001 != 0 { 'x' } else { '-' });
+        s
+    }
+
+    fn format_time(ts: u64) -> alloc::string::String {
+        let seconds_per_day = 86400;
+        let mut days = ts / seconds_per_day;
+        let mut seconds = ts % seconds_per_day;
+        
+        let hour = seconds / 3600;
+        seconds %= 3600;
+        let minute = seconds / 60;
+        let second = seconds % 60;
+        
+        let mut year = 1970;
+        loop {
+            let days_in_year = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) { 366 } else { 365 };
+            if days >= days_in_year {
+                days -= days_in_year;
+                year += 1;
+            } else {
+                break;
+            }
+        }
+        
+        let days_in_month = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        
+        let mut month = 1;
+        for i in 1..=12 {
+            let mut d = days_in_month[i];
+            if i == 2 && is_leap { d = 29; }
+            if days >= d {
+                days -= d;
+                month += 1;
+            } else {
+                break;
+            }
+        }
+        let day = days + 1;
+        
+        alloc::format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, minute, second)
     }
 
     pub fn init(
@@ -509,15 +575,29 @@ impl Shell {
     }
 
     fn resolve_path(&self, path: &str) -> alloc::string::String {
-        let mut res = alloc::string::String::new();
-        if path.starts_with('/') {
-            res.push_str(path);
+        let full_path = if path.starts_with('/') {
+            alloc::string::String::from(path)
         } else {
-            res.push_str(&self.cwd);
-            if !self.cwd.ends_with('/') {
-                res.push('/');
+            let mut s = self.cwd.clone();
+            if !s.ends_with('/') { s.push('/'); }
+            s.push_str(path);
+            s
+        };
+
+        let mut components = alloc::vec::Vec::new();
+        for part in full_path.split('/') {
+            if part.is_empty() || part == "." { continue; }
+            if part == ".." {
+                components.pop();
+            } else {
+                components.push(part);
             }
-            res.push_str(path);
+        }
+
+        let mut res = alloc::string::String::from("/");
+        for (i, part) in components.iter().enumerate() {
+            if i > 0 { res.push('/'); }
+            res.push_str(part);
         }
         res
     }
@@ -560,8 +640,41 @@ impl Shell {
             println!("  shutdown  - Power off the system");
             println!("  renice    - Change process priority (renice <pid> <prio>)");
             println!("  pci       - List PCI devices");
+            println!("  encrypt   - Encrypt a file (encrypt <file>)");
+            println!("  decrypt   - Decrypt a file (removes encryption flag)");
+            println!("  env       - List environment variables");
+            println!("  export    - Set environment variable");
+            println!("  unset     - Unset environment variable");
         } else if self.word_eq(word_start, word_end, "clear") {
             print!("\x1b[2J\x1b[1;1H");
+        } else if self.word_eq(word_start, word_end, "env") {
+            for (k, v) in &self.env_vars {
+                println!("{}={}", k, v);
+            }
+        } else if self.word_eq(word_start, word_end, "export") {
+            let len = end - rest_start;
+            if len == 0 {
+                println!("Usage: export KEY=VALUE");
+            } else {
+                let s = &self.buffer[rest_start..end];
+                let s_str = s.iter().collect::<alloc::string::String>();
+                if let Some(idx) = s_str.find('=') {
+                    let key = &s_str[..idx];
+                    let val = &s_str[idx+1..];
+                    self.env_vars.insert(key.into(), val.into());
+                } else {
+                    println!("Usage: export KEY=VALUE");
+                }
+            }
+        } else if self.word_eq(word_start, word_end, "unset") {
+            let len = end - rest_start;
+            if len == 0 {
+                println!("Usage: unset KEY");
+            } else {
+                let s = &self.buffer[rest_start..end];
+                let key = s.iter().collect::<alloc::string::String>();
+                self.env_vars.remove(&key);
+            }
         } else if self.word_eq(word_start, word_end, "pci") {
             crate::arch::pci::init();
         } else if self.word_eq(word_start, word_end, "disk_read") {
@@ -684,6 +797,17 @@ impl Shell {
                  }
              }
 
+        } else if self.word_eq(word_start, word_end, "sync") {
+            let fs_lock = crate::fs::DISK_FS.lock();
+            if let Some(fs) = fs_lock.as_ref() {
+                match fs.sync() {
+                    Ok(_) => println!("FileSystem synced."),
+                    Err(e) => println!("sync failed: {}", e),
+                }
+            } else {
+                println!("sync: Filesystem not mounted");
+            }
+
         } else if self.word_eq(word_start, word_end, "date") {
             let rtc = crate::drivers::rtc::RtcDriver::new();
             let (day, month, year) = rtc.read_date();
@@ -738,14 +862,12 @@ impl Shell {
             use crate::process::get_process_manager;
             let pm = get_process_manager();
             let mut any = false;
-            println!("PID  State       TCB     PML4    Heap(Hex)  Frames Prio");
-            println!("-------------------------------------------------------");
+            println!("PID  PPID State        Name             Heap       Frames Prio");
+            println!("----------------------------------------------------------------");
             for (pid, slot) in pm.processes.iter().enumerate() {
                 if let Some(p) = slot {
                     any = true;
-                    // Format: PID, State, TCB, PML4, Heap, Frames, Prio
-                    // Using fixed width rough formatting
-                    print!("{:<4} ", pid);
+                    print!("{:<4} {:<4} ", pid, p.ppid);
                     
                     let state_str = match p.state {
                         crate::process::ProcessState::Created => "Created",
@@ -756,13 +878,12 @@ impl Shell {
                         crate::process::ProcessState::Suspended => "Suspended",
                         crate::process::ProcessState::BlockedOnRecv => "BlockedRecv",
                         crate::process::ProcessState::BlockedOnInput => "BlockedInput",
+                        crate::process::ProcessState::BlockedOnWait => "BlockedWait",
                         crate::process::ProcessState::Terminated => "Terminated",
                     };
-                    print!("{:<11} ", state_str);
-                    
-                    print!("{:<7} {:<7} {:<10x} {:<6} {}", 
-                        p.tcb_cap, 
-                        p.vspace.pml4_cap,
+                    print!("{:<12} {:<16} {:<10x} {:<6} {}", 
+                        state_str,
+                        p.name,
                         p.heap_brk,
                         p.mapped_frames.len(),
                         p.priority
@@ -796,20 +917,19 @@ impl Shell {
                 } else {
                     use crate::process::get_process_manager;
                     let mut pm = get_process_manager();
-                    if let Some(mut p) = pm.remove_process(pid) {
-                        if self.slots.is_null() {
-                             println!("Error: Slot allocator unavailable");
-                        } else {
-                             let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as sel4_sys::seL4_CPtr;
-                             let slots = unsafe { &mut *self.slots };
-                             let frame_allocator = unsafe { &mut *self.frame_allocator };
-                             match p.terminate(root_cnode, slots, frame_allocator) {
-                                 Ok(_) => println!("Process {} killed.", pid),
-                                 Err(e) => println!("Process {} killed but terminate failed: {:?}", pid, e),
-                             }
-                        }
+                    
+                    if self.slots.is_null() || self.frame_allocator.is_null() {
+                        println!("Error: System resources unavailable");
                     } else {
-                        println!("Process {} not found.", pid);
+                        let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as sel4_sys::seL4_CPtr;
+                        let slots = unsafe { &mut *self.slots };
+                        let frame_allocator = unsafe { &mut *self.frame_allocator };
+                        
+                        // Use exit_process to properly handle parent notification and cleanup
+                        match pm.exit_process(pid, -9, root_cnode, slots, frame_allocator) {
+                            Ok(_) => println!("Process {} killed (signal -9).", pid),
+                            Err(e) => println!("Failed to kill process {}: {:?}", pid, e),
+                        }
                     }
                 }
             }
@@ -908,12 +1028,79 @@ impl Shell {
 
                     if let Some(data) = final_data {
                         println!("Executing '{}' with args {:?}...", filename, args);
-                        self.spawn_process(filename, &data, args);
+                        
+                        let env_vec: alloc::vec::Vec<alloc::string::String> = self.env_vars.iter()
+                            .map(|(k, v)| alloc::format!("{}={}", k, v))
+                            .collect();
+                        let env_slice: alloc::vec::Vec<&str> = env_vec.iter().map(|s| s.as_str()).collect();
+                        
+                        self.spawn_process(filename, &data, args, &env_slice);
                     } else {
                          println!("exec: {}: No such file or directory", path_str);
                     }
                 } else {
                     println!("Usage: exec <filename> [args...]");
+                }
+            }
+        } else if self.word_eq(word_start, word_end, "encrypt") {
+            let len = end - rest_start;
+            if len == 0 {
+                println!("Usage: encrypt <file>");
+            } else {
+                let filename = self.buffer[rest_start..end].iter().collect::<alloc::string::String>();
+                println!("DEBUG: encrypt command for '{}'", filename);
+                let path_str = self.resolve_path(&filename);
+                println!("DEBUG: resolved path '{}'", path_str);
+                let vfs_lock = crate::vfs::VFS.lock();
+                if let Some(fs) = vfs_lock.as_ref() {
+                    match fs.resolve_path("/", &path_str) {
+                        Ok(inode) => {
+                             // Read current flags first
+                             match inode.control(1, 0) {
+                                 Ok(flags) => {
+                                    println!("DEBUG: encrypt command read flags: 0x{:x}", flags);
+                                    // Set Encrypted bit (1)
+                                    match inode.control(2, flags | 1) {
+                                         Ok(_) => println!("File '{}' encrypted.", filename),
+                                         Err(e) => println!("Failed to encrypt: {}", e),
+                                     }
+                                 },
+                                 Err(e) => println!("Failed to get flags: {}", e),
+                             }
+                        },
+                        Err(e) => println!("encrypt: {}: {}", filename, e),
+                    }
+                } else {
+                    println!("encrypt: VFS not mounted");
+                }
+            }
+        } else if self.word_eq(word_start, word_end, "decrypt") {
+             let len = end - rest_start;
+            if len == 0 {
+                println!("Usage: decrypt <file>");
+            } else {
+                let filename = self.buffer[rest_start..end].iter().collect::<alloc::string::String>();
+                let path_str = self.resolve_path(&filename);
+                let vfs_lock = crate::vfs::VFS.lock();
+                if let Some(fs) = vfs_lock.as_ref() {
+                    match fs.resolve_path("/", &path_str) {
+                        Ok(inode) => {
+                             // Read current flags first
+                             match inode.control(1, 0) {
+                                 Ok(flags) => {
+                                     // Clear Encrypted bit (1)
+                                     match inode.control(2, flags & !1) {
+                                         Ok(_) => println!("File '{}' decrypted.", filename),
+                                         Err(e) => println!("Failed to decrypt: {}", e),
+                                     }
+                                 },
+                                 Err(e) => println!("Failed to get flags: {}", e),
+                             }
+                        },
+                        Err(e) => println!("decrypt: {}: {}", filename, e),
+                    }
+                } else {
+                    println!("decrypt: VFS not mounted");
                 }
             }
         } else if self.word_eq(word_start, word_end, "history") {
@@ -936,8 +1123,16 @@ impl Shell {
                 }
             }
             
+            // Prepare environment variables
+            let env_vec: alloc::vec::Vec<alloc::string::String> = self.env_vars.iter()
+                .map(|(k, v)| alloc::format!("{}={}", k, v))
+                .collect();
+            let env_slice: alloc::vec::Vec<&str> = env_vec.iter().map(|s| s.as_str()).collect();
+
             if let Some(data) = data_opt {
-                self.spawn_process("hello", &data, &[]);
+                self.spawn_process("hello", &data, &[], &env_slice);
+            } else if let Some(data) = crate::filesystem::get_file("hello") {
+                 self.spawn_process("hello", data, &[], &env_slice);
             } else {
                 println!("Error: hello binary not found in /bin");
             }
@@ -952,27 +1147,61 @@ impl Shell {
             
             let fs_lock = crate::fs::DISK_FS.lock();
             if let Some(fs) = fs_lock.as_ref() {
-                match crate::vfs::resolve_path(fs, &self.cwd, &path_str) {
+                // Use resolve_path_ex to avoid following symlink if it's the last component
+                match fs.resolve_path_ex(&self.cwd, &path_str, false) {
                     Ok(inode) => {
-                         if let Ok(stat) = inode.metadata() {
+                        if let Ok(stat) = inode.metadata() {
                              if stat.file_type == crate::vfs::FileType::Directory {
                                  match inode.list() {
-                                     Ok(entries) => {
-                                         for name in entries {
-                                             if let Ok(child) = inode.lookup(&name) {
-                                                  if let Ok(cstat) = child.metadata() {
-                                                      let type_char = if cstat.file_type == crate::vfs::FileType::Directory { 'd' } else { '-' };
-                                                      println!("{}{}  {:>8}  {}", type_char, "rw-", cstat.size, name);
-                                                  } else {
-                                                      println!("?rw-  {:>8}  {}", 0, name);
-                                                  }
-                                             }
-                                         }
-                                     },
-                                     Err(e) => println!("ls: {}", e),
-                                 }
+                                    Ok(entries) => {
+                                        for (name, child) in entries {
+                                            if let Ok(cstat) = child.metadata() {
+                                                let type_char = match cstat.file_type {
+                                                    crate::vfs::FileType::Directory => 'd',
+                                                    crate::vfs::FileType::Symlink => 'l',
+                                                    _ => '-',
+                                                };
+                                                let mode_str = Self::format_mode(cstat.mode);
+                                                let time_str = Self::format_time(cstat.mtime);
+                                                
+                                                let mut name_display = name.clone();
+                                                if cstat.file_type == crate::vfs::FileType::Symlink {
+                                                    let mut buf = alloc::vec![0u8; cstat.size];
+                                                    if let Ok(n) = child.read_at(0, &mut buf) {
+                                                        if let Ok(target) = core::str::from_utf8(&buf[..n]) {
+                                                                name_display = alloc::format!("{} -> {}", name, target);
+                                                        }
+                                                    }
+                                                }
+                                                
+                                                println!("{}{} {:>2} {:>4} {:>4} {:>8} {} {}", type_char, mode_str, cstat.nlink, cstat.uid, cstat.gid, cstat.size, time_str, name_display);
+                                            } else {
+                                                println!("?rw-r--r--  1    0    0        0 1970-01-01 00:00:00 {}", name);
+                                            }
+                                        }
+                                    },
+                                    Err(e) => println!("ls: {}", e),
+                                }
                              } else {
-                                 println!("-rw-  {:>8}  {}", stat.size, path_str);
+                                 let type_char = match stat.file_type {
+                                     crate::vfs::FileType::Directory => 'd',
+                                     crate::vfs::FileType::Symlink => 'l',
+                                     _ => '-',
+                                 };
+                                 let mode_str = Self::format_mode(stat.mode);
+                                 let time_str = Self::format_time(stat.mtime);
+                                 
+                                 let mut name_display = path_str.clone();
+                                 if stat.file_type == crate::vfs::FileType::Symlink {
+                                     let mut buf = alloc::vec![0u8; stat.size];
+                                     if let Ok(n) = inode.read_at(0, &mut buf) {
+                                         if let Ok(target) = core::str::from_utf8(&buf[..n]) {
+                                              name_display = alloc::format!("{} -> {}", path_str, target);
+                                         }
+                                     }
+                                 }
+                                 
+                                 println!("{}{} {:>2} {:>4} {:>4} {:>8} {} {}", type_char, mode_str, stat.nlink, stat.uid, stat.gid, stat.size, time_str, name_display);
                              }
                          } else {
                              println!("ls: cannot stat {}", path_str);
@@ -983,6 +1212,34 @@ impl Shell {
             } else {
                 println!("ls: Filesystem not mounted");
             }
+        } else if self.word_eq(word_start, word_end, "env") {
+             for (k, v) in &self.env_vars {
+                 println!("{}={}", k, v);
+             }
+        } else if self.word_eq(word_start, word_end, "export") {
+             let len = end - rest_start;
+             if len == 0 {
+                 println!("Usage: export KEY=VALUE");
+             } else {
+                 let s = &self.buffer[rest_start..end];
+                 let s = s.iter().collect::<alloc::string::String>();
+                 if let Some(idx) = s.find('=') {
+                     let key = &s[..idx];
+                     let val = &s[idx+1..];
+                     self.env_vars.insert(key.into(), val.into());
+                 } else {
+                     println!("Usage: export KEY=VALUE");
+                 }
+             }
+        } else if self.word_eq(word_start, word_end, "unset") {
+             let len = end - rest_start;
+             if len == 0 {
+                 println!("Usage: unset KEY");
+             } else {
+                 let s = &self.buffer[rest_start..end];
+                 let key = s.iter().collect::<alloc::string::String>();
+                 self.env_vars.remove(&key);
+             }
         } else if self.word_eq(word_start, word_end, "cd") {
             let len = end - rest_start;
             if len == 0 {
@@ -1037,9 +1294,12 @@ impl Shell {
                          match crate::vfs::resolve_path(fs, &self.cwd, parent_path) {
                              Ok(parent) => {
                                  match parent.create(name, crate::vfs::FileType::Directory) {
-                                     Ok(_) => println!("Created directory {}", path_str),
-                                     Err(e) => println!("mkdir: {}", e),
-                                 }
+                                    Ok(_) => {
+                                        println!("Created directory {}", path_str);
+                                        fs.sync().ok();
+                                    },
+                                    Err(e) => println!("mkdir: {}", e),
+                                }
                              },
                              Err(e) => println!("mkdir: parent {}: {}", parent_path, e),
                          }
@@ -1168,6 +1428,276 @@ impl Shell {
                     println!("Usage: cp <src> <dest>");
                 }
             }
+        } else if self.word_eq(word_start, word_end, "encrypt") {
+            let path_str = if rest_start < end {
+                let s = &self.buffer[rest_start..end];
+                let s = s.iter().collect::<alloc::string::String>();
+                self.resolve_path(&s)
+            } else {
+                println!("Usage: encrypt <file>");
+                return;
+            };
+            
+            let fs_lock = crate::fs::DISK_FS.lock();
+            if let Some(fs) = fs_lock.as_ref() {
+                match fs.resolve_path_ex(&self.cwd, &path_str, true) {
+                    Ok(inode) => {
+                         if let Ok(flags) = inode.control(1, 0) {
+                             if (flags & 1) != 0 {
+                                 println!("File '{}' is already encrypted.", path_str);
+                             } else {
+                                 match inode.control(2, flags | 1) {
+                                     Ok(_) => println!("File '{}' encrypted.", path_str),
+                                     Err(e) => println!("Failed to encrypt: {}", e),
+                                 }
+                             }
+                         } else {
+                             println!("Failed to get file flags.");
+                         }
+                    },
+                    Err(e) => println!("encrypt: {}: {}", path_str, e),
+                }
+            }
+        } else if self.word_eq(word_start, word_end, "decrypt") {
+            let path_str = if rest_start < end {
+                let s = &self.buffer[rest_start..end];
+                let s = s.iter().collect::<alloc::string::String>();
+                self.resolve_path(&s)
+            } else {
+                println!("Usage: decrypt <file>");
+                return;
+            };
+            
+            let fs_lock = crate::fs::DISK_FS.lock();
+            if let Some(fs) = fs_lock.as_ref() {
+                match fs.resolve_path_ex(&self.cwd, &path_str, true) {
+                    Ok(inode) => {
+                         if let Ok(flags) = inode.control(1, 0) {
+                             if (flags & 1) == 0 {
+                                 println!("File '{}' is not encrypted.", path_str);
+                             } else {
+                                 match inode.control(2, flags & !1) {
+                                     Ok(_) => println!("File '{}' decrypted.", path_str),
+                                     Err(e) => println!("Failed to decrypt: {}", e),
+                                 }
+                             }
+                         } else {
+                             println!("Failed to get file flags.");
+                         }
+                    },
+                    Err(e) => println!("decrypt: {}: {}", path_str, e),
+                }
+            }
+        } else if self.word_eq(word_start, word_end, "ln") {
+            let len = end - rest_start;
+            if len == 0 {
+                println!("Usage: ln [-s] <target> <link_name>");
+            } else {
+                let mut args_start = rest_start;
+                let mut is_symlink = false;
+                
+                // Check for -s
+                if end - rest_start >= 3 && self.buffer[rest_start] == '-' && self.buffer[rest_start+1] == 's' && self.buffer[rest_start+2] == ' ' {
+                    is_symlink = true;
+                    args_start += 3;
+                    while args_start < end && self.buffer[args_start] == ' ' {
+                        args_start += 1;
+                    }
+                }
+
+                let mut space_idx = None;
+                for i in args_start..end {
+                    if self.buffer[i] == ' ' {
+                        space_idx = Some(i);
+                        break;
+                    }
+                }
+
+                if let Some(sp) = space_idx {
+                     let target_s = &self.buffer[args_start..sp];
+                     let target_str = target_s.iter().collect::<alloc::string::String>();
+                     
+                     let mut link_start = sp + 1;
+                     while link_start < end && self.buffer[link_start] == ' ' {
+                         link_start += 1;
+                     }
+                     let link_s = &self.buffer[link_start..end];
+                     let link_str = link_s.iter().collect::<alloc::string::String>();
+                     
+                     let link_path = self.resolve_path(&link_str);
+                     
+                     let fs_lock = crate::fs::DISK_FS.lock();
+                     if let Some(fs) = fs_lock.as_ref() {
+                          if is_symlink {
+                               // Symlink creation
+                               let (parent_path, name) = if let Some(idx) = link_path.rfind('/') {
+                                    if idx == 0 { ("/", &link_path[1..]) }
+                                    else { (&link_path[..idx], &link_path[idx+1..]) }
+                               } else {
+                                   ("/", link_path.as_str())
+                               };
+                               
+                               if name.is_empty() {
+                                   println!("ln: Invalid link name");
+                               } else {
+                                   match crate::vfs::resolve_path(fs, &self.cwd, parent_path) {
+                                        Ok(parent) => {
+                                            match parent.create(name, crate::vfs::FileType::Symlink) {
+                                                Ok(inode) => {
+                                                    match inode.write_at(0, target_str.as_bytes()) {
+                                                        Ok(_) => println!("Created symbolic link '{}' -> '{}'", link_path, target_str),
+                                                        Err(e) => println!("ln: write failed: {}", e),
+                                                    }
+                                                },
+                                                Err(e) => println!("ln: create failed: {}", e),
+                                            }
+                                        },
+                                        Err(e) => println!("ln: parent {}: {}", parent_path, e),
+                                   }
+                               }
+                          } else {
+                              // Hard link creation
+                              let target_path = self.resolve_path(&target_str);
+                              match crate::vfs::resolve_path(fs, &self.cwd, &target_path) {
+                                  Ok(target_inode) => {
+                                       let (parent_path, name) = if let Some(idx) = link_path.rfind('/') {
+                                            if idx == 0 { ("/", &link_path[1..]) }
+                                            else { (&link_path[..idx], &link_path[idx+1..]) }
+                                       } else {
+                                           ("/", link_path.as_str())
+                                       };
+                                       
+                                       if name.is_empty() {
+                                           println!("ln: Invalid link name");
+                                       } else {
+                                           match crate::vfs::resolve_path(fs, &self.cwd, parent_path) {
+                                                Ok(parent) => {
+                                                    match parent.link(name, target_inode.as_ref()) {
+                                                        Ok(_) => println!("Created hard link '{}' => '{}'", link_path, target_path),
+                                                        Err(e) => println!("ln: failed to link: {}", e),
+                                                    }
+                                                },
+                                                Err(e) => println!("ln: parent {}: {}", parent_path, e),
+                                           }
+                                       }
+                                  },
+                                  Err(e) => println!("ln: target {}: {}", target_path, e),
+                              }
+                          }
+                     } else {
+                         println!("ln: Filesystem not mounted");
+                     }
+                } else {
+                    println!("Usage: ln [-s] <target> <link_name>");
+                }
+            }
+        } else if self.word_eq(word_start, word_end, "chmod") {
+            let len = end - rest_start;
+            if len == 0 {
+                println!("Usage: chmod <mode> <file>");
+            } else {
+                let mut space_idx = None;
+                for i in rest_start..end {
+                    if self.buffer[i] == ' ' {
+                        space_idx = Some(i);
+                        break;
+                    }
+                }
+                
+                if let Some(sp) = space_idx {
+                     let mode_s = &self.buffer[rest_start..sp];
+                     let mode_str = mode_s.iter().collect::<alloc::string::String>();
+                     
+                     let mut file_start = sp + 1;
+                     while file_start < end && self.buffer[file_start] == ' ' {
+                         file_start += 1;
+                     }
+                     let file_s = &self.buffer[file_start..end];
+                     let file_str = file_s.iter().collect::<alloc::string::String>();
+                     
+                     if let Ok(mode) = u16::from_str_radix(&mode_str, 8) {
+                         let path_str = self.resolve_path(&file_str);
+                         let fs_lock = crate::fs::DISK_FS.lock();
+                         if let Some(fs) = fs_lock.as_ref() {
+                              match crate::vfs::resolve_path(fs, &self.cwd, &path_str) {
+                                  Ok(inode) => {
+                                      match inode.control(4, mode as u64) {
+                                          Ok(_) => println!("Changed mode of '{}' to {:o}", path_str, mode),
+                                          Err(e) => println!("chmod: {}", e),
+                                      }
+                                  },
+                                  Err(e) => println!("chmod: {}: {}", path_str, e),
+                              }
+                         } else {
+                             println!("chmod: Filesystem not mounted");
+                         }
+                     } else {
+                         println!("chmod: Invalid mode (octal required)");
+                     }
+                } else {
+                    println!("Usage: chmod <mode> <file>");
+                }
+            }
+        } else if self.word_eq(word_start, word_end, "chown") {
+            let len = end - rest_start;
+            if len == 0 {
+                println!("Usage: chown <uid:gid> <file>");
+            } else {
+                let mut space_idx = None;
+                for i in rest_start..end {
+                    if self.buffer[i] == ' ' {
+                        space_idx = Some(i);
+                        break;
+                    }
+                }
+                
+                if let Some(sp) = space_idx {
+                     let owner_s = &self.buffer[rest_start..sp];
+                     let owner_str = owner_s.iter().collect::<alloc::string::String>();
+                     
+                     let mut file_start = sp + 1;
+                     while file_start < end && self.buffer[file_start] == ' ' {
+                         file_start += 1;
+                     }
+                     let file_s = &self.buffer[file_start..end];
+                     let file_str = file_s.iter().collect::<alloc::string::String>();
+                     
+                     let parts: alloc::vec::Vec<&str> = owner_str.split(':').collect();
+                     if parts.len() == 2 {
+                         if let (Ok(uid), Ok(gid)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                             let path_str = self.resolve_path(&file_str);
+                             let fs_lock = crate::fs::DISK_FS.lock();
+                             if let Some(fs) = fs_lock.as_ref() {
+                                  match crate::vfs::resolve_path(fs, &self.cwd, &path_str) {
+                                      Ok(inode) => {
+                                          let mut success = true;
+                                          if let Err(e) = inode.control(5, uid as u64) {
+                                              println!("chown: failed to set uid: {}", e);
+                                              success = false;
+                                          }
+                                          if success {
+                                              if let Err(e) = inode.control(6, gid as u64) {
+                                                  println!("chown: failed to set gid: {}", e);
+                                              } else {
+                                                  println!("Changed ownership of '{}' to {}:{}", path_str, uid, gid);
+                                              }
+                                          }
+                                      },
+                                      Err(e) => println!("chown: {}: {}", path_str, e),
+                                  }
+                             } else {
+                                 println!("chown: Filesystem not mounted");
+                             }
+                         } else {
+                             println!("chown: Invalid uid/gid");
+                         }
+                     } else {
+                         println!("chown: Invalid format (uid:gid required)");
+                     }
+                } else {
+                    println!("Usage: chown <uid:gid> <file>");
+                }
+            }
         } else if self.word_eq(word_start, word_end, "mv") {
             let len = end - rest_start;
             if len == 0 {
@@ -1193,36 +1723,59 @@ impl Shell {
                      let dest_str = dest_s.iter().collect::<alloc::string::String>();
                      
                      let src_path = self.resolve_path(&src_str);
-                     let dest_path = self.resolve_path(&dest_str);
+                     let mut dest_path = self.resolve_path(&dest_str);
                      
                      let fs_lock = crate::fs::DISK_FS.lock();
                      if let Some(fs) = fs_lock.as_ref() {
-                          match fs.read_file(&src_path) {
-                              Ok(data) => {
-                                  match fs.write_file(&dest_path, &data) {
-                                      Ok(_) => {
-                                           // Remove source
-                                           let (parent_path, name) = if let Some(idx) = src_path.rfind('/') {
-                                                if idx == 0 { ("/", &src_path[1..]) }
-                                                else { (&src_path[..idx], &src_path[idx+1..]) }
-                                            } else {
-                                                ("/", src_path.as_str())
-                                            };
-                                            
-                                            match crate::vfs::resolve_path(fs, &self.cwd, parent_path) {
-                                                Ok(parent) => {
-                                                    match parent.remove(name) {
-                                                        Ok(_) => println!("Moved '{}' to '{}'", src_path, dest_path),
-                                                        Err(e) => println!("mv: copied but failed to remove source: {}", e),
-                                                    }
-                                                },
-                                                Err(e) => println!("mv: copied but failed to resolve source parent: {}", e),
-                                            }
-                                      },
-                                      Err(e) => println!("mv: write error: {}", e),
-                                  }
-                              },
-                              Err(e) => println!("mv: read error: {}", e),
+                          // Check if dest is a directory
+                          let mut dest_is_dir = false;
+                          if let Ok(inode) = crate::vfs::resolve_path(fs, &self.cwd, &dest_path) {
+                               if let Ok(stat) = inode.metadata() {
+                                   if stat.file_type == crate::vfs::FileType::Directory {
+                                       dest_is_dir = true;
+                                   }
+                               }
+                          }
+
+                          if dest_is_dir {
+                               let src_name = if let Some(idx) = src_path.rfind('/') {
+                                   &src_path[idx+1..]
+                               } else {
+                                   &src_path
+                               };
+                               if !dest_path.ends_with('/') { dest_path.push('/'); }
+                               dest_path.push_str(src_name);
+                          }
+
+                          // Split paths
+                          let (src_parent_path, src_name) = if let Some(idx) = src_path.rfind('/') {
+                               if idx == 0 { ("/", &src_path[1..]) }
+                               else { (&src_path[..idx], &src_path[idx+1..]) }
+                          } else {
+                               (self.cwd.as_str(), src_path.as_str())
+                          };
+
+                          let (dest_parent_path, dest_name) = if let Some(idx) = dest_path.rfind('/') {
+                               if idx == 0 { ("/", &dest_path[1..]) }
+                               else { (&dest_path[..idx], &dest_path[idx+1..]) }
+                          } else {
+                               (self.cwd.as_str(), dest_path.as_str())
+                          };
+
+                          // Perform rename
+                          match crate::vfs::resolve_path(fs, &self.cwd, src_parent_path) {
+                               Ok(src_parent) => {
+                                   match crate::vfs::resolve_path(fs, &self.cwd, dest_parent_path) {
+                                       Ok(dest_parent) => {
+                                           match src_parent.rename(src_name, &dest_parent, dest_name) {
+                                               Ok(_) => println!("Renamed '{}' to '{}'", src_path, dest_path),
+                                               Err(e) => println!("mv: {}", e),
+                                           }
+                                       },
+                                       Err(e) => println!("mv: dest parent {}: {}", dest_parent_path, e),
+                                   }
+                               },
+                               Err(e) => println!("mv: src parent {}: {}", src_parent_path, e),
                           }
                      } else {
                          println!("mv: Filesystem not mounted");
@@ -1272,6 +1825,84 @@ impl Shell {
             }
         } else if self.word_eq(word_start, word_end, "pwd") {
             println!("{}", self.cwd);
+        } else if self.word_eq(word_start, word_end, "truncate") {
+            let len = end - rest_start;
+            if len == 0 {
+                println!("Usage: truncate <file> <size>");
+            } else {
+                let s = &self.buffer[rest_start..end];
+                let s_str = s.iter().collect::<alloc::string::String>();
+                let parts: alloc::vec::Vec<&str> = s_str.split_whitespace().collect();
+                
+                if parts.len() < 2 {
+                    println!("Usage: truncate <file> <size>");
+                } else {
+                    let filename = parts[0];
+                    let size_str = parts[1];
+                    let size = size_str.parse::<u64>().unwrap_or(0);
+                    
+                    let path_str = self.resolve_path(filename);
+                    
+                    let fs_lock = crate::fs::DISK_FS.lock();
+                    if let Some(fs) = fs_lock.as_ref() {
+                        match crate::vfs::resolve_path(fs, "/", &path_str) {
+                        Ok(inode) => {
+                            match inode.control(3, size) {
+                                Ok(_) => println!("Truncated '{}' to {} bytes.", path_str, size),
+                                Err(e) => println!("truncate: {}", e),
+                            }
+                        },
+                        Err(_) => {
+                             match fs.create_file(&path_str) {
+                                 Ok(inode) => {
+                                     match inode.control(3, size) {
+                                         Ok(_) => println!("Truncated '{}' to {} bytes.", path_str, size),
+                                         Err(e) => println!("truncate: {}", e),
+                                     }
+                                 },
+                                 Err(e) => println!("truncate: {}: {}", path_str, e),
+                             }
+                        }
+                    }
+                    } else {
+                        println!("truncate: Filesystem not mounted");
+                    }
+                }
+            }
+        } else if self.word_eq(word_start, word_end, "writetest") {
+            let len = end - rest_start;
+            let (filename, size_kb) = if len == 0 {
+                ("test.dat".to_string(), 100)
+            } else {
+                let s = &self.buffer[rest_start..end];
+                let s = s.iter().collect::<alloc::string::String>();
+                let parts: alloc::vec::Vec<&str> = s.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    (parts[0].to_string(), parts[1].parse::<usize>().unwrap_or(100))
+                } else if parts.len() == 1 {
+                    (parts[0].to_string(), 100)
+                } else {
+                    ("test.dat".to_string(), 100)
+                }
+            };
+            
+            let path_str = self.resolve_path(&filename);
+            println!("Writing {} KB to {}", size_kb, path_str);
+            
+            let mut data = alloc::vec::Vec::with_capacity(size_kb * 1024);
+            for i in 0..size_kb * 1024 {
+                data.push((i % 256) as u8);
+            }
+            
+            let fs_lock = crate::fs::DISK_FS.lock();
+            if let Some(fs) = fs_lock.as_ref() {
+                 match fs.write_file(&path_str, &data) {
+                     Ok(_) => println!("Write success"),
+                     Err(e) => println!("Write failed: {}", e),
+                 }
+            } else {
+                println!("writetest: Filesystem not mounted");
+            }
         } else if self.word_eq(word_start, word_end, "echo") {
             let mut redirect_idx = None;
             for i in rest_start..end {
@@ -1329,7 +1960,7 @@ impl Shell {
         }
     }
 
-    fn spawn_process(&mut self, name: &str, elf_data: &[u8], args: &[&str]) {
+    fn spawn_process(&mut self, name: &str, elf_data: &[u8], args: &[&str], env: &[&str]) {
         if self.boot_info.is_null() || self.allocator.is_null() || self.slots.is_null() || self.frame_allocator.is_null() {
             println!("spawn_process: unavailable");
             return;
@@ -1381,7 +2012,7 @@ impl Shell {
         println!("[RUN] Spawning process '{}' (PID {})...", name, pid);
 
         // 3. Spawn Process
-        match Process::spawn(alloc, slots, frame_alloc, bi, elf_data, args, 100, badged_ep_slot) {
+        match Process::spawn(alloc, slots, frame_alloc, bi, name, elf_data, args, env, 100, badged_ep_slot, 32, 0, 0) {
             Ok(process) => {
                     // 4. Add to Manager
                     if let Err(e) = pm.add_process(process) {

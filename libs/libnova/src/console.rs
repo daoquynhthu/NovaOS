@@ -1,6 +1,6 @@
 use core::fmt;
 use spin::Mutex;
-use crate::syscall::sys_write;
+use crate::syscall::sys_print;
 use sel4_sys::seL4_CPtr;
 
 static CONSOLE_EP: Mutex<Option<seL4_CPtr>> = Mutex::new(None);
@@ -54,7 +54,7 @@ pub struct UserConsole {
 
 impl fmt::Write for UserConsole {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        sys_write(self.ep, s);
+        sys_print(self.ep, s);
         Ok(())
     }
 }

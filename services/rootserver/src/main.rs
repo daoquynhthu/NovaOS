@@ -29,6 +29,7 @@ mod shared_memory;
 mod vfs;
 mod fs;
 mod services;
+mod crypto;
 
 use alloc::boxed::Box;
 use sel4_sys::{
@@ -204,7 +205,9 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     
     match crate::fs::novafs::NovaFS::new(ata.clone(), 0) {
         Ok(fs) => {
-             *crate::fs::DISK_FS.lock() = Some(alloc::sync::Arc::new(fs.clone()));
+             let fs_arc = alloc::sync::Arc::new(fs.clone());
+             *crate::fs::DISK_FS.lock() = Some(fs_arc.clone());
+             *crate::vfs::VFS.lock() = Some(fs_arc);
              if fs.root_inode().lookup("bin").is_err() {
                  println!("[KERNEL] /bin not found.");
                  need_format = true;
@@ -221,7 +224,9 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
          // Use detected size if valid, else default 5MB
          let format_size = if disk_size_sectors > 0 { disk_size_sectors } else { 1024 * 10 };
          let fs_new = crate::fs::novafs::NovaFS::format(ata.clone(), 0, format_size); 
-         *crate::fs::DISK_FS.lock() = Some(alloc::sync::Arc::new(fs_new.clone()));
+         let fs_arc = alloc::sync::Arc::new(fs_new.clone());
+         *crate::fs::DISK_FS.lock() = Some(fs_arc.clone());
+         *crate::vfs::VFS.lock() = Some(fs_arc);
          
          if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
              let root = fs.root_inode();
@@ -577,10 +582,15 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
         &mut slot_allocator,
         &mut frame_allocator,
         boot_info,
+        "hello",
         hello_elf,
         &[],
+        &[], // Env
         100, // Priority
-        badged_ep_slot // Give badged cap
+        badged_ep_slot, // Give badged cap
+        32, // ppid (No Parent)
+        0, // UID
+        0  // GID
     ).expect("Failed to spawn process");
     
     get_process_manager().add_process(process).expect("Failed to add process");
@@ -610,10 +620,15 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
         &mut slot_allocator,
         &mut frame_allocator,
         boot_info,
+        "hello2",
         hello_elf,
         &[], // No args
+        &[], // Env
         100, // Priority
-        badged_ep_slot_2
+        badged_ep_slot_2,
+        32, // ppid (No Parent)
+        0, // UID
+        0  // GID
     ).expect("Failed to spawn process 2");
     
     get_process_manager().add_process(process2).expect("Failed to add process 2");
@@ -760,7 +775,6 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                             println!("[KERNEL] Failed to Ack KB IRQ: {}", e);
                         } else {
                             println!("[KERNEL] Keyboard IRQ Configured.");
-                            shell.init(boot_info, &mut allocator, &mut slot_allocator, &mut frame_allocator, syscall_ep_cap);
                             driver_manager.register_irq_driver(1, Box::new(drivers::keyboard::Keyboard::new(irq_handler_cap)));
                         }
                     }
@@ -868,6 +882,9 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
 
     driver_manager.init_all();
 
+    // Initialize Shell (prints prompt)
+    shell.init(boot_info, &mut allocator, &mut slot_allocator, &mut frame_allocator, syscall_ep_cap);
+
     let syscall_ep = Endpoint::new(syscall_ep_cap);
 
     // Allocate slot for receiving caps during syscalls
@@ -947,7 +964,6 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                             }
                         }
                     },
-                    drivers::DriverEvent::None => {}
                 }
             }
             
@@ -965,36 +981,32 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
              let label = info.label();
 
             match label {
-                1 => { // sys_write (debug_print)
-                    let mut bytes = [0u8; 32];
-                    unsafe {
-                        let p = bytes.as_mut_ptr() as *mut u64;
-                        *p.add(0) = mrs[0];
-                        *p.add(1) = mrs[1];
-                        *p.add(2) = mrs[2];
-                        *p.add(3) = mrs[3];
+                1 => { // sys_print
+                    let len = info.length();
+                    for i in 0..len {
+                        let word = mrs[i as usize];
+                        let bytes = word.to_le_bytes();
+                        for b in bytes {
+                            if b != 0 {
+                                print!("{}", b as char);
+                            }
+                        }
                     }
-                    for &b in bytes.iter() {
-                        if b == 0 { break; }
-                        print!("{}", b as char);
-                    }
-                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0);
                     need_reply = true;
                 }
                 2 => { // sys_exit
                     println!("[INFO] Process {} exited with code: {}", pid, mrs[0]);
                     
-                    // Check if the test process (PID 0) exited successfully
                     if pid == 0 && mrs[0] == 0 {
                         println!("[TEST] PASSED");
                     }
 
-                    if let Some(p) = get_process_manager().get_process_mut(pid) {
-                         let cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-                         let _ = p.terminate(cnode, &mut slot_allocator, &mut frame_allocator);
+                    let cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+                    if let Err(e) = get_process_manager().exit_process(pid, mrs[0] as isize, cnode, &mut slot_allocator, &mut frame_allocator) {
+                        println!("[KERNEL] Failed to exit process {}: {:?}", pid, e);
+                        get_process_manager().remove_process(pid);
                     }
-                    // Remove process from manager
-                    get_process_manager().remove_process(pid);
                     
                     need_reply = false; 
                 }
@@ -1033,6 +1045,410 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0);
                     need_reply = true;
                 }
+                7 => { // sys_waitpid(pid, options) -> (pid, status)
+                    let target_pid = mrs[0] as isize;
+                    let options = mrs[1] as usize; // 1 = WNOHANG
+                    
+                    let mut pm = get_process_manager();
+                    match pm.wait_for_child(pid, target_pid) {
+                        Ok(Some((child_pid, status))) => {
+                            reply_mrs[0] = child_pid as u64;
+                            reply_mrs[1] = status as u64;
+                            reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 2);
+                            need_reply = true;
+                        },
+                        Ok(None) => {
+                            if (options & 1) != 0 { // WNOHANG
+                                reply_mrs[0] = 0;
+                                reply_mrs[1] = 0;
+                                reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 2);
+                                need_reply = true;
+                            } else {
+                                // Blocked - wait for child
+                                if let Some(p) = pm.get_process_mut(pid) {
+                                    p.state = crate::process::ProcessState::BlockedOnWait;
+                                    p.waiting_for_child = if target_pid > 0 { Some(target_pid as usize) } else { None };
+                                    
+                                    let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+                                    if let Err(e) = p.save_caller(root_cnode, &mut slot_allocator) {
+                                        println!("[KERNEL] Failed to save caller for sys_wait: {:?}", e);
+                                        reply_mrs[0] = (-1i64) as u64; // Error
+                                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                                        need_reply = true;
+                                    } else {
+                                        need_reply = false;
+                                    }
+                                } else {
+                                    // Should not happen
+                                    reply_mrs[0] = (-1i64) as u64;
+                                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                                    need_reply = true;
+                                }
+                            }
+                        },
+                        Err(_) => {
+                            reply_mrs[0] = (-1i64) as u64; // Error
+                            reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                            need_reply = true;
+                        }
+                    }
+                }
+                8 => { // sys_spawn(path, args, envs)
+                    let path_len = mrs[0] as usize;
+                    let args_count = mrs[1] as usize;
+                    let envs_count = mrs[2] as usize;
+
+                    // Validation to prevent panic on huge allocations
+                    if path_len > 4096 {
+                        println!("[KERNEL] sys_spawn: Path too long ({}). Aborting.", path_len);
+                        reply_mrs[0] = usize::MAX as u64;
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                        need_reply = true;
+                        continue;
+                    }
+                    if args_count > 256 {
+                         println!("[KERNEL] sys_spawn: Too many args ({}). Aborting.", args_count);
+                         reply_mrs[0] = usize::MAX as u64;
+                         reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                         need_reply = true;
+                         continue;
+                    }
+                     if envs_count > 256 {
+                         println!("[KERNEL] sys_spawn: Too many envs ({}). Aborting.", envs_count);
+                         reply_mrs[0] = usize::MAX as u64;
+                         reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                         need_reply = true;
+                         continue;
+                    }
+                    
+                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                    
+                    // Data starts at MR3 (Word 3)
+                    let mut current_mr = 3;
+                    
+                    // Helper to read bytes from MRs
+                    let read_bytes = |len: usize, start_mr: &mut usize| -> Option<alloc::vec::Vec<u8>> {
+                        if len > 4096 { return None; } // Safety check
+                        let mut bytes = alloc::vec![0u8; len];
+                        for i in 0..len {
+                            let word_idx = *start_mr + (i / 8);
+                            let byte_idx = i % 8;
+                            let word = ipc_buf.msg[word_idx];
+                            bytes[i] = ((word >> (byte_idx * 8)) & 0xFF) as u8;
+                        }
+                        *start_mr += (len + 7) / 8;
+                        Some(bytes)
+                    };
+                    
+                    let path_bytes = match read_bytes(path_len, &mut current_mr) {
+                        Some(b) => b,
+                        None => {
+                            println!("[KERNEL] sys_spawn: Path too long during read.");
+                             reply_mrs[0] = usize::MAX as u64;
+                             reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                             need_reply = true;
+                             continue;
+                        }
+                    };
+                    let path = alloc::string::String::from(core::str::from_utf8(&path_bytes).unwrap_or(""));
+                    
+                    let mut args_strings = alloc::vec::Vec::new();
+                    let mut args_fail = false;
+                    for _ in 0..args_count {
+                        let len_word = ipc_buf.msg[current_mr];
+                        let arg_len = len_word as usize;
+                        current_mr += 1;
+                        
+                        match read_bytes(arg_len, &mut current_mr) {
+                            Some(arg_bytes) => args_strings.push(alloc::string::String::from_utf8(arg_bytes).unwrap_or_default()),
+                            None => { args_fail = true; break; }
+                        }
+                    }
+                    if args_fail {
+                        println!("[KERNEL] sys_spawn: Arg too long.");
+                        reply_mrs[0] = usize::MAX as u64;
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                        need_reply = true;
+                        continue;
+                    }
+                    
+                    let args_refs: alloc::vec::Vec<&str> = args_strings.iter().map(|s| s.as_str()).collect();
+
+                    let mut envs_strings = alloc::vec::Vec::new();
+                    let mut envs_fail = false;
+                    for _ in 0..envs_count {
+                        let len_word = ipc_buf.msg[current_mr];
+                        let env_len = len_word as usize;
+                        current_mr += 1;
+                        
+                        match read_bytes(env_len, &mut current_mr) {
+                            Some(env_bytes) => envs_strings.push(alloc::string::String::from_utf8(env_bytes).unwrap_or_default()),
+                            None => { envs_fail = true; break; }
+                        }
+                    }
+                    if envs_fail {
+                        println!("[KERNEL] sys_spawn: Env too long.");
+                        reply_mrs[0] = usize::MAX as u64;
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                        need_reply = true;
+                        continue;
+                    }
+                    
+                    let envs_refs: alloc::vec::Vec<&str> = envs_strings.iter().map(|s| s.as_str()).collect();
+
+                    println!("[KERNEL] sys_spawn: Request to spawn '{}' from PID {} with args {:?} envs {:?}", path, pid, args_refs, envs_refs);
+                    
+                    let mut success_pid = -1isize;
+
+                    // Get caller's UID/GID
+                    let mut caller_uid = 0;
+                    let mut caller_gid = 0;
+                    if let Some(p) = get_process_manager().get_process(pid) {
+                        caller_uid = p.uid;
+                        caller_gid = p.gid;
+                    }
+                    
+                    // Scope to limit borrow of FS
+                    let file_data = if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                        if let Ok(inode) = crate::vfs::resolve_path(fs, "/", &path) {
+                            // Check Read (4) and Execute (1) Permission
+                            if !crate::vfs::check_permission(&inode, caller_uid, caller_gid, 5) {
+                                println!("[KERNEL] sys_spawn: Permission denied for '{}'", path);
+                                None
+                            } else {
+                                let size = inode.metadata().map(|m| m.size).unwrap_or(0);
+                                // Limit max binary size (e.g. 1MB) to prevent OOM
+                                if size > 1024 * 1024 {
+                                    println!("[KERNEL] sys_spawn: File too large ({} bytes)", size);
+                                    None
+                                } else {
+                                    let mut buf = alloc::vec![0u8; size as usize];
+                                    if inode.read_at(0, &mut buf).is_ok() {
+                                        Some(buf)
+                                    } else {
+                                        println!("[KERNEL] sys_spawn: Failed to read file");
+                                        None
+                                    }
+                                }
+                            }
+                        } else {
+                            println!("[KERNEL] sys_spawn: File not found: {}", path);
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    if let Some(data) = file_data {
+                         // Allocate badged endpoint
+                         if let Ok(badged_ep_slot) = slot_allocator.alloc() {
+                             // We need to know the new PID *before* minting if we want Badge=PID+100
+                             // Lock PM to peek PID
+                             let new_pid = get_process_manager().allocate_pid().unwrap_or(999);
+                             
+                             if new_pid != 999 {
+                                 let badge = new_pid + 100;
+                                 let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+                                 let cnode_depth = sel4_sys::seL4_WordBits;
+                                 
+                                 let err = unsafe {
+                                    sel4_sys::seL4_CNode_Mint(
+                                        root_cnode,
+                                        badged_ep_slot,
+                                        cnode_depth as u8,
+                                        root_cnode,
+                                        syscall_ep_cap,
+                                        cnode_depth as u8,
+                                        cap_rights_new(false, true, true, true),
+                                        badge as u64
+                                    )
+                                };
+                                
+                                if err == 0.into() {
+                                    match Process::spawn(
+                                        &mut allocator,
+                                        &mut slot_allocator,
+                                        &mut frame_allocator,
+                                        boot_info,
+                                        &path,
+                                        &data,
+                                        &args_refs, // Pass args
+                                        &envs_refs, // Pass envs
+                                        100, // Priority
+                                        badged_ep_slot,
+                                        pid, // Parent is the caller
+                                        caller_uid,
+                                        caller_gid
+                                    ) {
+                                        Ok(p) => {
+                                            if get_process_manager().add_process(p).is_ok() {
+                                                success_pid = new_pid as isize;
+                                                println!("[KERNEL] Spawned process {} (PID {})", path, new_pid);
+                                            } else {
+                                                println!("[KERNEL] Failed to add process to manager");
+                                                // Cleanup slot?
+                                            }
+                                        },
+                                        Err(e) => {
+                                            println!("[KERNEL] Process::spawn failed: {:?}", e);
+                                        }
+                                    }
+                                } else {
+                                    println!("[KERNEL] Failed to mint endpoint for new process");
+                                }
+                             } else {
+                                 println!("[KERNEL] No PID available");
+                             }
+                         } else {
+                             println!("[KERNEL] No slots available");
+                         }
+                    }
+                    
+                    reply_mrs[0] = success_pid as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                9 => { // sys_get_pid() -> pid
+                    reply_mrs[0] = pid as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                15 => { // sys_kill(pid, sig)
+                    let target_pid = mrs[0] as usize;
+                    let sig = mrs[1] as usize;
+                    
+                    // Only simulate SIGKILL (9) or SIGTERM (15) for now
+                    if sig == 9 || sig == 15 {
+                         let cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+                         let mut pm = get_process_manager();
+                         
+                         let allowed = if let Some(caller) = pm.get_process(pid) {
+                             if let Some(target) = pm.get_process(target_pid) {
+                                 caller.can_control(target)
+                             } else {
+                                 true // Target doesn't exist, exit_process will fail gracefully
+                             }
+                         } else {
+                             false // Caller doesn't exist? Should not happen
+                         };
+
+                         if allowed {
+                             if let Err(e) = pm.exit_process(target_pid, -1, cnode, &mut slot_allocator, &mut frame_allocator) {
+                                 println!("[KERNEL] sys_kill: Failed to kill {}: {:?}", target_pid, e);
+                                 reply_mrs[0] = (-1i64) as u64;
+                             } else {
+                                 reply_mrs[0] = 0;
+                             }
+                         } else {
+                             println!("[KERNEL] sys_kill: Permission denied. PID {} cannot kill PID {}", pid, target_pid);
+                             reply_mrs[0] = (-1i64) as u64;
+                         }
+                    } else {
+                         reply_mrs[0] = (-1i64) as u64;
+                    }
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                22 => { // sys_write(fd, len, data...) -> bytes_written
+                    let fd = mrs[0] as usize;
+                    let len = mrs[1] as usize;
+                    
+                    let mut bytes_written = 0;
+                    let mut error_code = 0;
+
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                        if fd < p.fds.len() {
+                            if let Some(desc) = &mut p.fds[fd] {
+                                if desc.mode != crate::process::FileMode::ReadOnly {
+                                    if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                                        if let Ok(inode) = crate::vfs::resolve_path(fs, "/", &desc.path) {
+                                            // Check Write Permission (2)
+                                            if crate::vfs::check_permission(&inode, p.uid, p.gid, 2) {
+                                                // Unpack data from IPC buffer
+                                                let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                                                let mut data = alloc::vec![0u8; len];
+                                                
+                                                // Data starts at MR2
+                                                // MR0=fd, MR1=len. So offset is 2 words.
+                                                // But wait, are we using recv_with_mrs? 
+                                                // Yes, mrs[0] is MR0, mrs[1] is MR1.
+                                                // But the IPC buffer *also* contains them.
+                                                // The kernel (seL4) puts MRs in registers (first 4) and the rest in IPC buffer.
+                                                // RecvWithMRs usually gives us the first few.
+                                                // If len is large, data will be in IPC buffer.
+                                                
+                                                // Actually, seL4_Recv puts *all* MRs in the IPC buffer (except maybe the ones in regs, but they are mirrored or we can access them).
+                                                // Wait, standard seL4_Recv puts everything in IPC buffer.
+                                                // recv_with_mrs helper might just return array of first 4.
+                                                // Let's look at how sys_spawn did it.
+                                                // sys_spawn used `ipc_buf.msg[word_idx]`.
+                                                // Data starts at MR2
+                                                
+                                                let current_word_idx = 2; // MR2
+                                                for i in 0..len {
+                                                    let word = ipc_buf.msg[current_word_idx + (i / 8)];
+                                                    let byte_idx = i % 8;
+                                                    data[i] = ((word >> (byte_idx * 8)) & 0xFF) as u8;
+                                                }
+                                                
+                                                // Handle Append Mode
+                                                if desc.mode == crate::process::FileMode::Append {
+                                                    if let Ok(meta) = inode.metadata() {
+                                                        desc.offset = meta.size as usize;
+                                                    }
+                                                }
+
+                                                match inode.write_at(desc.offset, &data) {
+                                                    Ok(n) => {
+                                                        desc.offset += n;
+                                                        bytes_written = n;
+                                                    },
+                                                    Err(e) => {
+                                                        println!("[KERNEL] sys_write: Write failed: {:?}", e);
+                                                        error_code = 1; // EIO
+                                                    }
+                                                }
+                                            } else {
+                                                println!("[KERNEL] sys_write: Permission denied for '{}'", desc.path);
+                                                error_code = 1; // EPERM
+                                            }
+                                        }
+                                    }
+                                } else {
+                                     println!("[KERNEL] sys_write: Bad mode (ReadOnly)");
+                                     error_code = 1; // EBADF
+                                }
+                            } else {
+                                 error_code = 1; // EBADF
+                            }
+                        } else {
+                             error_code = 1; // EBADF
+                        }
+                    }
+
+                    if error_code != 0 {
+                        reply_mrs[0] = (-1i64) as u64;
+                    } else {
+                        reply_mrs[0] = bytes_written as u64;
+                    }
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                23 => { // sys_close(fd)
+                    let fd = mrs[0] as usize;
+                    let mut res = -1i64;
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                        if fd < p.fds.len() {
+                            if p.fds[fd].is_some() {
+                                p.fds[fd] = None;
+                                res = 0;
+                            }
+                        }
+                    }
+                    reply_mrs[0] = res as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
                 20 => { // sys_open(path, mode) -> fd
                     let path_len = mrs[0] as usize;
                     let mode = match mrs[1] {
@@ -1051,46 +1467,87 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     let path_bytes = unsafe { core::slice::from_raw_parts((ipc_buf.msg.as_ptr() as *const u8).add(offset), safe_len) };
                     let path = alloc::string::String::from(core::str::from_utf8(path_bytes).unwrap_or(""));
 
-                    // Auto-create file if it doesn't exist and we are writing
-                    if mode != crate::process::FileMode::ReadOnly {
-                        if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
-                            if crate::vfs::resolve_path(fs, "/", &path).is_err() {
-                                // File missing, try to create
-                                let res = if let Some(idx) = path.rfind('/') {
-                                    let (parent_path, name) = path.split_at(idx);
-                                    let name = &name[1..];
-                                    let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
-                                    
-                                    match crate::vfs::resolve_path(fs, "/", parent_path) {
-                                        Ok(parent) => parent.create(name, crate::vfs::FileType::File).map(|_| ()),
-                                        Err(e) => Err(e),
-                                    }
-                                } else {
-                                    fs.root_inode().create(&path, crate::vfs::FileType::File).map(|_| ())
+                    let mut success = false;
+                    let mut caller_uid = 0;
+                    let mut caller_gid = 0;
+
+                    if let Some(p) = get_process_manager().get_process(pid) {
+                        caller_uid = p.uid;
+                        caller_gid = p.gid;
+                    }
+
+                    if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                        match crate::vfs::resolve_path(fs, "/", &path) {
+                            Ok(inode) => {
+                                // File exists, check permissions
+                                let access_mask = match mode {
+                                    crate::process::FileMode::ReadOnly => 4, // Read
+                                    crate::process::FileMode::WriteOnly => 2, // Write
+                                    crate::process::FileMode::ReadWrite => 6, // Read + Write
+                                    crate::process::FileMode::Append => 2, // Write
                                 };
                                 
-                                match res {
-                                    Ok(_) => println!("[KERNEL] sys_open: Created new file '{}'", path),
-                                    Err(e) => println!("[KERNEL] sys_open: Failed to create '{}': {}", path, e),
+                                if crate::vfs::check_permission(&inode, caller_uid, caller_gid, access_mask) {
+                                    success = true;
+                                } else {
+                                    println!("[KERNEL] sys_open: Permission denied for '{}'", path);
+                                }
+                            },
+                            Err(_) => {
+                                // File missing
+                                if mode != crate::process::FileMode::ReadOnly {
+                                    // Try to create, check parent permission
+                                    let parent_res = if let Some(idx) = path.rfind('/') {
+                                        let (parent_path, name) = path.split_at(idx);
+                                        let name = &name[1..];
+                                        let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
+                                        
+                                        match crate::vfs::resolve_path(fs, "/", parent_path) {
+                                            Ok(parent) => Some((parent, name)),
+                                            Err(_) => None,
+                                        }
+                                    } else {
+                                        Some((fs.root_inode(), path.as_str()))
+                                    };
+
+                                    if let Some((parent, name)) = parent_res {
+                                        // Check Write (2) on parent
+                                        if crate::vfs::check_permission(&parent, caller_uid, caller_gid, 2) {
+                                            if let Ok(_) = parent.create(name, crate::vfs::FileType::File) {
+                                                println!("[KERNEL] sys_open: Created new file '{}'", path);
+                                                success = true;
+                                            } else {
+                                                println!("[KERNEL] sys_open: Failed to create '{}'", path);
+                                            }
+                                        } else {
+                                            println!("[KERNEL] sys_open: Permission denied to create in parent of '{}'", path);
+                                        }
+                                    } else {
+                                        println!("[KERNEL] sys_open: Parent directory not found for '{}'", path);
+                                    }
+                                } else {
+                                    println!("[KERNEL] sys_open: File not found '{}'", path);
                                 }
                             }
                         }
                     }
 
                     let mut fd_idx = -1isize;
-                    if let Some(p) = get_process_manager().get_process_mut(pid) {
-                        if p.fds.len() < crate::process::MAX_FDS {
-                            p.fds.resize(crate::process::MAX_FDS, None);
-                        }
-                        for (i, slot) in p.fds.iter_mut().enumerate() {
-                            if slot.is_none() {
-                                *slot = Some(crate::process::FileDescriptor {
-                                    path,
-                                    offset: 0,
-                                    mode,
-                                });
-                                fd_idx = i as isize;
-                                break;
+                    if success {
+                        if let Some(p) = get_process_manager().get_process_mut(pid) {
+                            if p.fds.len() < crate::process::MAX_FDS {
+                                p.fds.resize(crate::process::MAX_FDS, None);
+                            }
+                            for (i, slot) in p.fds.iter_mut().enumerate() {
+                                if slot.is_none() {
+                                    *slot = Some(crate::process::FileDescriptor {
+                                        path,
+                                        offset: 0,
+                                        mode,
+                                    });
+                                    fd_idx = i as isize;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -1105,22 +1562,30 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     let read_len = if len > 900 { 900 } else { len };
                     
                     let mut bytes_read = 0;
+                    let mut error_code = 0;
+
                     if let Some(p) = get_process_manager().get_process_mut(pid) {
                         if fd < p.fds.len() {
                             if let Some(desc) = &mut p.fds[fd] {
                                 if desc.mode != crate::process::FileMode::WriteOnly {
                                     if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
                                         if let Ok(inode) = crate::vfs::resolve_path(fs, "/", &desc.path) {
-                                            let mut buf = alloc::vec![0u8; read_len];
-                                            if let Ok(n) = inode.read_at(desc.offset, &mut buf) {
-                                                desc.offset += n;
-                                                bytes_read = n;
-                                                // Copy to IPC Buffer
-                                                let ipc_buf = unsafe { &mut *sel4_sys::seL4_GetIPCBuffer() };
-                                                // Offset for MR0
-                                                let offset = core::mem::size_of::<seL4_Word>();
-                                                let msg_bytes = unsafe { core::slice::from_raw_parts_mut((ipc_buf.msg.as_mut_ptr() as *mut u8).add(offset), n) };
-                                                msg_bytes.copy_from_slice(&buf[..n]);
+                                            // Check Read Permission (4)
+                                            if crate::vfs::check_permission(&inode, p.uid, p.gid, 4) {
+                                                let mut buf = alloc::vec![0u8; read_len];
+                                                if let Ok(n) = inode.read_at(desc.offset, &mut buf) {
+                                                    desc.offset += n;
+                                                    bytes_read = n;
+                                                    // Copy to IPC Buffer
+                                                    let ipc_buf = unsafe { &mut *sel4_sys::seL4_GetIPCBuffer() };
+                                                    // Offset for MR0
+                                                    let offset = core::mem::size_of::<seL4_Word>();
+                                                    let msg_bytes = unsafe { core::slice::from_raw_parts_mut((ipc_buf.msg.as_mut_ptr() as *mut u8).add(offset), n) };
+                                                    msg_bytes.copy_from_slice(&buf[..n]);
+                                                }
+                                            } else {
+                                                println!("[KERNEL] sys_read: Permission denied for '{}'", desc.path);
+                                                error_code = 1; // EPERM
                                             }
                                         }
                                     }
@@ -1129,63 +1594,425 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         }
                     }
                     
-                    // Calculate message length in words
-                    // Data words + 1 MR word
-                    let data_words = (bytes_read + 7) / 8;
-                    reply_mrs[0] = bytes_read as u64;
-                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1 + data_words as u64); // 1 MR (len) + Data
+                    if error_code != 0 {
+                        reply_mrs[0] = (-1i64) as u64;
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    } else {
+                        // Calculate message length in words
+                        // Data words + 1 MR word
+                        let data_words = (bytes_read + 7) / 8;
+                        reply_mrs[0] = bytes_read as u64;
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1 + data_words as u64); // 1 MR (len) + Data
+                    }
                     need_reply = true;
                     manual_reply = true;
                 }
-                22 => { // sys_write(fd, len) -> bytes_written
-                    let fd = mrs[0] as usize;
-                    let len = mrs[1] as usize;
-                    let write_len = if len > 900 { 900 } else { len };
-                    
-                    let mut bytes_written = 0;
+                28 => { // sys_getuid()
+                    if let Some(p) = get_process_manager().get_process(pid) {
+                        reply_mrs[0] = p.uid as u64;
+                    } else {
+                        reply_mrs[0] = 0;
+                    }
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                29 => { // sys_setuid(uid)
+                    let new_uid = mrs[0] as u32;
+                    let mut res = -1i64;
                     if let Some(p) = get_process_manager().get_process_mut(pid) {
-                         if fd < p.fds.len() {
-                            if let Some(desc) = &mut p.fds[fd] {
-                                if desc.mode != crate::process::FileMode::ReadOnly {
-                                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
-                                    // Offset for MR0, MR1
-                                    let offset = 2 * core::mem::size_of::<seL4_Word>();
-                                    let data = unsafe { core::slice::from_raw_parts((ipc_buf.msg.as_ptr() as *const u8).add(offset), write_len) };
-                                    
-                                    if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
-                                         // For write, we might need to create file if not exists?
-                                         // Or sys_open should handle creation?
-                                         // Assuming file exists or created by sys_open (if we add O_CREAT).
-                                         // For now, assume simple write to existing inode.
-                                         match crate::vfs::resolve_path(fs, "/", &desc.path) {
-                                             Ok(inode) => {
-                                                 match inode.write_at(desc.offset, data) {
-                                                     Ok(n) => {
-                                                         desc.offset += n;
-                                                         bytes_written = n;
-                                                     },
-                                                     Err(e) => println!("[KERNEL] sys_write: write_at failed: {}", e),
-                                                 }
-                                             },
-                                             Err(e) => println!("[KERNEL] sys_write: resolve_path failed for '{}': {}", desc.path, e),
-                                         }
+                        if p.uid == 0 {
+                            p.uid = new_uid;
+                            res = 0;
+                        }
+                    }
+                    reply_mrs[0] = res as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                32 => { // sys_getgid()
+                    if let Some(p) = get_process_manager().get_process(pid) {
+                        reply_mrs[0] = p.gid as u64;
+                    } else {
+                        reply_mrs[0] = 0;
+                    }
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                33 => { // sys_setgid(gid)
+                    let new_gid = mrs[0] as u32;
+                    let mut res = -1i64;
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                        if p.uid == 0 {
+                            p.gid = new_gid;
+                            res = 0;
+                        }
+                    }
+                    reply_mrs[0] = res as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                24 => { // sys_chmod(path, mode)
+                    let path_len = mrs[0] as usize;
+                    let mode = mrs[1] as u16;
+                    
+                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                    let offset = 2 * core::mem::size_of::<seL4_Word>();
+                    let safe_len = if path_len > 256 { 256 } else { path_len };
+                    let path_bytes = unsafe { core::slice::from_raw_parts((ipc_buf.msg.as_ptr() as *const u8).add(offset), safe_len) };
+                    let path = alloc::string::String::from(core::str::from_utf8(path_bytes).unwrap_or(""));
+                    
+                    let mut res = -1i64;
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                        if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                            if let Ok(inode) = crate::vfs::resolve_path(fs, "/", &path) {
+                                // Only owner or root can chmod
+                                let is_owner = if let Ok(stat) = inode.metadata() {
+                                    p.uid == 0 || stat.uid == p.uid
+                                } else { false };
+                                
+                                if is_owner {
+                                    if inode.control(4, mode as u64).is_ok() {
+                                        res = 0;
                                     }
+                                }
+                            }
+                        }
+                    }
+                    reply_mrs[0] = res as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                25 => { // sys_chown(path, uid, gid)
+                    let path_len = mrs[0] as usize;
+                    let uid = mrs[1] as u32;
+                    let gid = mrs[2] as u32;
+                    
+                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                    let offset = 3 * core::mem::size_of::<seL4_Word>();
+                    let safe_len = if path_len > 256 { 256 } else { path_len };
+                    let path_bytes = unsafe { core::slice::from_raw_parts((ipc_buf.msg.as_ptr() as *const u8).add(offset), safe_len) };
+                    let path = alloc::string::String::from(core::str::from_utf8(path_bytes).unwrap_or(""));
+                    
+                    let mut res = -1i64;
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                         // Only root can chown (usually)
+                         if p.uid == 0 {
+                            if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                                if let Ok(inode) = crate::vfs::resolve_path(fs, "/", &path) {
+                                    let mut ok = true;
+                                    if inode.control(5, uid as u64).is_err() { ok = false; }
+                                    if inode.control(6, gid as u64).is_err() { ok = false; }
+                                    if ok { res = 0; }
                                 }
                             }
                          }
                     }
-                    reply_mrs[0] = bytes_written as u64;
+                    reply_mrs[0] = res as u64;
                     reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                     need_reply = true;
                 }
-                23 => { // sys_close(fd)
-                    let fd = mrs[0] as usize;
+                26 => { // sys_symlink(target, linkpath)
+                    let target_len = mrs[0] as usize;
+                    let link_len = mrs[1] as usize;
+                    
+                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                    let offset = 2 * core::mem::size_of::<seL4_Word>();
+                    let base_ptr = (ipc_buf.msg.as_ptr() as *const u8).add(offset);
+                    
+                    let safe_target_len = if target_len > 256 { 256 } else { target_len };
+                    let safe_link_len = if link_len > 256 { 256 } else { link_len };
+                    
+                    let target_bytes = unsafe { core::slice::from_raw_parts(base_ptr, safe_target_len) };
+                    let target = alloc::string::String::from(core::str::from_utf8(target_bytes).unwrap_or(""));
+                    
+                    let link_bytes = unsafe { core::slice::from_raw_parts(base_ptr.add(target_len), safe_link_len) };
+                    let linkpath = alloc::string::String::from(core::str::from_utf8(link_bytes).unwrap_or(""));
+                    
+                    let mut res = -1i64;
                     if let Some(p) = get_process_manager().get_process_mut(pid) {
-                        if fd < p.fds.len() {
-                            p.fds[fd] = None;
+                        if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                             if let Some(idx) = linkpath.rfind('/') {
+                                let (parent_path, name) = linkpath.split_at(idx);
+                                let name = &name[1..];
+                                let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
+                                
+                                if let Ok(parent) = crate::vfs::resolve_path(fs, "/", parent_path) {
+                                    if crate::vfs::check_permission(&parent, p.uid, p.gid, 2) {
+                                        match parent.create(name, crate::vfs::FileType::Symlink) {
+                                            Ok(inode) => {
+                                                if let Err(e) = inode.write_at(0, target.as_bytes()) {
+                                                     println!("[KERNEL] sys_symlink: write failed: {}", e);
+                                                } else {
+                                                    res = 0;
+                                                }
+                                            },
+                                            Err(e) => println!("[KERNEL] sys_symlink: create failed: {}", e),
+                                        }
+                                    } else {
+                                        println!("[KERNEL] sys_symlink: Permission denied for parent '{}'", parent_path);
+                                    }
+                                }
+                             }
                         }
                     }
-                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0);
+                    reply_mrs[0] = res as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                27 => { // sys_readlink(path, buf_len)
+                    let path_len = mrs[0] as usize;
+                    let buf_len = mrs[1] as usize;
+                    let read_len = if buf_len > 900 { 900 } else { buf_len };
+
+                    let ipc_buf = unsafe { &mut *sel4_sys::seL4_GetIPCBuffer() };
+                    let offset = 2 * core::mem::size_of::<seL4_Word>();
+                    let safe_len = if path_len > 256 { 256 } else { path_len };
+                    let path_bytes = unsafe { core::slice::from_raw_parts((ipc_buf.msg.as_ptr() as *const u8).add(offset), safe_len) };
+                    let path = alloc::string::String::from(core::str::from_utf8(path_bytes).unwrap_or(""));
+
+                    let mut bytes_read = 0;
+                    let mut error_code = 0;
+
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                        if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                            match fs.resolve_path_ex("/", &path, false) {
+                                 Ok(inode) => {
+                                     if crate::vfs::check_permission(&inode, p.uid, p.gid, 4) {
+                                         if let Ok(meta) = inode.metadata() {
+                                             if meta.file_type == crate::vfs::FileType::Symlink {
+                                                  let mut buf = alloc::vec![0u8; read_len];
+                                                  if let Ok(n) = inode.read_at(0, &mut buf) {
+                                                       let data_offset = core::mem::size_of::<seL4_Word>();
+                                                       let msg_bytes = unsafe { core::slice::from_raw_parts_mut((ipc_buf.msg.as_mut_ptr() as *mut u8).add(data_offset), n) };
+                                                       msg_bytes.copy_from_slice(&buf[..n]);
+                                                       bytes_read = n;
+                                                  }
+                                             } else {
+                                                 println!("[KERNEL] sys_readlink: Not a symlink: '{}'", path);
+                                                 error_code = 1;
+                                             }
+                                         }
+                                     } else {
+                                         println!("[KERNEL] sys_readlink: Permission denied for '{}'", path);
+                                         error_code = 1;
+                                     }
+                                 },
+                                 Err(e) => {
+                                     println!("[KERNEL] sys_readlink: resolve_path failed for '{}': {}", path, e);
+                                     error_code = 1;
+                                 }
+                            }
+                        }
+                    }
+
+                    if error_code != 0 {
+                        reply_mrs[0] = (-1i64) as u64;
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    } else {
+                        let data_words = (bytes_read + 7) / 8;
+                        reply_mrs[0] = bytes_read as u64;
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1 + data_words as u64);
+                    }
+                    need_reply = true;
+                    manual_reply = true;
+                }
+                34 => { // sys_mkdir(path, mode)
+                    let path_len = mrs[0] as usize;
+                    let _mode = mrs[1] as usize; // Ignored for now
+                    
+                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                    let offset = 2 * core::mem::size_of::<seL4_Word>();
+                    let safe_len = if path_len > 256 { 256 } else { path_len };
+                    let path_bytes = unsafe { core::slice::from_raw_parts((ipc_buf.msg.as_ptr() as *const u8).add(offset), safe_len) };
+                    let path = alloc::string::String::from(core::str::from_utf8(path_bytes).unwrap_or(""));
+
+                    let mut res = -1i64;
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                         if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                             // Split path to parent + name
+                             let parent_res = if let Some(idx) = path.rfind('/') {
+                                 let (parent_path, name) = path.split_at(idx);
+                                 let name = &name[1..];
+                                 let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
+                                 match crate::vfs::resolve_path(fs, "/", parent_path) {
+                                     Ok(parent) => Some((parent, name)),
+                                     Err(_) => None,
+                                 }
+                             } else {
+                                 Some((fs.root_inode(), path.as_str()))
+                             };
+
+                             if let Some((parent, name)) = parent_res {
+                                 if crate::vfs::check_permission(&parent, p.uid, p.gid, 2) {
+                                     match parent.create(name, crate::vfs::FileType::Directory) {
+                                         Ok(_) => res = 0,
+                                         Err(e) => println!("[KERNEL] sys_mkdir: failed: {}", e),
+                                     }
+                                 } else {
+                                     println!("[KERNEL] sys_mkdir: Permission denied");
+                                 }
+                             }
+                         }
+                    }
+                    reply_mrs[0] = res as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                35 => { // sys_rmdir(path)
+                    let path_len = mrs[0] as usize;
+                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                    let offset = 1 * core::mem::size_of::<seL4_Word>();
+                    let safe_len = if path_len > 256 { 256 } else { path_len };
+                    let path_bytes = unsafe { core::slice::from_raw_parts((ipc_buf.msg.as_ptr() as *const u8).add(offset), safe_len) };
+                    let path = alloc::string::String::from(core::str::from_utf8(path_bytes).unwrap_or(""));
+
+                    let mut res = -1i64;
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                         if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                             let parent_res = if let Some(idx) = path.rfind('/') {
+                                 let (parent_path, name) = path.split_at(idx);
+                                 let name = &name[1..];
+                                 let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
+                                 match crate::vfs::resolve_path(fs, "/", parent_path) {
+                                     Ok(parent) => Some((parent, name)),
+                                     Err(_) => None,
+                                 }
+                             } else {
+                                 Some((fs.root_inode(), path.as_str()))
+                             };
+
+                             if let Some((parent, name)) = parent_res {
+                                 if crate::vfs::check_permission(&parent, p.uid, p.gid, 2) {
+                                     // Check if target is directory
+                                     if let Ok(target) = parent.lookup(name) {
+                                         if let Ok(meta) = target.metadata() {
+                                             if meta.file_type == crate::vfs::FileType::Directory {
+                                                 match parent.remove(name) {
+                                                     Ok(_) => res = 0,
+                                                     Err(e) => println!("[KERNEL] sys_rmdir: failed: {}", e),
+                                                 }
+                                             } else {
+                                                 println!("[KERNEL] sys_rmdir: Not a directory");
+                                             }
+                                         }
+                                     } else {
+                                         println!("[KERNEL] sys_rmdir: Target not found");
+                                     }
+                                 } else {
+                                     println!("[KERNEL] sys_rmdir: Permission denied");
+                                 }
+                             }
+                         }
+                    }
+                    reply_mrs[0] = res as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                36 => { // sys_unlink(path)
+                    let path_len = mrs[0] as usize;
+                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                    let offset = 1 * core::mem::size_of::<seL4_Word>();
+                    let safe_len = if path_len > 256 { 256 } else { path_len };
+                    let path_bytes = unsafe { core::slice::from_raw_parts((ipc_buf.msg.as_ptr() as *const u8).add(offset), safe_len) };
+                    let path = alloc::string::String::from(core::str::from_utf8(path_bytes).unwrap_or(""));
+
+                    let mut res = -1i64;
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                         if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                             let parent_res = if let Some(idx) = path.rfind('/') {
+                                 let (parent_path, name) = path.split_at(idx);
+                                 let name = &name[1..];
+                                 let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
+                                 match crate::vfs::resolve_path(fs, "/", parent_path) {
+                                     Ok(parent) => Some((parent, name)),
+                                     Err(_) => None,
+                                 }
+                             } else {
+                                 Some((fs.root_inode(), path.as_str()))
+                             };
+
+                             if let Some((parent, name)) = parent_res {
+                                 if crate::vfs::check_permission(&parent, p.uid, p.gid, 2) {
+                                     match parent.remove(name) {
+                                         Ok(_) => res = 0,
+                                         Err(e) => println!("[KERNEL] sys_unlink: failed: {}", e),
+                                     }
+                                 } else {
+                                     println!("[KERNEL] sys_unlink: Permission denied");
+                                 }
+                             }
+                         }
+                    }
+                    reply_mrs[0] = res as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                37 => { // sys_rename(old_path, new_path)
+                    let old_len = mrs[0] as usize;
+                    let new_len = mrs[1] as usize;
+                    
+                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                    let offset = 2 * core::mem::size_of::<seL4_Word>();
+                    let base_ptr = (ipc_buf.msg.as_ptr() as *const u8).add(offset);
+                    
+                    let safe_old_len = if old_len > 256 { 256 } else { old_len };
+                    let safe_new_len = if new_len > 256 { 256 } else { new_len };
+                    
+                    let old_bytes = unsafe { core::slice::from_raw_parts(base_ptr, safe_old_len) };
+                    let old_path = alloc::string::String::from(core::str::from_utf8(old_bytes).unwrap_or(""));
+                    
+                    let new_bytes = unsafe { core::slice::from_raw_parts(base_ptr.add(old_len), safe_new_len) };
+                    let new_path = alloc::string::String::from(core::str::from_utf8(new_bytes).unwrap_or(""));
+                    
+                    let mut res = -1i64;
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                         if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
+                             // Resolve Old Parent + Name
+                             let old_res = if let Some(idx) = old_path.rfind('/') {
+                                 let (parent_path, name) = old_path.split_at(idx);
+                                 let name = &name[1..];
+                                 let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
+                                 match crate::vfs::resolve_path(fs, "/", parent_path) {
+                                     Ok(parent) => Some((parent, name)),
+                                     Err(_) => None,
+                                 }
+                             } else {
+                                 Some((fs.root_inode(), old_path.as_str()))
+                             };
+
+                             // Resolve New Parent + Name
+                             let new_res = if let Some(idx) = new_path.rfind('/') {
+                                 let (parent_path, name) = new_path.split_at(idx);
+                                 let name = &name[1..];
+                                 let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
+                                 match crate::vfs::resolve_path(fs, "/", parent_path) {
+                                     Ok(parent) => Some((parent, name)),
+                                     Err(_) => None,
+                                 }
+                             } else {
+                                 Some((fs.root_inode(), new_path.as_str()))
+                             };
+
+                             if let (Some((old_parent, old_name)), Some((new_parent, new_name))) = (old_res, new_res) {
+                                 // Check Write permissions on both parents
+                                 let p1 = crate::vfs::check_permission(&old_parent, p.uid, p.gid, 2);
+                                 let p2 = crate::vfs::check_permission(&new_parent, p.uid, p.gid, 2);
+                                 
+                                 if p1 && p2 {
+                                     match old_parent.rename(old_name, &new_parent, new_name) {
+                                         Ok(_) => res = 0,
+                                         Err(e) => println!("[KERNEL] sys_rename: failed: {}", e),
+                                     }
+                                 } else {
+                                     println!("[KERNEL] sys_rename: Permission denied");
+                                 }
+                             } else {
+                                 println!("[KERNEL] sys_rename: Parent not found");
+                             }
+                         }
+                    }
+                    reply_mrs[0] = res as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                     need_reply = true;
                 }
                 50 => { // sys_shutdown
@@ -1398,7 +2225,8 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     need_reply = true;
                 }
 
-                7 => { // sys_send (MR0=TargetPID, MR1..3=Msg)
+
+                13 => { // sys_send (MR0=TargetPID, MR1..3=Msg)
                     let target_pid = mrs[0] as usize;
                     let msg_content = [mrs[1], mrs[2], mrs[3], 0];
                     
@@ -1438,40 +2266,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         need_reply = true;
                     }
                 }
-                8 => { // sys_recv (Blocking)
-                    let mut found_msg = None;
-                    if let Some(p) = get_process_manager().get_process_mut(pid) {
-                        if let Some(msg) = p.mailbox.take() {
-                            found_msg = Some(msg);
-                        } else {
-                            // Block
-                            p.state = process::ProcessState::BlockedOnRecv;
-                            let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-                            if let Err(e) = p.save_caller(root_cnode, &mut slot_allocator) {
-                                println!("[KERNEL] Failed to save caller for sys_recv: {:?}", e);
-                                reply_mrs[0] = 2; // Error
-                                reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
-                                need_reply = true;
-                            } else {
-                                need_reply = false;
-                            }
-                        }
-                    }
-                    
-                    if let Some(msg) = found_msg {
-                         reply_mrs[0] = msg.sender_pid as u64;
-                         reply_mrs[1] = msg.content[0];
-                         reply_mrs[2] = msg.content[1];
-                         reply_mrs[3] = msg.content[2];
-                         reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 4);
-                         need_reply = true;
-                    }
-                }
-                9 => { // sys_get_pid
-                    reply_mrs[0] = pid as u64;
-                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
-                    need_reply = true;
-                }
+
                 _ => {
                     println!("[INFO] Unknown syscall label: {}. Badge: {}", label, badge);
                     need_reply = true;
