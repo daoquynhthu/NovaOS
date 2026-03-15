@@ -11,7 +11,7 @@ const HISTORY_LEN: usize = 16;
 
 const COMMANDS: &[&str] = &[
     "help", "clear", "echo", "cat", "whoami", "status", "bootinfo", "alloc", "meminfo",
-    "ps", "ls", "kill", "exec", "history", "post", "runhello", "cd", "mkdir", "rm", "cp", "mv", "touch", "pwd",
+    "ps", "services", "ls", "kill", "exec", "history", "post", "runhello", "cd", "mkdir", "rm", "cp", "mv", "touch", "pwd",
     "renice", "pci", "date", "disk_read", "disk_write", "mkfs", "mount", "sync", "write", "encrypt", "decrypt", "ln", "chmod", "chown",
     "env", "export", "unset"
 ];
@@ -631,6 +631,7 @@ impl Shell {
             println!("  alloc     - Show allocator summary");
             println!("  meminfo   - Show memory usage summary");
             println!("  ps        - List tracked processes");
+            println!("  services  - List registered kernel services");
             println!("  ls        - List available files");
             println!("  kill      - Kill a process by PID");
             println!("  exec      - Execute a program (e.g. exec hello)");
@@ -893,6 +894,17 @@ impl Shell {
             }
             if !any {
                 println!("No processes tracked.");
+            }
+        } else if self.word_eq(word_start, word_end, "services") {
+            let entries = crate::services::list();
+            if entries.is_empty() {
+                println!("No services registered.");
+            } else {
+                println!("Name                 Endpoint");
+                println!("--------------------------------");
+                for (name, endpoint) in entries {
+                    println!("{:<20} {}", name, endpoint);
+                }
             }
         } else if self.word_eq(word_start, word_end, "kill") {
             let pid_str_len = end - rest_start;

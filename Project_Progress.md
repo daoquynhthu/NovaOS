@@ -3,12 +3,58 @@
 > 本文档用于记录项目里程碑、已完成任务以及下一步计划。每次重大变更后必须更新。
 
 ## 📅 当前状态
-- **日期**: 2026-01-20
-- **阶段**: 0.7.5 - 系统鲁棒性与高级特性 (System Robustness & Advanced Features)
-- **版本**: `v0.0.9-alpha`
-- **状态**: 稳定，通过全量自动化测试验证 (Stable, Passed Full Automated Tests)
+- **日期**: 2026-03-15
+- **阶段**: 0.8.0 - 稳定性回归 + 微内核拆分启动 (Stabilization + Microkernel Split Kickoff)
+- **版本**: `v0.1.0-alpha`
+- **状态**: 主线构建与全量测试可通过，已启动 RootServer 降权与服务化改造
 
 ## ✅ 已完成任务 (Completed)
+
+### 2026-03-15: 微内核化演进第一步 (Phase 4 Kickoff)
+- [x] **服务工程化纳入主线**:
+    - 将 `services/serial_server` 与 `services/fs_server` 纳入 workspace，并通过 `x86_64-unknown-none` 目标编译。
+- [x] **服务注册 SDK 打通**:
+    - 在 `libnova` 增加 `sys_service_register` / `sys_service_lookup_exists` 封装，形成用户态服务注册基础能力。
+- [x] **RootServer 服务注册路径加固**:
+    - 修复 `sys_service_register` / `sys_service_lookup` 对长服务名仅读取 MR0-MR3 的问题，改为支持 IPC Buffer 路径解析。
+- [x] **服务进程最小骨架落地**:
+    - `serial_server` 与 `fs_server` 实现可启动入口、控制台初始化、服务名注册（`serial.v1` / `fs.v1`）与基础事件循环。
+
+### 2026-03-15: 微内核化演进第二步 (Phase 4 Bootstrap Wiring)
+- [x] **RootServer 启动链路接入服务进程拉起**:
+    - 启动阶段先维持 `hello` 主回归链路，待主测试进程（PID 0）退出后自动拉起 `serial_server` / `fs_server`（Badges 102/103），降低早期内存竞争风险。
+- [x] **内置镜像扩展**:
+    - `filesystem.rs` 新增 `/bin/serial_server` 与 `/bin/fs_server` 镜像嵌入。
+- [x] **服务注册可观测性增强**:
+    - Shell 新增 `services` 命令，直接展示当前内核服务注册表（名称 + endpoint slot）。
+    - RootServer 在服务进程启动成功后执行引导注册（`serial.v1`/`fs.v1`），与服务自注册形成双保险，避免早期观测盲区。
+- [x] **集成测试增强（服务化回归）**:
+    - `test.ps1` 增加 `serial_server` / `fs_server` 构建步骤。
+    - Stage 34-35 改为校验服务注册可见性（`serial.v1`/`fs.v1`）、Shell 环境变量生效，以及 `runhello` 拉起成功日志，降低 PID 复用导致的脆弱性。
+    - 修复 Stage 1 过宽匹配（误将 `Process 1 exited` 识别为主流程结束）并完成全流程回归：`All Tests Passed`。
+
+### 2026-03-15: 稳定性修复与回归验证 (Stability Regression)
+- [x] **NovaFS 创建路径防护**:
+    - `create` 先执行存在性检查，避免 `File exists` 回滚路径放大 inode/bitmap 不一致。
+- [x] **进程回收链路修复**:
+    - 进程终止时先 `unmap` 再回收 frame cap，降低回收后映射 `InvalidCapability` 风险。
+- [x] **测试环境确定性增强**:
+    - `test.ps1` 默认重置 `disk.img`（可用 `NOVA_TEST_KEEP_DISK=1` 关闭），端到端流程恢复可重复。
+- [x] **全量回归**:
+    - `cargo check --workspace --target x86_64-unknown-none` 通过；
+    - `test.ps1` 全流程通过（`All Tests Passed`）。
+
+### 2026-01-21: 关键故障修复 (Critical Bug Fixes)
+- [x] **sys_spawn 修复**:
+    - 修正了 RootServer `get_word` 函数中 IPC Buffer 索引偏移错误（需减去 MR0-MR3 的 4 个字），解决了 `envs_count` 溢出问题。
+    - 更新了 `libnova` 的 `sys_spawn` 封装，使用宏替代闭包以通过借用检查，并确保正确写入 IPC Buffer。
+- [x] **终端/sys_write 修复**:
+    - 修正了 RootServer `sys_write` (Label 22) 从 IPC Buffer 读取数据的索引逻辑，解决了终端静默失败问题。
+    - 更新了 `libnova` 的 `sys_write` 封装，确保大数据量写入时正确填充 IPC Buffer。
+- [x] **NovaFS 鲁棒性**:
+    - 增加了 `lookup`, `list`, `remove` 等操作的循环上限（从 10k 提升至 100k），防止大目录操作因误判死循环而失败。
+- [x] **sys_open 修复**:
+    - 修正了 `sys_open` (Label 20) 从 IPC Buffer 提取路径的逻辑，确保长路径解析正确。
 
 ### 2026-01-21: 系统调用与权限控制 (System Calls & Permission Control)
 - [x] **系统调用标准化**:
@@ -31,6 +77,12 @@
         - **环境变量支持**: `sys_spawn` 系统调用新增环境变量传递功能 (Env Vars)，支持从父进程向子进程传递配置信息。
         - **安全增强**: 为 `sys_spawn` 添加了参数长度校验 (Path < 4096, Args/Envs Count < 256)，防止恶意输入导致内核 Panic。
         - **用户态集成**: 更新 `user_app` 和 `libnova` 适配新的 `sys_spawn` 接口。
+
+### 2026-01-21: IPC 与进程启动稳定性 (IPC & Spawn Stability)
+- [x] **IPC 修复**:
+    - 修复 `seL4_ReplyRecv` 的 IPC buffer 写回路径，降低 MR 被覆盖的风险。
+- [x] **诊断增强**:
+    - 在 RootServer 的 `sys_spawn` 处理加入 MR0-MR5 诊断日志，便于定位异常输入。
 
 ### 2026-01-20: 系统鲁棒性与高级文件特性 (System Robustness & Advanced FS Features)
 - [x] **文件系统鲁棒性增强 (Critical)**:
@@ -110,6 +162,11 @@
 - [x] **双重关机策略**: QEMU Port 0x604 + ACPI PM1a/PM1b。
 
 ## ⚠️ 待解决问题 (Pending Issues)
+- [ ] **sys_spawn 异常参数**: `envs_count` 出现超大值（如 7810763681669145135），疑似 IPC buffer 污染或映射不一致。
+- [ ] **终端静默失败**: Terminal#995-1009 仍出现同样错误日志，需复现与定位。
+- [ ] **NovaFS lookup failed**: 多处 `lookup failed` 日志，需要确认目录项、路径解析或损坏原因。
+- [ ] **IPC buffer 初始化一致性**: 校验 user_app 固定地址与 RootServer 映射流程的一致性。
+- [ ] **IPC 回复路径一致性**: `manual_reply` 分支需核对 MR 读写的完整性。
 - [ ] **Shell 功能增强**: 目前仅支持基础命令，需增加 `cat`, `rm` 等文件操作命令。
 - [ ] **文件系统功能扩展**: 支持子目录、文件删除等高级功能。
 
@@ -156,4 +213,11 @@
 #### Phase 4: 微内核化演进 (Future - Microkernel Evolution)
 - [ ] **架构重构**:
     - [x] 创建 `services/serial_server` 目录结构。
+    - [x] 创建 `services/fs_server` 目录结构。
+    - [x] 服务进程纳入 workspace 构建。
+    - [x] 建立服务注册 syscall SDK（register/lookup_exists）。
+    - [ ] RootServer 启动阶段自动拉起 `serial_server` 并切换日志路径。
+    - [ ] RootServer 启动阶段自动拉起 `fs_server` 并迁移 VFS 入口。
+    - [ ] 建立 Name Service（统一服务发现与版本管理）。
+    - [ ] 将 Shell 文件操作改为通过 `fs_server` IPC 转发。
 

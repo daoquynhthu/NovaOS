@@ -11,7 +11,14 @@ pub static FILES: &[File] = &[
         name: "hello",
         data: include_bytes!("../../../target/x86_64-unknown-none/release/user_app"),
     },
-    // Add more files here
+    File {
+        name: "serial_server",
+        data: include_bytes!("../../../target/x86_64-unknown-none/release/serial_server"),
+    },
+    File {
+        name: "fs_server",
+        data: include_bytes!("../../../target/x86_64-unknown-none/release/fs_server"),
+    },
 ];
 
 pub fn get_file(name: &str) -> Option<&'static [u8]> {

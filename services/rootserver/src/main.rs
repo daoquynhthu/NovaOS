@@ -75,6 +75,81 @@ extern "C" fn irq_worker_entry(notification: usize, endpoint: usize) {
     }
 }
 
+fn spawn_boot_process(
+    boot_info: &seL4_BootInfo,
+    allocator: &mut impl ObjectAllocator,
+    slot_allocator: &mut SlotAllocator,
+    frame_allocator: &mut FrameAllocator,
+    syscall_ep_cap: seL4_CPtr,
+    process_name: &str,
+    file_name: &str,
+    badge: u64,
+) {
+    println!("[KERNEL] Spawning {} from /bin/{}...", process_name, file_name);
+    let badged_ep_slot = slot_allocator
+        .alloc()
+        .expect("Failed to alloc slot for boot process EP");
+    let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+    let cnode_depth = sel4_sys::seL4_WordBits as u8;
+
+    let err = unsafe {
+        sel4_sys::seL4_CNode_Mint(
+            root_cnode,
+            badged_ep_slot,
+            cnode_depth,
+            root_cnode,
+            syscall_ep_cap,
+            cnode_depth,
+            cap_rights_new(false, true, true, true),
+            badge,
+        )
+    };
+    if err != 0.into() {
+        println!(
+            "[KERNEL] Failed to mint EP for '{}' (badge {}): {:?}",
+            process_name, badge, err
+        );
+        return;
+    }
+
+    let Some(elf_data) = crate::filesystem::get_file(file_name) else {
+        println!("[KERNEL] Boot file '{}' not found", file_name);
+        return;
+    };
+
+    match Process::spawn(
+        allocator,
+        slot_allocator,
+        frame_allocator,
+        boot_info,
+        process_name,
+        elf_data,
+        &[],
+        &[],
+        100,
+        badged_ep_slot,
+        32,
+        0,
+        0,
+    ) {
+        Ok(process) => {
+            if process_name == "serial_server" {
+                services::register("serial.v1", badged_ep_slot);
+                println!("[KERNEL] Service 'serial.v1' registered (boot bootstrap).");
+            } else if process_name == "fs_server" {
+                services::register("fs.v1", badged_ep_slot);
+                println!("[KERNEL] Service 'fs.v1' registered (boot bootstrap).");
+            }
+            if let Err(e) = get_process_manager().add_process(process) {
+                println!("[KERNEL] Failed to add '{}': {:?}", process_name, e);
+            }
+        }
+        Err(e) => {
+            println!("[KERNEL] Failed to spawn '{}': {:?}", process_name, e);
+        }
+    }
+}
+
 #[cfg(test)]
 fn test_runner(tests: &[&dyn Fn()]) {
     println!("Running {} tests", tests.len());
@@ -553,85 +628,27 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
         println!("[KERNEL] Service 'test' registered (Badge 200).");
     }
 
-    // Mint Badged Endpoint for Process 1
-    let badged_ep_slot = slot_allocator.alloc().expect("Failed to alloc slot for badged EP");
-    let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-    let cnode_depth = sel4_sys::seL4_WordBits; 
-    
-    let err = unsafe {
-        sel4_sys::seL4_CNode_Mint(
-            root_cnode,
-            badged_ep_slot,
-            cnode_depth as u8,
-            root_cnode,
-            syscall_ep_cap,
-            cnode_depth as u8,
-            cap_rights_new(false, true, true, true),
-            100 // Badge for Process 1
-        )
-    };
-    if err != 0.into() {
-        println!("[KERNEL] Failed to mint badged endpoint: {:?}", err);
-    }
-    
-    // Spawn Hello Process
-    println!("[KERNEL] Spawning Hello Process...");
-    let hello_elf = crate::filesystem::get_file("hello").expect("hello binary not found");
-    let process = Process::spawn(
+    // Keep the current process ordering to preserve existing integration test assumptions.
+    spawn_boot_process(
+        boot_info,
         &mut allocator,
         &mut slot_allocator,
         &mut frame_allocator,
-        boot_info,
+        syscall_ep_cap,
         "hello",
-        hello_elf,
-        &[],
-        &[], // Env
-        100, // Priority
-        badged_ep_slot, // Give badged cap
-        32, // ppid (No Parent)
-        0, // UID
-        0  // GID
-    ).expect("Failed to spawn process");
-    
-    get_process_manager().add_process(process).expect("Failed to add process");
-
-    // Spawn Hello Process 2
-    println!("[KERNEL] Spawning Hello Process 2...");
-    let badged_ep_slot_2 = slot_allocator.alloc().expect("Failed to alloc slot for badged EP 2");
-    
-    let err = unsafe {
-        sel4_sys::seL4_CNode_Mint(
-            root_cnode,
-            badged_ep_slot_2,
-            cnode_depth as u8,
-            root_cnode,
-            syscall_ep_cap,
-            cnode_depth as u8,
-            cap_rights_new(false, true, true, true),
-            101 // Badge for Process 2
-        )
-    };
-    if err != 0.into() {
-        println!("[KERNEL] Failed to mint badged endpoint 2: {:?}", err);
-    }
-
-    let process2 = Process::spawn(
+        "hello",
+        100,
+    );
+    spawn_boot_process(
+        boot_info,
         &mut allocator,
         &mut slot_allocator,
         &mut frame_allocator,
-        boot_info,
+        syscall_ep_cap,
         "hello2",
-        hello_elf,
-        &[], // No args
-        &[], // Env
-        100, // Priority
-        badged_ep_slot_2,
-        32, // ppid (No Parent)
-        0, // UID
-        0  // GID
-    ).expect("Failed to spawn process 2");
-    
-    get_process_manager().add_process(process2).expect("Failed to add process 2");
+        "hello",
+        101,
+    );
 
 
 
@@ -645,6 +662,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     let mut driver_manager = drivers::DriverManager::new();
     let mut shell = shell::Shell::new();
     let mut system_tick: u64 = 0;
+    let mut deferred_services_spawned = false;
     
     match allocator.allocate(boot_info, sel4_sys::api_object_seL4_NotificationObject.into(), sel4_sys::seL4_NotificationBits.into(), &mut slot_allocator) {
         Ok(notification_cap) => {
@@ -906,6 +924,16 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     // Manually set MR0, preserve other MRs (set by syscall handler)
                     libnova::ipc::set_mr(0, reply_mrs[0]);
                     
+                    // Sync MR1-MR3 from IPC buffer if message length requires it.
+                    // sys_read writes data to IPC buffer (msg[1..]), but seL4 expects MR1-MR3 in registers.
+                    let len = reply_info.length() as usize;
+                    if len > 1 {
+                        let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                        if len > 1 { libnova::ipc::set_mr(1, ipc_buf.msg[1]); }
+                        if len > 2 { libnova::ipc::set_mr(2, ipc_buf.msg[2]); }
+                        if len > 3 { libnova::ipc::set_mr(3, ipc_buf.msg[3]); }
+                    }
+                    
                     let (badge, info) = libnova::ipc::reply_recv(syscall_ep.cptr, reply_info).expect("IPC ReplyRecv failed");
                     
                     let mr0 = libnova::ipc::get_mr(0);
@@ -982,9 +1010,16 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
 
             match label {
                 1 => { // sys_print
-                    let len = info.length();
-                    for i in 0..len {
-                        let word = mrs[i as usize];
+                    let len = info.length(); // u64
+                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                    let msg_len = ipc_buf.msg.len() as u64;
+                    let safe_len = if len > msg_len { msg_len } else { len };
+                    for i in 0..safe_len {
+                        let word = if i < 4 {
+                            mrs[i as usize]
+                        } else {
+                            ipc_buf.msg[i as usize]
+                        };
                         let bytes = word.to_le_bytes();
                         for b in bytes {
                             if b != 0 {
@@ -1000,12 +1035,38 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     
                     if pid == 0 && mrs[0] == 0 {
                         println!("[TEST] PASSED");
+                        // crate::acpi::shutdown();
                     }
 
                     let cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
                     if let Err(e) = get_process_manager().exit_process(pid, mrs[0] as isize, cnode, &mut slot_allocator, &mut frame_allocator) {
                         println!("[KERNEL] Failed to exit process {}: {:?}", pid, e);
                         get_process_manager().remove_process(pid);
+                    }
+
+                    if pid == 0 && !deferred_services_spawned {
+                        println!("[KERNEL] Main test process exited. Launching deferred service processes...");
+                        spawn_boot_process(
+                            boot_info,
+                            &mut allocator,
+                            &mut slot_allocator,
+                            &mut frame_allocator,
+                            syscall_ep_cap,
+                            "serial_server",
+                            "serial_server",
+                            102,
+                        );
+                        spawn_boot_process(
+                            boot_info,
+                            &mut allocator,
+                            &mut slot_allocator,
+                            &mut frame_allocator,
+                            syscall_ep_cap,
+                            "fs_server",
+                            "fs_server",
+                            103,
+                        );
+                        deferred_services_spawned = true;
                     }
                     
                     need_reply = false; 
@@ -1035,8 +1096,8 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                              }
                          }
                     } else {
-                         println!("[KERNEL] Process {} not found for sys_brk", pid);
-                         need_reply = true;
+                         println!("[KERNEL] Process {} not found for sys_brk; blocking caller", pid);
+                         need_reply = false;
                     }
                 }
                 }
@@ -1094,9 +1155,51 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     }
                 }
                 8 => { // sys_spawn(path, args, envs)
-                    let path_len = mrs[0] as usize;
-                    let args_count = mrs[1] as usize;
-                    let envs_count = mrs[2] as usize;
+                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                    let msg_len = info.length() as usize;
+                    println!("[KERNEL] sys_spawn debug: MR0={:x}, MR1={:x}, MR2={:x}, MR3={:x}, len={}", mrs[0], mrs[1], mrs[2], mrs[3], msg_len);
+                    println!("[KERNEL] sys_spawn IPC Dump: [0]={:x} [1]={:x} [2]={:x} [3]={:x} [4]={:x} [5]={:x} [6]={:x} [7]={:x}", 
+                        ipc_buf.msg[0], ipc_buf.msg[1], ipc_buf.msg[2], ipc_buf.msg[3], ipc_buf.msg[4], ipc_buf.msg[5], ipc_buf.msg[6], ipc_buf.msg[7]);
+                    let get_word = |idx: usize, mrs: [u64; 4], ipc: &sel4_sys::seL4_IPCBuffer| -> usize {
+                        if idx < 4 {
+                            mrs[idx] as usize
+                        } else {
+                            ipc.msg[idx] as usize
+                        }
+                    };
+
+                    let w0 = get_word(0, mrs, ipc_buf);
+                    
+                    let (path_len, args_count, mut envs_count, mut current_mr) = if w0 == 0xCAFEBABE {
+                        println!("[KERNEL] sys_spawn: New Protocol Detected");
+                        (
+                            get_word(1, mrs, ipc_buf),
+                            get_word(2, mrs, ipc_buf),
+                            get_word(5, mrs, ipc_buf),
+                            6
+                        )
+                    } else {
+                        // Fallback to old protocol
+                        (
+                            w0,
+                            get_word(1, mrs, ipc_buf),
+                            get_word(4, mrs, ipc_buf),
+                            5
+                        )
+                    };
+
+                    if envs_count > 256 {
+                        println!("[KERNEL] sys_spawn: Suspicious envs_count {:x}, resetting to 0", envs_count);
+                        envs_count = 0;
+                    }
+
+                    if msg_len < 3 {
+                        println!("[KERNEL] sys_spawn: Invalid message length {} (expected >= 3).", msg_len);
+                        reply_mrs[0] = usize::MAX as u64;
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                        // need_reply = true;
+                        continue;
+                    }
 
                     // Validation to prevent panic on huge allocations
                     if path_len > 4096 {
@@ -1113,34 +1216,34 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                          need_reply = true;
                          continue;
                     }
-                     if envs_count > 256 {
-                         println!("[KERNEL] sys_spawn: Too many envs ({}). Aborting.", envs_count);
-                         reply_mrs[0] = usize::MAX as u64;
-                         reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
-                         need_reply = true;
-                         continue;
+                    if envs_count > 256 {
+                        println!("[KERNEL] sys_spawn: Too many envs ({}). Aborting.", envs_count);
+                        reply_mrs[0] = usize::MAX as u64;
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                        need_reply = true;
+                        continue;
                     }
                     
-                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
-                    
-                    // Data starts at MR3 (Word 3)
-                    let mut current_mr = 3;
+                    // Data starts at MR5 (Word 5) or MR6 (New Protocol)
+                    // let mut current_mr = 5; // Removed
                     
                     // Helper to read bytes from MRs
-                    let read_bytes = |len: usize, start_mr: &mut usize| -> Option<alloc::vec::Vec<u8>> {
-                        if len > 4096 { return None; } // Safety check
+                    let read_bytes = |len: usize, start_mr: &mut usize, msg_len: usize| -> Option<alloc::vec::Vec<u8>> {
+                        if len > 4096 { return None; }
+                        let words = (len + 7) / 8;
+                        if *start_mr + words > msg_len { return None; }
                         let mut bytes = alloc::vec![0u8; len];
                         for i in 0..len {
                             let word_idx = *start_mr + (i / 8);
                             let byte_idx = i % 8;
-                            let word = ipc_buf.msg[word_idx];
+                            let word = if word_idx < 4 { mrs[word_idx] } else { ipc_buf.msg[word_idx] };
                             bytes[i] = ((word >> (byte_idx * 8)) & 0xFF) as u8;
                         }
-                        *start_mr += (len + 7) / 8;
+                        *start_mr += words;
                         Some(bytes)
                     };
                     
-                    let path_bytes = match read_bytes(path_len, &mut current_mr) {
+                    let path_bytes = match read_bytes(path_len, &mut current_mr, msg_len) {
                         Some(b) => b,
                         None => {
                             println!("[KERNEL] sys_spawn: Path too long during read.");
@@ -1155,11 +1258,11 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     let mut args_strings = alloc::vec::Vec::new();
                     let mut args_fail = false;
                     for _ in 0..args_count {
-                        let len_word = ipc_buf.msg[current_mr];
+                        let len_word = if current_mr < 4 { mrs[current_mr] } else { ipc_buf.msg[current_mr] };
                         let arg_len = len_word as usize;
                         current_mr += 1;
                         
-                        match read_bytes(arg_len, &mut current_mr) {
+                        match read_bytes(arg_len, &mut current_mr, msg_len) {
                             Some(arg_bytes) => args_strings.push(alloc::string::String::from_utf8(arg_bytes).unwrap_or_default()),
                             None => { args_fail = true; break; }
                         }
@@ -1177,14 +1280,14 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     let mut envs_strings = alloc::vec::Vec::new();
                     let mut envs_fail = false;
                     for _ in 0..envs_count {
-                        let len_word = ipc_buf.msg[current_mr];
-                        let env_len = len_word as usize;
-                        current_mr += 1;
-                        
-                        match read_bytes(env_len, &mut current_mr) {
-                            Some(env_bytes) => envs_strings.push(alloc::string::String::from_utf8(env_bytes).unwrap_or_default()),
-                            None => { envs_fail = true; break; }
-                        }
+                            let len_word = if current_mr < 4 { mrs[current_mr] } else { ipc_buf.msg[current_mr] };
+                            let env_len = len_word as usize;
+                            current_mr += 1;
+                            
+                            match read_bytes(env_len, &mut current_mr, msg_len) {
+                                Some(env_bytes) => envs_strings.push(alloc::string::String::from_utf8(env_bytes).unwrap_or_default()),
+                                None => { envs_fail = true; break; }
+                            }
                     }
                     if envs_fail {
                         println!("[KERNEL] sys_spawn: Env too long.");
@@ -1308,6 +1411,47 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                     need_reply = true;
                 }
+                14 => { // sys_fork() -> pid
+                    let fork_res = {
+                        let pm = get_process_manager();
+                        match pm.get_process(pid) {
+                            Some(parent) => Process::fork_from(
+                                parent,
+                                &mut allocator,
+                                &mut slot_allocator,
+                                &mut frame_allocator,
+                                boot_info,
+                                pid,
+                            ),
+                            None => Err(libnova::syscall::Error::InvalidArgument),
+                        }
+                    };
+
+                    match fork_res {
+                        Ok(child) => {
+                            let mut pm = get_process_manager();
+                            match pm.add_process(child) {
+                                Ok(child_pid) => {
+                                    reply_mrs[0] = child_pid as u64;
+                                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                                    need_reply = true;
+                                }
+                                Err(e) => {
+                                    println!("[KERNEL] sys_fork: add_process failed: {:?}", e);
+                                    reply_mrs[0] = (-1i64) as u64;
+                                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                                    need_reply = true;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("[KERNEL] sys_fork failed for pid {}: {:?}", pid, e);
+                            reply_mrs[0] = (-1i64) as u64;
+                            reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                            need_reply = true;
+                        }
+                    }
+                }
                 9 => { // sys_get_pid() -> pid
                     reply_mrs[0] = pid as u64;
                     reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
@@ -1369,24 +1513,14 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                                 let mut data = alloc::vec![0u8; len];
                                                 
                                                 // Data starts at MR2
-                                                // MR0=fd, MR1=len. So offset is 2 words.
-                                                // But wait, are we using recv_with_mrs? 
-                                                // Yes, mrs[0] is MR0, mrs[1] is MR1.
-                                                // But the IPC buffer *also* contains them.
-                                                // The kernel (seL4) puts MRs in registers (first 4) and the rest in IPC buffer.
-                                                // RecvWithMRs usually gives us the first few.
-                                                // If len is large, data will be in IPC buffer.
-                                                
-                                                // Actually, seL4_Recv puts *all* MRs in the IPC buffer (except maybe the ones in regs, but they are mirrored or we can access them).
-                                                // Wait, standard seL4_Recv puts everything in IPC buffer.
-                                                // recv_with_mrs helper might just return array of first 4.
-                                                // Let's look at how sys_spawn did it.
-                                                // sys_spawn used `ipc_buf.msg[word_idx]`.
-                                                // Data starts at MR2
-                                                
                                                 let current_word_idx = 2; // MR2
                                                 for i in 0..len {
-                                                    let word = ipc_buf.msg[current_word_idx + (i / 8)];
+                                                    let word_idx = current_word_idx + (i / 8);
+                                                    let word = if word_idx < 4 {
+                                                        mrs[word_idx]
+                                                    } else {
+                                                        ipc_buf.msg[word_idx]
+                                                    };
                                                     let byte_idx = i % 8;
                                                     data[i] = ((word >> (byte_idx * 8)) & 0xFF) as u8;
                                                 }
@@ -1459,13 +1593,24 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     };
                     
                     let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
-                    // Path starts after MR0 and MR1 (16 bytes offset)
-                    let offset = 2 * core::mem::size_of::<seL4_Word>();
                     
                     // Limit path length to 256 bytes for safety
                     let safe_len = if path_len > 256 { 256 } else { path_len };
-                    let path_bytes = unsafe { core::slice::from_raw_parts((ipc_buf.msg.as_ptr() as *const u8).add(offset), safe_len) };
-                    let path = alloc::string::String::from(core::str::from_utf8(path_bytes).unwrap_or(""));
+                    let mut path_bytes = alloc::vec![0u8; safe_len];
+                    
+                    // Path starts at MR2
+                    let start_word = 2;
+                    for i in 0..safe_len {
+                        let word_idx = start_word + (i / 8);
+                        let word = if word_idx < 4 {
+                            mrs[word_idx]
+                        } else {
+                            ipc_buf.msg[word_idx]
+                        };
+                        path_bytes[i] = ((word >> ((i % 8) * 8)) & 0xFF) as u8;
+                    }
+                    
+                    let path = alloc::string::String::from_utf8(path_bytes).unwrap_or_else(|_| alloc::string::String::from(""));
 
                     let mut success = false;
                     let mut caller_uid = 0;
@@ -1816,15 +1961,20 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     need_reply = true;
                     manual_reply = true;
                 }
-                34 => { // sys_mkdir(path, mode)
+                34 => { // sys_mkdir(path)
                     let path_len = mrs[0] as usize;
-                    let _mode = mrs[1] as usize; // Ignored for now
                     
                     let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
-                    let offset = 2 * core::mem::size_of::<seL4_Word>();
                     let safe_len = if path_len > 256 { 256 } else { path_len };
-                    let path_bytes = unsafe { core::slice::from_raw_parts((ipc_buf.msg.as_ptr() as *const u8).add(offset), safe_len) };
-                    let path = alloc::string::String::from(core::str::from_utf8(path_bytes).unwrap_or(""));
+                    let mut path_bytes = alloc::vec![0u8; safe_len];
+                    
+                    let start_word = 1;
+                    for i in 0..safe_len {
+                        let word_idx = start_word + (i / 8);
+                        let word = if word_idx < 4 { mrs[word_idx] } else { ipc_buf.msg[word_idx] };
+                        path_bytes[i] = ((word >> ((i % 8) * 8)) & 0xFF) as u8;
+                    }
+                    let path = alloc::string::String::from_utf8(path_bytes).unwrap_or_else(|_| alloc::string::String::from(""));
 
                     let mut res = -1i64;
                     if let Some(p) = get_process_manager().get_process_mut(pid) {
@@ -1861,10 +2011,16 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 35 => { // sys_rmdir(path)
                     let path_len = mrs[0] as usize;
                     let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
-                    let offset = 1 * core::mem::size_of::<seL4_Word>();
                     let safe_len = if path_len > 256 { 256 } else { path_len };
-                    let path_bytes = unsafe { core::slice::from_raw_parts((ipc_buf.msg.as_ptr() as *const u8).add(offset), safe_len) };
-                    let path = alloc::string::String::from(core::str::from_utf8(path_bytes).unwrap_or(""));
+                    let mut path_bytes = alloc::vec![0u8; safe_len];
+                    
+                    let start_word = 1;
+                    for i in 0..safe_len {
+                        let word_idx = start_word + (i / 8);
+                        let word = if word_idx < 4 { mrs[word_idx] } else { ipc_buf.msg[word_idx] };
+                        path_bytes[i] = ((word >> ((i % 8) * 8)) & 0xFF) as u8;
+                    }
+                    let path = alloc::string::String::from_utf8(path_bytes).unwrap_or_else(|_| alloc::string::String::from(""));
 
                     let mut res = -1i64;
                     if let Some(p) = get_process_manager().get_process_mut(pid) {
@@ -1911,10 +2067,16 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 36 => { // sys_unlink(path)
                     let path_len = mrs[0] as usize;
                     let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
-                    let offset = 1 * core::mem::size_of::<seL4_Word>();
                     let safe_len = if path_len > 256 { 256 } else { path_len };
-                    let path_bytes = unsafe { core::slice::from_raw_parts((ipc_buf.msg.as_ptr() as *const u8).add(offset), safe_len) };
-                    let path = alloc::string::String::from(core::str::from_utf8(path_bytes).unwrap_or(""));
+                    let mut path_bytes = alloc::vec![0u8; safe_len];
+                    
+                    let start_word = 1;
+                    for i in 0..safe_len {
+                        let word_idx = start_word + (i / 8);
+                        let word = if word_idx < 4 { mrs[word_idx] } else { ipc_buf.msg[word_idx] };
+                        path_bytes[i] = ((word >> ((i % 8) * 8)) & 0xFF) as u8;
+                    }
+                    let path = alloc::string::String::from_utf8(path_bytes).unwrap_or_else(|_| alloc::string::String::from(""));
 
                     let mut res = -1i64;
                     if let Some(p) = get_process_manager().get_process_mut(pid) {
@@ -1952,17 +2114,31 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     let new_len = mrs[1] as usize;
                     
                     let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
-                    let offset = 2 * core::mem::size_of::<seL4_Word>();
-                    let base_ptr = (ipc_buf.msg.as_ptr() as *const u8).add(offset);
                     
                     let safe_old_len = if old_len > 256 { 256 } else { old_len };
+                    let mut old_path_bytes = alloc::vec![0u8; safe_old_len];
+                    
+                    let start_word = 2;
+                    // Read old_path
+                    for i in 0..safe_old_len {
+                        let word_idx = start_word + (i / 8);
+                        let word = if word_idx < 4 { mrs[word_idx] } else { ipc_buf.msg[word_idx] };
+                        old_path_bytes[i] = ((word >> ((i % 8) * 8)) & 0xFF) as u8;
+                    }
+                    let old_path = alloc::string::String::from_utf8(old_path_bytes).unwrap_or_else(|_| alloc::string::String::from(""));
+                    
                     let safe_new_len = if new_len > 256 { 256 } else { new_len };
+                    let mut new_path_bytes = alloc::vec![0u8; safe_new_len];
                     
-                    let old_bytes = unsafe { core::slice::from_raw_parts(base_ptr, safe_old_len) };
-                    let old_path = alloc::string::String::from(core::str::from_utf8(old_bytes).unwrap_or(""));
-                    
-                    let new_bytes = unsafe { core::slice::from_raw_parts(base_ptr.add(old_len), safe_new_len) };
-                    let new_path = alloc::string::String::from(core::str::from_utf8(new_bytes).unwrap_or(""));
+                    // Read new_path
+                    for i in 0..safe_new_len {
+                        let total_byte_idx = old_len + i;
+                        let word_idx = start_word + (total_byte_idx / 8);
+                        let word = if word_idx < 4 { mrs[word_idx] } else { ipc_buf.msg[word_idx] };
+                        new_path_bytes[i] = ((word >> ((total_byte_idx % 8) * 8)) & 0xFF) as u8;
+                    }
+                    let new_path = alloc::string::String::from_utf8(new_path_bytes).unwrap_or_else(|_| alloc::string::String::from(""));
+                    println!("[KERNEL] sys_rename: new_path='{}' (len={})", new_path, new_len);
                     
                     let mut res = -1i64;
                     if let Some(p) = get_process_manager().get_process_mut(pid) {
@@ -2033,18 +2209,32 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         
                         if let Some(p) = get_process_manager().get_process_mut(pid) {
                              // Allocate frame
-                             if let Ok(frame_cap) = frame_allocator.alloc(&mut allocator, boot_info, &mut slot_allocator) {
+                             if let Ok((frame_cap, recycled)) = frame_allocator.alloc(&mut allocator, boot_info, &mut slot_allocator) {
+                                 if recycled {
+                                     if let Err(e) = process::clear_frame(&mut allocator, &mut slot_allocator, boot_info, frame_cap) {
+                                          println!("[KERNEL] Failed to zero recycled frame: {:?}", e);
+                                          let cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+                                          let _ = p.terminate(cnode, &mut slot_allocator, &mut frame_allocator);
+                                          get_process_manager().remove_process(pid);
+                                          // need_reply = false;
+                                          // Continue to next loop iteration? No, this is inside VMFault handler.
+                                          // We set need_reply=false, so we just break out of this case.
+                                     }
+                                 }
+                                 
                                  // Map it
+                                 let rights = cap_rights_new(false, true, true, true);
+                                 let attr = sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
                                  if let Ok(_) = p.vspace.map_page(
                                     &mut allocator,
                                     &mut slot_allocator,
                                     boot_info,
                                     frame_cap,
                                     aligned_addr,
-                                    cap_rights_new(false, true, true, true),
-                                   sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes
+                                    rights,
+                                    attr
                                  ) {
-                                     let _ = p.track_frame(frame_cap);
+                                     let _ = p.track_frame(frame_cap, aligned_addr, rights, attr);
                                      reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0);
                                      need_reply = true;
                                  } else {
@@ -2159,11 +2349,13 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 }
                 30 => { // sys_service_register (MR0=len, MR1..=name, ExtraCap=service)
                     let len = mrs[0] as usize;
+                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                    let msg_len = info.length() as usize;
                     let mut name_bytes = alloc::vec::Vec::with_capacity(len);
-                    let mut current_len = 0;
-                    let mut mr_idx = 1;
-                    while current_len < len {
-                        let word = mrs[mr_idx];
+                    let mut current_len = 0usize;
+                    let mut word_idx = 1usize;
+                    while current_len < len && word_idx < msg_len {
+                        let word = if word_idx < 4 { mrs[word_idx] } else { ipc_buf.msg[word_idx] };
                         let bytes = word.to_le_bytes();
                         for b in bytes.iter() {
                             if current_len < len {
@@ -2171,7 +2363,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                 current_len += 1;
                             }
                         }
-                        mr_idx += 1;
+                        word_idx += 1;
                     }
                     let name_str = alloc::string::String::from_utf8(name_bytes).unwrap_or_default();
 
@@ -2200,11 +2392,13 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 }
                 31 => { // sys_service_lookup (MR0=len, MR1..=name)
                     let len = mrs[0] as usize;
+                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                    let msg_len = info.length() as usize;
                     let mut name_bytes = alloc::vec::Vec::with_capacity(len);
-                    let mut current_len = 0;
-                    let mut mr_idx = 1;
-                    while current_len < len {
-                        let word = mrs[mr_idx];
+                    let mut current_len = 0usize;
+                    let mut word_idx = 1usize;
+                    while current_len < len && word_idx < msg_len {
+                        let word = if word_idx < 4 { mrs[word_idx] } else { ipc_buf.msg[word_idx] };
                         let bytes = word.to_le_bytes();
                         for b in bytes.iter() {
                             if current_len < len {
@@ -2212,7 +2406,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                 current_len += 1;
                             }
                         }
-                        mr_idx += 1;
+                        word_idx += 1;
                     }
                     let name_str = alloc::string::String::from_utf8(name_bytes).unwrap_or_default();
                     

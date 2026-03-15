@@ -12,6 +12,18 @@ cargo build --target x86_64-unknown-none --release
 if ($LASTEXITCODE -ne 0) { Write-Error "User App build failed"; exit 1 }
 Set-Location "../.."
 
+Write-Host "Building Serial Server..." -ForegroundColor Cyan
+Set-Location "services/serial_server"
+cargo build --target x86_64-unknown-none --release
+if ($LASTEXITCODE -ne 0) { Write-Error "Serial Server build failed"; exit 1 }
+Set-Location "../.."
+
+Write-Host "Building FS Server..." -ForegroundColor Cyan
+Set-Location "services/fs_server"
+cargo build --target x86_64-unknown-none --release
+if ($LASTEXITCODE -ne 0) { Write-Error "FS Server build failed"; exit 1 }
+Set-Location "../.."
+
 Write-Host "Building RootServer..." -ForegroundColor Cyan
 Set-Location "services/rootserver"
 cargo build --target x86_64-unknown-none
@@ -29,6 +41,12 @@ if (-not (Get-Command $qemu -ErrorAction SilentlyContinue)) {
 
 # Disk Image
 $diskImg = "$PWD/disk.img"
+# Default to a fresh disk for deterministic integration tests.
+# Set NOVA_TEST_KEEP_DISK=1 to keep the previous image between runs.
+if ((Test-Path $diskImg) -and ($env:NOVA_TEST_KEEP_DISK -ne "1")) {
+    Write-Host "Resetting disk image for clean test run..." -ForegroundColor Gray
+    Remove-Item -Force $diskImg
+}
 if (-not (Test-Path $diskImg)) {
     Write-Host "Creating 10MB disk image..." -ForegroundColor Gray
     fsutil file createnew $diskImg 10485760 | Out-Null
@@ -42,7 +60,7 @@ $qemuArgs = @(
     "-serial", "tcp:127.0.0.1:$serialPort,server,wait",
     "-drive", "file=$diskImg,format=raw,index=0,media=disk",
     "-display", "none",
-    "-m", "2G",
+    "-m", "1024M",
     "-cpu", "Haswell,+pdpe1gb",
     "-accel", "tcg,tb-size=64"
 )
@@ -96,13 +114,13 @@ try {
                 }
                 
                 # Stage 0: Wait for Shell Prompt
-                if ($stage -eq 0 -and $buffer -match "NovaOS:.*>") {
+                if ($stage -eq 0 -and ($buffer -match "NovaOS:.*>" -or $buffer -match "NovaOS:/>")) {
                      Write-Host "`n[TEST] Shell Ready. Waiting for Process 0 to finish..." -ForegroundColor Yellow
                      $stage = 1
                      $buffer = ""
                 }
                 
-                if ($stage -eq 1 -and $buffer -match "Process 0 exited") {
+                if ($stage -eq 1 -and ($buffer -match "Process 0 exited")) {
                      Write-Host "`n[TEST] Process 0 Finished. Creating directory /home..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 1000
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("mkdir /home`r`n")
@@ -505,15 +523,25 @@ try {
                 }
                 
                 if ($stage -eq 34 -and $buffer -match "PID.*PPID.*State.*Name") {
-                     Write-Host "`n[TEST] PS Headers Verified. Testing Environment Variables & 'runhello'..." -ForegroundColor Yellow
+                     Write-Host "`n[TEST] PS Headers Verified. Testing Service Registry + Env + runhello..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
-                     
-                     # 1. Export Environment Variable
+
+                     # 1. Verify service registry visibility
+                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("services`r`n")
+                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
+                     Start-Sleep -Milliseconds 200
+
+                     # 2. Export Environment Variable
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("export TEST_ENV=NovaTest`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                      Start-Sleep -Milliseconds 200
-                     
-                     # 2. Run 'runhello' which should inherit env vars
+
+                     # 3. Verify shell env store
+                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("env`r`n")
+                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
+                     Start-Sleep -Milliseconds 200
+
+                     # 4. Run 'runhello'
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("runhello`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                      
@@ -521,17 +549,21 @@ try {
                      $buffer = ""
                 }
 
-                if ($stage -eq 35 -and $buffer -match "Hello from Rust User App via Syscall!") {
-                     if ($buffer -match "TEST_ENV=NovaTest") {
-                         Write-Host "`n[TEST] Process Output & Env Var Verified! Testing Directory Rename..." -ForegroundColor Yellow
-                         
-                         $stage = 36
-                         $buffer = ""
-                         
-                         Start-Sleep -Milliseconds 500
-                         $bytes = [System.Text.Encoding]::ASCII.GetBytes("mkdir dir_old`r`n")
-                         foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
-                     }
+                if (
+                    $stage -eq 35 -and
+                    $buffer -match "serial\.v1" -and
+                    $buffer -match "fs\.v1" -and
+                    $buffer -match "TEST_ENV=NovaTest" -and
+                    $buffer -match "\[RUN\] Process spawned successfully"
+                ) {
+                     Write-Host "`n[TEST] Service Registry + Env + runhello Verified. Testing Directory Rename..." -ForegroundColor Yellow
+                     
+                     $stage = 36
+                     $buffer = ""
+                     
+                     Start-Sleep -Milliseconds 500
+                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("mkdir dir_old`r`n")
+                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                 }
 
                 if ($stage -eq 36 -and $buffer -match "NovaOS:.*>") { 

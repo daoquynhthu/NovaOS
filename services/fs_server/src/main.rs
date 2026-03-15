@@ -1,15 +1,40 @@
 #![no_std]
 #![no_main]
 
+mod allocator;
+
+use libnova::syscall::{sys_get_pid, sys_print, sys_service_lookup_exists, sys_service_register, sys_yield};
+use sel4_sys::{seL4_CPtr, seL4_IPCBuffer};
+
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
-    // 1. Initialize ATA Driver (moved from RootServer)
-    // 2. Initialize NovaFS (moved from RootServer)
-    // 3. Listen for IPC from RootServer/UserApps
-    
+pub static mut __sel4_ipc_buffer: *mut seL4_IPCBuffer = 0x3000_0000 as *mut seL4_IPCBuffer;
+
+#[no_mangle]
+pub extern "C" fn _start(
+    _argc: usize,
+    _argv: *const *const u8,
+    ep_cap_usize: usize,
+    _envp: *const *const u8,
+) -> ! {
+    let ep_cap = ep_cap_usize as seL4_CPtr;
+    libnova::console::init_console(ep_cap_usize);
+
+    let pid = sys_get_pid(ep_cap);
+    let _ = sys_service_register(ep_cap, "fs.v1", ep_cap);
+
+    sys_print(ep_cap, "[fs_server] booted\n");
+    if sys_service_lookup_exists(ep_cap, "fs.v1") {
+        sys_print(ep_cap, "[fs_server] registry visible\n");
+    } else {
+        sys_print(ep_cap, "[fs_server] registry missing\n");
+    }
+
+    if pid == usize::MAX {
+        sys_print(ep_cap, "[fs_server] pid invalid\n");
+    }
+
     loop {
-        // Placeholder for event loop
-        sel4_sys::seL4_Yield();
+        sys_yield(ep_cap);
     }
 }
 
