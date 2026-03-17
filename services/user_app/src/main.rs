@@ -22,12 +22,33 @@ fn panic(_info: &PanicInfo) -> ! {
 #[no_mangle]
 pub static mut __sel4_ipc_buffer: *mut seL4_IPCBuffer = 0x3000_0000 as *mut seL4_IPCBuffer;
 
+const SHM_CHILD_VADDR: usize = 0x6FFD_0000;
+const SHM_PARENT_VADDR: usize = 0x6FFE_0000;
+const SHM_PARENT_MAGIC: u64 = 0xA1B2_C3D4_E5F6_0718;
+const SHM_CHILD_MAGIC: u64 = 0x1837_26F5_E4D3_C2B1;
+
+fn usize_to_decimal_str<'a>(mut value: usize, buf: &'a mut [u8; 20]) -> &'a str {
+    let mut i = buf.len();
+    if value == 0 {
+        i -= 1;
+        buf[i] = b'0';
+    } else {
+        while value > 0 && i > 0 {
+            i -= 1;
+            buf[i] = b'0' + (value % 10) as u8;
+            value /= 10;
+        }
+    }
+    unsafe { core::str::from_utf8_unchecked(&buf[i..]) }
+}
+
 #[no_mangle]
 pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usize, envp: *const *const u8) -> ! {
     let ep_cap = ep_cap_usize as seL4_CPtr;
     // Initialize libnova console
     libnova::console::init_console(ep_cap_usize);
 
+    println!("DEBUG: User App Updated");
     println!("Process Entry: argc={}", argc);
 
     unsafe {
@@ -61,9 +82,14 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
     
     // Determine who we are
     let pid = sys_get_pid(ep_cap);
+    println!("DEBUG: Got PID {}", pid);
     
-    if pid == 0 {
-        println!("Process 0: Started.");
+    // Only PID 0 should execute the full integration suite.
+    // This avoids duplicated destructive setup when extra user_app instances are launched.
+    let is_main_suite = pid == 0;
+
+    if is_main_suite {
+        println!("Process {}: Started (Main Suite).", pid);
         println!("Hello from Rust User App via Syscall!");
         
         // Test File System Syscalls
@@ -139,7 +165,139 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
         } else {
             println!("Heap expansion failed!");
         }
-        
+
+        let shrink_brk = sys_brk(ep_cap, current_brk);
+        if shrink_brk == current_brk {
+            println!("Heap shrink successful!");
+        } else {
+            println!(
+                "Heap shrink failed! expected=0x{:x}, got=0x{:x}",
+                current_brk, shrink_brk
+            );
+        }
+
+        // Test shared mmap baseline (multi-page: 8K).
+        println!("Testing sys_mmap_shared...");
+        let shared_size = 8192usize;
+        let shared_addr = sys_mmap_shared(ep_cap, shared_size);
+        if shared_addr != 0 {
+            unsafe {
+                let p0 = shared_addr as *mut u64;
+                let p1 = (shared_addr + 4096) as *mut u64;
+                *p0 = 0x1122_3344_5566_7788;
+                *p1 = 0x8877_6655_4433_2211;
+                if *p0 == 0x1122_3344_5566_7788 && *p1 == 0x8877_6655_4433_2211 {
+                    println!("Shared mmap test passed at 0x{:x}.", shared_addr);
+                } else {
+                    println!("Shared mmap test failed: read-back mismatch.");
+                }
+            }
+
+            let unmap_ret = sys_munmap_shared(ep_cap, shared_addr, shared_size);
+            if unmap_ret == 0 {
+                println!("Shared munmap test passed.");
+            } else {
+                println!("Shared munmap test failed: {}.", unmap_ret);
+            }
+
+            let unmap_twice_ret = sys_munmap_shared(ep_cap, shared_addr, shared_size);
+            if unmap_twice_ret != 0 {
+                println!("Shared munmap double-call protection passed.");
+            } else {
+                println!("Shared munmap double-call protection failed.");
+            }
+        } else {
+            println!("Shared mmap test failed: syscall returned 0.");
+        }
+
+        // Cross-process shared memory regression:
+        // parent writes magic, child maps same key and writes back.
+        // Child intentionally exits without munmap to verify exit-time detach path.
+        println!("Testing cross-process shared memory...");
+        let shm_key = sys_shm_alloc(ep_cap, 4096);
+        if shm_key == 0 {
+            println!("Cross-process SHM test failed: alloc returned 0.");
+        } else {
+            let parent_map_ret = sys_shm_map(ep_cap, shm_key, SHM_PARENT_VADDR);
+            if parent_map_ret != 0 {
+                println!("Cross-process SHM test failed: parent map failed.");
+            } else {
+                unsafe {
+                    let p = SHM_PARENT_VADDR as *mut u64;
+                    *p = SHM_PARENT_MAGIC;
+                }
+
+                let mut key_buf = [0u8; 20];
+                let key_arg = usize_to_decimal_str(shm_key, &mut key_buf);
+                let shm_child_pid = sys_spawn(ep_cap, "/bin/hello", &["shm_child", key_arg], &[]);
+                if shm_child_pid < 0 {
+                    println!("Cross-process SHM test failed: child spawn failed.");
+                } else {
+                    let mut child_status: usize = 0;
+                    let mut child_reaped = false;
+                    for _ in 0..2000 {
+                        let (wpid, status) = sys_wait(ep_cap, shm_child_pid, 1);
+                        if wpid == shm_child_pid {
+                            child_status = status;
+                            child_reaped = true;
+                            break;
+                        }
+                        if wpid < 0 {
+                            println!("Cross-process SHM test failed: wait returned {}.", wpid);
+                            break;
+                        }
+                        sys_yield(ep_cap);
+                    }
+
+                    if !child_reaped {
+                        println!("Cross-process SHM test timeout, trying to kill child...");
+                        let _ = sys_kill(ep_cap, shm_child_pid as usize, 9);
+                        for _ in 0..256 {
+                            let (wpid, status) = sys_wait(ep_cap, shm_child_pid, 1);
+                            if wpid == shm_child_pid {
+                                child_status = status;
+                                child_reaped = true;
+                                break;
+                            }
+                            if wpid < 0 {
+                                break;
+                            }
+                            sys_yield(ep_cap);
+                        }
+                    }
+
+                    unsafe {
+                        let p = SHM_PARENT_VADDR as *mut u64;
+                        if child_reaped
+                            && child_status == 124
+                            && *p == SHM_CHILD_MAGIC
+                        {
+                            println!("Cross-process SHM test passed.");
+                        } else {
+                            println!(
+                                "Cross-process SHM test failed: reaped={}, status={}, value=0x{:x}.",
+                                child_reaped,
+                                child_status,
+                                *p
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        if shm_key != 0 {
+            let parent_unmap_ret = sys_munmap_shared(ep_cap, SHM_PARENT_VADDR, 4096);
+            if parent_unmap_ret == 0 {
+                println!("Cross-process SHM cleanup passed.");
+            } else {
+                println!(
+                    "Cross-process SHM cleanup failed: {}.",
+                    parent_unmap_ret
+                );
+            }
+        }
+
         // Test Global Allocator
         println!("Initializing Global Allocator...");
         let heap_size = 64 * 1024; // 64KB
@@ -168,8 +326,10 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
 
         // Test Process Management
         println!("Testing Process Management...");
-        // Spawn self as child (will get pid != 0)
-        let child_pid = sys_spawn(ep_cap, "/bin/hello", &["arg1", "arg2"], &["TEST_ENV=NovaOS"]);
+    println!("[USER APP] About to call sys_spawn...");
+    // Use standard sys_spawn
+    let child_pid = sys_spawn(ep_cap, "/bin/hello", &["arg1", "arg2"], &["TEST_ENV=NovaOS"]);
+        
         if child_pid >= 0 {
             println!("Spawned child PID: {}", child_pid);
             let (wpid, status) = sys_wait(ep_cap, child_pid, 0);
@@ -211,17 +371,45 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
     } else {
         println!("Process {} (Child) Started!", pid);
         
-        // Check if "loop" arg is present
+        // Parse child execution mode from args
         let args_iter = unsafe { libnova::env::Args::new(argc, argv) };
         let mut loop_mode = false;
+        let mut expect_shm_key = false;
+        let mut shm_child_key: Option<usize> = None;
         for arg in args_iter {
+            if expect_shm_key {
+                if let Ok(k) = arg.parse::<usize>() {
+                    shm_child_key = Some(k);
+                }
+                expect_shm_key = false;
+                continue;
+            }
             if arg == "loop" {
                 loop_mode = true;
-                break;
+            }
+            if arg == "shm_child" {
+                expect_shm_key = true;
             }
         }
-        
-        if loop_mode {
+
+        if let Some(key) = shm_child_key {
+            println!("Child entering shared-memory verification mode...");
+            if sys_shm_map(ep_cap, key, SHM_CHILD_VADDR) != 0 {
+                println!("Child SHM map failed.");
+                sys_exit(ep_cap, 201);
+            }
+            unsafe {
+                let p = SHM_CHILD_VADDR as *mut u64;
+                if *p != SHM_PARENT_MAGIC {
+                    println!("Child SHM read mismatch.");
+                    sys_exit(ep_cap, 202);
+                }
+                *p = SHM_CHILD_MAGIC;
+            }
+            // Intentionally do not call munmap here to verify exit-time detach/reclaim path.
+            println!("Child SHM verification passed.");
+            sys_exit(ep_cap, 124);
+        } else if loop_mode {
              println!("Child entering infinite loop...");
              loop {
                  sys_yield(ep_cap);

@@ -54,6 +54,38 @@ static mut SHARED_MEMORY_MANAGER: SharedMemoryManager = SharedMemoryManager::new
 
 static mut WORKER_STACK: [u8; 4096] = [0; 4096];
 
+const OOM_SLOT_RESERVE: usize = 64;
+const OOM_MIN_FREE_RAM_BYTES: u64 = 256 * 1024;
+
+fn deny_if_memory_pressure(
+    slots: &SlotAllocator,
+    allocator: &UntypedAllocator,
+    boot_info: &seL4_BootInfo,
+    needed_slots: usize,
+    context: &str,
+) -> bool {
+    let slots_ok = slots.can_allocate_with_reserve(needed_slots, OOM_SLOT_RESERVE);
+    let free_ram = allocator.free_ram_bytes(boot_info);
+    if slots_ok && free_ram >= OOM_MIN_FREE_RAM_BYTES {
+        return false;
+    }
+
+    let (_, _, free_slots) = slots.stats();
+    let fragmented = allocator.fragmentation_bytes(boot_info);
+    let (oom_events, last_oom_bits) = allocator.oom_stats();
+    println!(
+        "[OOM] Admission denied for {}: need_slots={}, free_slots={}, free_ram={} bytes, fragmented_tail={} bytes, oom_events={}, last_oom_bits={}",
+        context,
+        needed_slots,
+        free_slots,
+        free_ram,
+        fragmented,
+        oom_events,
+        last_oom_bits
+    );
+    true
+}
+
 extern "C" fn irq_worker_entry(notification: usize, endpoint: usize) {
     serial::send_char('[');
     serial::send_char('W');
@@ -84,11 +116,18 @@ fn spawn_boot_process(
     process_name: &str,
     file_name: &str,
     badge: u64,
-) {
+) -> bool {
     println!("[KERNEL] Spawning {} from /bin/{}...", process_name, file_name);
-    let badged_ep_slot = slot_allocator
-        .alloc()
-        .expect("Failed to alloc slot for boot process EP");
+    let badged_ep_slot = match slot_allocator.alloc() {
+        Ok(slot) => slot,
+        Err(e) => {
+            println!(
+                "[KERNEL] Failed to alloc EP slot for '{}' (badge {}): {:?}",
+                process_name, badge, e
+            );
+            return false;
+        }
+    };
     let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
     let cnode_depth = sel4_sys::seL4_WordBits as u8;
 
@@ -109,12 +148,12 @@ fn spawn_boot_process(
             "[KERNEL] Failed to mint EP for '{}' (badge {}): {:?}",
             process_name, badge, err
         );
-        return;
+        return false;
     }
 
     let Some(elf_data) = crate::filesystem::get_file(file_name) else {
         println!("[KERNEL] Boot file '{}' not found", file_name);
-        return;
+        return false;
     };
 
     match Process::spawn(
@@ -133,19 +172,26 @@ fn spawn_boot_process(
         0,
     ) {
         Ok(process) => {
-            if process_name == "serial_server" {
-                services::register("serial.v1", badged_ep_slot);
-                println!("[KERNEL] Service 'serial.v1' registered (boot bootstrap).");
-            } else if process_name == "fs_server" {
-                services::register("fs.v1", badged_ep_slot);
-                println!("[KERNEL] Service 'fs.v1' registered (boot bootstrap).");
-            }
-            if let Err(e) = get_process_manager().add_process(process) {
-                println!("[KERNEL] Failed to add '{}': {:?}", process_name, e);
+            match get_process_manager().add_process(process) {
+                Ok(_) => {
+                    if process_name == "serial_server" {
+                        services::register("serial.v1", badged_ep_slot);
+                        println!("[KERNEL] Service 'serial.v1' registered (boot bootstrap).");
+                    } else if process_name == "fs_server" {
+                        services::register("fs.v1", badged_ep_slot);
+                        println!("[KERNEL] Service 'fs.v1' registered (boot bootstrap).");
+                    }
+                    true
+                }
+                Err(e) => {
+                    println!("[KERNEL] Failed to add '{}': {:?}", process_name, e);
+                    false
+                }
             }
         }
         Err(e) => {
             println!("[KERNEL] Failed to spawn '{}': {:?}", process_name, e);
+            false
         }
     }
 }
@@ -629,7 +675,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     }
 
     // Keep the current process ordering to preserve existing integration test assumptions.
-    spawn_boot_process(
+    let _ = spawn_boot_process(
         boot_info,
         &mut allocator,
         &mut slot_allocator,
@@ -639,7 +685,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
         "hello",
         100,
     );
-    spawn_boot_process(
+    let _ = spawn_boot_process(
         boot_info,
         &mut allocator,
         &mut slot_allocator,
@@ -649,8 +695,6 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
         "hello",
         101,
     );
-
-
 
     // 5. Setup Interrupts
     println!("[KERNEL] Setting up Interrupts...");
@@ -1032,6 +1076,10 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 }
                 2 => { // sys_exit
                     println!("[INFO] Process {} exited with code: {}", pid, mrs[0]);
+                    unsafe {
+                        let _ = (*addr_of_mut!(SHARED_MEMORY_MANAGER))
+                            .detach_process(pid, &mut slot_allocator);
+                    }
                     
                     if pid == 0 && mrs[0] == 0 {
                         println!("[TEST] PASSED");
@@ -1310,6 +1358,19 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         caller_uid = p.uid;
                         caller_gid = p.gid;
                     }
+
+                    if deny_if_memory_pressure(
+                        &slot_allocator,
+                        &allocator,
+                        boot_info,
+                        48,
+                        "sys_spawn",
+                    ) {
+                        reply_mrs[0] = (-1i64) as u64;
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                        need_reply = true;
+                        continue;
+                    }
                     
                     // Scope to limit borrow of FS
                     let file_data = if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
@@ -1384,7 +1445,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                         caller_gid
                                     ) {
                                         Ok(p) => {
-                                            if get_process_manager().add_process(p).is_ok() {
+                                            if get_process_manager().add_process_at(new_pid, p).is_ok() {
                                                 success_pid = new_pid as isize;
                                                 println!("[KERNEL] Spawned process {} (PID {})", path, new_pid);
                                             } else {
@@ -1477,6 +1538,10 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                          };
 
                          if allowed {
+                             unsafe {
+                                 let _ = (*addr_of_mut!(SHARED_MEMORY_MANAGER))
+                                     .detach_process(target_pid, &mut slot_allocator);
+                             }
                              if let Err(e) = pm.exit_process(target_pid, -1, cnode, &mut slot_allocator, &mut frame_allocator) {
                                  println!("[KERNEL] sys_kill: Failed to kill {}: {:?}", target_pid, e);
                                  reply_mrs[0] = (-1i64) as u64;
@@ -2205,7 +2270,14 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
 
                     if fault_addr >= DEMAND_PAGING_START && fault_addr < DEMAND_PAGING_END {
                         let aligned_addr = fault_addr & !0xFFF; // Align to 4K
-                        println!("[KERNEL] Demand Paging: Mapping 0x{:x} (IP: 0x{:x}, Prefetch: {}) for fault at 0x{:x}", aligned_addr, ip, is_prefetch, fault_addr);
+                        println!(
+                            "[KERNEL] Demand Paging(pid={}): Mapping 0x{:x} (IP: 0x{:x}, Prefetch: {}) for fault at 0x{:x}",
+                            pid,
+                            aligned_addr,
+                            ip,
+                            is_prefetch,
+                            fault_addr
+                        );
                         
                         if let Some(p) = get_process_manager().get_process_mut(pid) {
                              // Allocate frame
@@ -2214,6 +2286,10 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                      if let Err(e) = process::clear_frame(&mut allocator, &mut slot_allocator, boot_info, frame_cap) {
                                           println!("[KERNEL] Failed to zero recycled frame: {:?}", e);
                                           let cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+                                          unsafe {
+                                              let _ = (*addr_of_mut!(SHARED_MEMORY_MANAGER))
+                                                  .detach_process(pid, &mut slot_allocator);
+                                          }
                                           let _ = p.terminate(cnode, &mut slot_allocator, &mut frame_allocator);
                                           get_process_manager().remove_process(pid);
                                           // need_reply = false;
@@ -2240,6 +2316,10 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                  } else {
                                      println!("[KERNEL] Failed to map page.");
                                      let cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+                                     unsafe {
+                                         let _ = (*addr_of_mut!(SHARED_MEMORY_MANAGER))
+                                             .detach_process(pid, &mut slot_allocator);
+                                     }
                                      let _ = p.terminate(cnode, &mut slot_allocator, &mut frame_allocator);
                                      get_process_manager().remove_process(pid);
                                      need_reply = false;
@@ -2247,6 +2327,10 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                              } else {
                                  println!("[KERNEL] Failed to allocate frame.");
                                  let cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+                                 unsafe {
+                                     let _ = (*addr_of_mut!(SHARED_MEMORY_MANAGER))
+                                         .detach_process(pid, &mut slot_allocator);
+                                 }
                                  let _ = p.terminate(cnode, &mut slot_allocator, &mut frame_allocator);
                                  get_process_manager().remove_process(pid);
                                  need_reply = false;
@@ -2259,6 +2343,10 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         println!("[KERNEL] Unhandled VM Fault at 0x{:x} (IP: 0x{:x}). Terminating.", fault_addr, ip);
                          if let Some(p) = get_process_manager().get_process_mut(pid) {
                              let cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+                             unsafe {
+                                 let _ = (*addr_of_mut!(SHARED_MEMORY_MANAGER))
+                                     .detach_process(pid, &mut slot_allocator);
+                             }
                              let _ = p.terminate(cnode, &mut slot_allocator, &mut frame_allocator);
                          }
                          get_process_manager().remove_process(pid);
@@ -2297,19 +2385,33 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 }
                 11 => { // sys_shm_alloc(size)
                     let size = mrs[0] as usize;
-                    unsafe {
-                        match (*addr_of_mut!(SHARED_MEMORY_MANAGER)).create_shared_region(
-                            &mut allocator, 
-                            &mut slot_allocator, 
-                            boot_info, 
-                            size
-                        ) {
-                            Ok(key) => {
-                                reply_mrs[0] = (key + 1) as u64;
-                            },
-                            Err(e) => {
-                                println!("[KERNEL] sys_shm_alloc failed: {:?}", e);
-                                reply_mrs[0] = 0; 
+                    let page_count = size
+                        .checked_add(4095)
+                        .map(|v| v / 4096)
+                        .unwrap_or(usize::MAX);
+                    if deny_if_memory_pressure(
+                        &slot_allocator,
+                        &allocator,
+                        boot_info,
+                        page_count.max(1),
+                        "sys_shm_alloc",
+                    ) {
+                        reply_mrs[0] = 0;
+                    } else {
+                        unsafe {
+                            match (*addr_of_mut!(SHARED_MEMORY_MANAGER)).create_shared_region(
+                                &mut allocator, 
+                                &mut slot_allocator, 
+                                boot_info, 
+                                size
+                            ) {
+                                Ok(key) => {
+                                    reply_mrs[0] = (key + 1) as u64;
+                                },
+                                Err(e) => {
+                                    println!("[KERNEL] sys_shm_alloc failed: {:?}", e);
+                                    reply_mrs[0] = 0; 
+                                }
                             }
                         }
                     }
@@ -2326,6 +2428,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                             } else {
                                 match (*addr_of_mut!(SHARED_MEMORY_MANAGER)).map_shared_region(
                                     key - 1, 
+                                    pid,
                                     p, 
                                     &mut allocator, 
                                     &mut slot_allocator, 
@@ -2343,6 +2446,107 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         }
                     } else {
                         reply_mrs[0] = 1; // Error
+                    }
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                38 => { // sys_mmap_shared(size) -> vaddr(0 on error)
+                    let requested_size = mrs[0] as usize;
+                    let page_size = 4096usize;
+                    let aligned_size = match requested_size.checked_add(page_size - 1) {
+                        Some(v) => v & !(page_size - 1),
+                        None => 0,
+                    };
+                    const MMAP_FLOOR: usize = 0x4000_0000;
+
+                    if requested_size == 0 || aligned_size == 0 {
+                        reply_mrs[0] = 0;
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                        need_reply = true;
+                    } else if let Some(p) = get_process_manager().get_process_mut(pid) {
+                        if p.mmap_top < aligned_size || (p.mmap_top - aligned_size) < MMAP_FLOOR {
+                            reply_mrs[0] = 0;
+                            reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                            need_reply = true;
+                        } else {
+                            let page_count = aligned_size / page_size;
+                            if deny_if_memory_pressure(
+                                &slot_allocator,
+                                &allocator,
+                                boot_info,
+                                page_count.saturating_mul(2).saturating_add(4),
+                                "sys_mmap_shared",
+                            ) {
+                                reply_mrs[0] = 0;
+                                reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                                need_reply = true;
+                                continue;
+                            }
+                            let vaddr = p.mmap_top - aligned_size;
+                            unsafe {
+                                match (*addr_of_mut!(SHARED_MEMORY_MANAGER)).create_shared_region(
+                                    &mut allocator,
+                                    &mut slot_allocator,
+                                    boot_info,
+                                    aligned_size,
+                                ) {
+                                    Ok(key) => {
+                                        match (*addr_of_mut!(SHARED_MEMORY_MANAGER)).map_shared_region(
+                                            key,
+                                            pid,
+                                            p,
+                                            &mut allocator,
+                                            &mut slot_allocator,
+                                            boot_info,
+                                            vaddr,
+                                        ) {
+                                            Ok(_) => {
+                                                p.mmap_top = vaddr;
+                                                reply_mrs[0] = vaddr as u64;
+                                            }
+                                            Err(_) => {
+                                                let _ = (*addr_of_mut!(SHARED_MEMORY_MANAGER))
+                                                    .destroy_unmapped_region(key, &mut slot_allocator);
+                                                reply_mrs[0] = 0;
+                                            }
+                                        }
+                                    }
+                                    Err(_) => {
+                                        reply_mrs[0] = 0;
+                                    }
+                                }
+                            }
+                            reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                            need_reply = true;
+                        }
+                    } else {
+                        reply_mrs[0] = 0;
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                        need_reply = true;
+                    }
+                }
+                39 => { // sys_munmap_shared(vaddr, size) -> 0 on success
+                    let vaddr = mrs[0] as usize;
+                    let size = mrs[1] as usize;
+                    if let Some(p) = get_process_manager().get_process_mut(pid) {
+                        unsafe {
+                            match (*addr_of_mut!(SHARED_MEMORY_MANAGER)).unmap_shared_region(
+                                pid,
+                                p,
+                                &mut slot_allocator,
+                                vaddr,
+                                size,
+                            ) {
+                                Ok(_) => {
+                                    reply_mrs[0] = 0;
+                                }
+                                Err(e) => {
+                                    reply_mrs[0] = e as u64;
+                                }
+                            }
+                        }
+                    } else {
+                        reply_mrs[0] = 1;
                     }
                     reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                     need_reply = true;
@@ -2412,6 +2616,13 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     
                     if let Some(ep) = services::lookup(&name_str) {
                         libnova::ipc::set_cap(0, ep);
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 1, 0); // 1 Extra Cap
+                    } else if let Some((resolved_name, ep, _version)) = services::lookup_latest(&name_str) {
+                        libnova::ipc::set_cap(0, ep);
+                        println!(
+                            "[KERNEL] Service lookup '{}' resolved to '{}'",
+                            name_str, resolved_name
+                        );
                         reply_info = libnova::ipc::MessageInfo::new(0, 0, 1, 0); // 1 Extra Cap
                     } else {
                         reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0); // Error

@@ -88,7 +88,14 @@ try {
 $testPassed = $false
 $stage = 0
 $buffer = ""
-$timeoutSeconds = 300
+$timeoutSeconds = 120
+$timeoutEnv = $env:NOVA_TEST_TIMEOUT_SECONDS
+if ($timeoutEnv) {
+    $parsedTimeout = 0
+    if ([int]::TryParse($timeoutEnv, [ref]$parsedTimeout) -and $parsedTimeout -ge 30) {
+        $timeoutSeconds = $parsedTimeout
+    }
+}
 $startTime = Get-Date
 
 try {
@@ -531,17 +538,22 @@ try {
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                      Start-Sleep -Milliseconds 200
 
-                     # 2. Export Environment Variable
+                     # 2. Verify version-aware service resolve
+                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("svc serial`r`n")
+                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
+                     Start-Sleep -Milliseconds 200
+
+                     # 3. Export Environment Variable
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("export TEST_ENV=NovaTest`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                      Start-Sleep -Milliseconds 200
 
-                     # 3. Verify shell env store
+                     # 4. Verify shell env store
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("env`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                      Start-Sleep -Milliseconds 200
 
-                     # 4. Run 'runhello'
+                     # 5. Run 'runhello'
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("runhello`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                      
@@ -553,6 +565,7 @@ try {
                     $stage -eq 35 -and
                     $buffer -match "serial\.v1" -and
                     $buffer -match "fs\.v1" -and
+                    $buffer -match "service serial => serial\.v1" -and
                     $buffer -match "TEST_ENV=NovaTest" -and
                     $buffer -match "\[RUN\] Process spawned successfully"
                 ) {

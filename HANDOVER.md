@@ -5,8 +5,8 @@
 RootServer 作为 seL4 启动后的首个用户态进程，负责接管系统资源、初始化硬件驱动、提供文件系统服务及进程管理功能。
 
 ### 当前版本: v0.0.9-alpha (2026-01-21)
-**状态**: 系统调用接口标准化完成，权限控制体系初步建立。文件系统核心功能（NovaFS）趋于稳定。
-**最近更新**: 修复了 `mv` 命令静默失败的潜在 Bug (NovaFS lookup logic)，对齐了所有文件系统相关的 Syscall。
+**状态**: 关键功能可用，但存在 sys_spawn / lookup / 终端异常，需要优先修复与验证。
+**最近更新**: 修复了 `seL4_ReplyRecv` 的 IPC buffer 写回路径，并在 `sys_spawn` 增加 MR 诊断日志。
 
 ## 2. 核心功能进展 (已完成)
 
@@ -38,10 +38,17 @@ RootServer 作为 seL4 启动后的首个用户态进程，负责接管系统资
 
 ## 3. 待验证与已知问题 (Pending Verification & Issues)
 
-### � NovaFS 重命名校验 (Rename Verification)
-- **状态**: 刚刚修复了 `lookup` 中的稀疏块处理 Bug。
-- **现象**: 之前 `mv` 命令可能出现源文件未删除的现象（静默失败）。
-- **验证**: 需重新运行 `test.ps1` 中的 `mv` 测试用例，确认源文件是否被正确删除。
+### 🔴 sys_spawn 异常参数
+- **现象**: `envs_count` 出现超大值（如 7810763681669145135），导致 “Too many envs”。
+- **怀疑点**: IPC buffer 映射不一致或回复路径 MR 被污染。
+
+### 🔴 终端静默失败
+- **现象**: Terminal#995-1009 仍抛出同样错误日志，终端无输出。
+- **任务**: 复现并定位具体 syscall/IPC 序列。
+
+### 🟠 NovaFS lookup failed
+- **现象**: 多处 `lookup failed` 日志。
+- **任务**: 排查目录项损坏、路径解析与块读取流程。
 
 ### 🟡 权限控制覆盖率
 - **状态**: 框架已建立，但部分边缘 Case 需测试。
@@ -49,16 +56,17 @@ RootServer 作为 seL4 启动后的首个用户态进程，负责接管系统资
 
 ## 4. 接手工作建议 (Next Steps)
 
-1.  **运行集成测试**:
-    - 执行 `powershell -File .\test.ps1`。
-    - 重点关注 `Rename Test` 章节的输出。
+1.  **优先定位 sys_spawn 异常**:
+    - 核对 user_app IPC buffer 固定地址与 RootServer 映射流程是否一致。
+    - 关注 `manual_reply` 分支的 MR 读写是否被覆盖。
 
-2.  **完善进程管理**:
-    - 实现 `sys_fork` 和 `sys_exec`，目前仅有 `sys_spawn`。
-    - 完善 `waitpid` 的阻塞逻辑 (目前部分为忙等待)。
+2.  **修复 lookup failed 与终端异常**:
+    - 复现 `lookup failed`，验证目录项与路径解析逻辑。
+    - 复现 Terminal#995-1009 日志，定位触发的 syscall。
 
-3.  **代码清理**:
-    - `rootserver/src/main.rs` 中的 Syscall Handler 随着功能增加变得庞大，建议按模块拆分。
+3.  **运行集成测试**:
+    - 执行 `powershell -ExecutionPolicy Bypass -File .\test.ps1`。
+    - 关注重命名与 spawn 相关测试输出。
 
 ## 5. 项目结构索引
 - **构建**: `powershell -ExecutionPolicy Bypass -File .\build.ps1`

@@ -9,13 +9,16 @@ const SE_L4_CAP_INIT_THREAD_CNODE: seL4_CPtr = 2;
 const MAX_CSPACE_SLOTS: usize = 4096;
 const BITMAP_SIZE: usize = MAX_CSPACE_SLOTS / 64;
 const MAX_UNTYPED_CAPS: usize = 256;
+const MIN_REUSABLE_FRAGMENT_BITS: u8 = 12; // 4K
+const FRAGMENTATION_GUARD_GAP_BITS: u8 = 6; // avoid burning very large untyped for tiny objects
 
-/// Represents a region of memory backed by a frame capability
+pub const MAX_REGION_PAGES: usize = 16;
+
+/// Represents a contiguous virtual memory region backed by 4K frame capabilities.
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryRegion {
-    pub frame_cap: seL4_CPtr,
-    #[allow(dead_code)]
-    pub size_bits: usize,
+    pub frame_caps: [seL4_CPtr; MAX_REGION_PAGES],
+    pub page_count: usize,
 }
 
 /// Allocator for CSpace slots (CNode indices) using a Bitmap
@@ -120,6 +123,15 @@ impl SlotAllocator {
         }
         (total, total - free, free)
     }
+
+    pub fn free_slots(&self) -> usize {
+        let (_, _, free) = self.stats();
+        free
+    }
+
+    pub fn can_allocate_with_reserve(&self, needed: usize, reserve: usize) -> bool {
+        self.free_slots() >= needed.saturating_add(reserve)
+    }
 }
 
 /// Trait for allocating kernel objects from untyped memory
@@ -142,6 +154,8 @@ pub struct UntypedAllocator {
     last_used_idx: usize,
     // Track usage of each untyped cap to simulate kernel's internal allocator state
     usage: [usize; MAX_UNTYPED_CAPS],
+    oom_events: usize,
+    last_oom_size_bits: seL4_Word,
 }
 
 impl UntypedAllocator {
@@ -154,6 +168,8 @@ impl UntypedAllocator {
             untyped_end: boot_info.untyped.end as usize,
             last_used_idx: 0,
             usage: [0; MAX_UNTYPED_CAPS],
+            oom_events: 0,
+            last_oom_size_bits: 0,
         }
     }
 
@@ -236,6 +252,117 @@ impl UntypedAllocator {
 
         (total_caps, ram_caps, ram_used_bytes, ram_total_bytes, self.last_used_idx)
     }
+
+    pub fn oom_stats(&self) -> (usize, seL4_Word) {
+        (self.oom_events, self.last_oom_size_bits)
+    }
+
+    pub fn free_ram_bytes(&self, boot_info: &seL4_BootInfo) -> u64 {
+        let (_, _, used, total, _) = self.stats(boot_info);
+        total.saturating_sub(used)
+    }
+
+    pub fn fragmentation_bytes(&self, boot_info: &seL4_BootInfo) -> u64 {
+        let max = core::cmp::min(
+            self.untyped_end.saturating_sub(self.untyped_start),
+            core::cmp::min(boot_info.untypedList.len(), MAX_UNTYPED_CAPS),
+        );
+        let reusable_threshold = 1usize << MIN_REUSABLE_FRAGMENT_BITS;
+        let mut stranded = 0u64;
+
+        for idx in 0..max {
+            let desc = &boot_info.untypedList[idx];
+            if desc.isDevice != 0 {
+                continue;
+            }
+            let cap_size = match 1usize.checked_shl(desc.sizeBits as u32) {
+                Some(v) => v,
+                None => continue,
+            };
+            let used = self.usage[idx];
+            if used >= cap_size {
+                continue;
+            }
+            let remaining = cap_size - used;
+            if remaining > 0 && remaining < reusable_threshold {
+                stranded = stranded.saturating_add(remaining as u64);
+            }
+        }
+
+        stranded
+    }
+
+    fn select_candidate(
+        &self,
+        boot_info: &seL4_BootInfo,
+        size_bits: seL4_Word,
+        avoid_large_gaps: bool,
+    ) -> Option<usize> {
+        let count = self.untyped_end.saturating_sub(self.untyped_start);
+        let mut best_idx: Option<usize> = None;
+        let mut best_gap = u8::MAX;
+        let mut best_tail_penalty = u8::MAX;
+        let mut best_remaining = usize::MAX;
+
+        for idx in 0..count {
+            if idx >= boot_info.untypedList.len() || idx >= MAX_UNTYPED_CAPS {
+                break;
+            }
+
+            let desc = &boot_info.untypedList[idx];
+            if desc.isDevice != 0 || (desc.sizeBits as seL4_Word) < size_bits {
+                continue;
+            }
+
+            let gap = desc.sizeBits.saturating_sub(size_bits as u8);
+            if avoid_large_gaps && gap > FRAGMENTATION_GUARD_GAP_BITS {
+                continue;
+            }
+
+            let alignment = match 1usize.checked_shl(size_bits as u32) {
+                Some(v) => v,
+                None => continue,
+            };
+            let cap_size = match 1usize.checked_shl(desc.sizeBits as u32) {
+                Some(v) => v,
+                None => continue,
+            };
+
+            let current_usage = self.usage[idx];
+            let start_offset = (current_usage + alignment - 1) & !(alignment - 1);
+            let end_offset = match start_offset.checked_add(alignment) {
+                Some(v) => v,
+                None => continue,
+            };
+            if end_offset > cap_size {
+                continue;
+            }
+
+            let remaining = cap_size - end_offset;
+            let tail_penalty = if remaining > 0 && remaining < (1usize << MIN_REUSABLE_FRAGMENT_BITS)
+            {
+                1
+            } else {
+                0
+            };
+
+            let better = best_idx.is_none()
+                || gap < best_gap
+                || (gap == best_gap && tail_penalty < best_tail_penalty)
+                || (gap == best_gap
+                    && tail_penalty == best_tail_penalty
+                    && remaining < best_remaining);
+
+            if better {
+                best_idx = Some(idx);
+                best_gap = gap;
+                best_tail_penalty = tail_penalty;
+                best_remaining = remaining;
+            }
+        }
+
+        best_idx
+    }
 }
 
 impl ObjectAllocator for UntypedAllocator {
@@ -246,62 +373,23 @@ impl ObjectAllocator for UntypedAllocator {
         size_bits: seL4_Word,
         slots: &mut SlotAllocator,
     ) -> Result<seL4_CPtr, seL4_Error> {
-        let dest_slot = slots.alloc()?; 
+        let dest_slot = slots.alloc()?;
 
-        // Best-fit allocation strategy with usage tracking
-        let count = self.untyped_end - self.untyped_start;
-        let mut best_idx: Option<usize> = None;
-        let mut best_size_diff = u8::MAX;
-
-        // 1. First pass: find the best fitting untyped memory that has enough space
-        for i in 0..count {
-            let idx = i;
-            if idx >= boot_info.untypedList.len() {
-                continue;
-            }
-            // Bounds check for usage array
-            if idx >= MAX_UNTYPED_CAPS {
-                break;
-            }
-
-            let desc = &boot_info.untypedList[idx];
-
-            // Skip device memory and too small blocks
-            if desc.isDevice != 0 || (desc.sizeBits as seL4_Word) < size_bits {
-                continue;
-            }
-
-            // Check if we have enough space left (accounting for alignment)
-            let current_usage = self.usage[idx];
-            let alignment = 1 << size_bits;
-            // Align up the current usage
-            let start_offset = (current_usage + alignment - 1) & !(alignment - 1);
-            let end_offset = start_offset + (1 << size_bits);
-            
-            if end_offset > (1 << desc.sizeBits) {
-                // Not enough space in this block
-                continue;
-            }
-
-            let size_diff = desc.sizeBits.saturating_sub(size_bits as u8);
-            if size_diff < best_size_diff {
-                best_size_diff = size_diff;
-                best_idx = Some(idx);
-                // Optimization: if exact match, break early
-                if best_size_diff == 0 {
-                    break;
-                }
-            }
-        }
+        // Fragmentation-aware allocation strategy:
+        // 1) avoid consuming very large untyped for small objects when possible
+        // 2) among candidates, prefer minimal size gap and minimal stranded tail
+        let best_idx = self
+            .select_candidate(boot_info, size_bits, true)
+            .or_else(|| self.select_candidate(boot_info, size_bits, false));
 
         // 2. Try to allocate from the best candidate
         if let Some(idx) = best_idx {
             let untyped_cptr = self.untyped_start + idx;
-            let _desc = &boot_info.untypedList[idx];
+            let desc = &boot_info.untypedList[idx];
             
             // Calculate offset again for the chosen block
             let current_usage = self.usage[idx];
-            let alignment = 1 << size_bits;
+            let alignment = 1usize << size_bits;
             let start_offset = (current_usage + alignment - 1) & !(alignment - 1);
             
             // Perform retype
@@ -327,11 +415,28 @@ impl ObjectAllocator for UntypedAllocator {
             // Update usage
             self.usage[idx] = start_offset + (1 << size_bits);
             self.last_used_idx = idx;
+
+            // Best-effort warning when this allocation leaves a tiny tail fragment.
+            let cap_size = 1usize.checked_shl(desc.sizeBits as u32).unwrap_or(0);
+            let remaining = cap_size.saturating_sub(self.usage[idx]);
+            if remaining > 0 && remaining < (1usize << MIN_REUSABLE_FRAGMENT_BITS) {
+                println!(
+                    "[Alloc] Warning: untyped idx {} left tiny fragment {} bytes",
+                    idx, remaining
+                );
+            }
             
             return Ok(dest_slot);
         }
 
-        println!("[Alloc] No suitable untyped memory found for size_bits {}", size_bits);
+        self.oom_events = self.oom_events.saturating_add(1);
+        self.last_oom_size_bits = size_bits;
+        let free_ram = self.free_ram_bytes(boot_info);
+        let fragmented = self.fragmentation_bytes(boot_info);
+        println!(
+            "[Alloc] OOM: no suitable untyped for size_bits {} (free_ram={} bytes, fragmented_tail={} bytes, oom_events={})",
+            size_bits, free_ram, fragmented, self.oom_events
+        );
         slots.free(dest_slot);
         Err(seL4_Error::seL4_NotEnoughMemory)
     }
@@ -354,17 +459,22 @@ impl FrameAllocator {
         allocator: &mut A,
         boot_info: &seL4_BootInfo,
         slots: &mut SlotAllocator,
-    ) -> Result<seL4_CPtr, seL4_Error> {
-        // TEMP DEBUG: Disable recycling to test if frame 567 is corrupt
-        // if let Some(cap) = self.free_frames.pop() {
-        //    return Ok(cap);
-        // }
+    ) -> Result<(seL4_CPtr, bool), seL4_Error> {
+        // Recycle frames if available
+        if let Some(cap) = self.free_frames.pop() {
+           return Ok((cap, true));
+        }
         // No free frames, allocate new one
         // 4K Frame = size_bits 12, type = seL4_X86_4K (value 8)
-        allocator.allocate(boot_info, 8, 12, slots)
+        let cap = allocator.allocate(boot_info, 8, 12, slots)?;
+        Ok((cap, false))
     }
 
     pub fn free(&mut self, frame_cap: seL4_CPtr) {
         self.free_frames.push(frame_cap);
+    }
+
+    pub fn free_count(&self) -> usize {
+        self.free_frames.len()
     }
 }

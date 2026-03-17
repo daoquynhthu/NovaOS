@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 libnova = { path = "../../libs/libnova" }
 sel4-sys = { path = "../../libs/seL4-sys" }
+linked_list_allocator = "0.10.5"
 
 [[bin]]
 name = "fs_server"

@@ -43,7 +43,7 @@ fn test_rootserver_mapping(
 ) {
     println!("[INFO] Testing RootServer VSpace Mapping...");
     let frame_cap = match frame_allocator.alloc(allocator, boot_info, slot_allocator) {
-        Ok(c) => c,
+        Ok((c, _)) => c,
         Err(e) => {
              println!("[FAIL] Failed to allocate frame: {:?}", e);
              return;
@@ -270,6 +270,7 @@ fn test_process_manager() {
         name: alloc::string::String::from("dummy"),
         exit_code: None,
         waiting_for_child: None,
+        mmap_top: 0x7000_0000,
     };
     
     // Test Add
@@ -483,6 +484,16 @@ fn stress_test_memory_allocation(
     println!("[STRESS] Memory Stats: Caps={}/{}, RAM Usage={} / {} bytes ({}%)", 
         ram_caps, total_caps, ram_used, ram_total, 
         if ram_total > 0 { (ram_used * 100) / ram_total } else { 0 }
+    );
+    println!(
+        "[STRESS] Free RAM={} bytes, FragmentedTail(<4K)={} bytes",
+        allocator.free_ram_bytes(boot_info),
+        allocator.fragmentation_bytes(boot_info)
+    );
+    let (oom_events, last_oom_bits) = allocator.oom_stats();
+    println!(
+        "[STRESS] OOM Counters: events={}, last_size_bits={}",
+        oom_events, last_oom_bits
     );
 }
 

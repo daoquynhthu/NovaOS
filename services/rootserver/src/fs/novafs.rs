@@ -802,13 +802,13 @@ impl<D: BlockDevice + Send + Sync + 'static> Inode for NovaInode<D> {
         let mut offset = 0;
         let entry_size = size_of::<DirEntry>();
         let mut loop_count = 0;
-        const MAX_LOOP: usize = 10000;
+        const MAX_LOOP: usize = 100000; // Increased limit
         
         while offset < size {
             loop_count += 1;
             if loop_count > MAX_LOOP {
-                println!("NovaFS Error: lookup loop limit exceeded");
-                break;
+                println!("NovaFS Error: lookup loop limit exceeded (offset={})", offset);
+                return Err("Directory too large (lookup limit)");
             }
 
             let block_idx = (offset / BLOCK_SIZE) as u32;
@@ -846,12 +846,18 @@ impl<D: BlockDevice + Send + Sync + 'static> Inode for NovaInode<D> {
         }
         
         // println!("DEBUG: lookup failed for '{}'", name);
-        println!("NovaFS Debug: lookup failed for '{}' in inode {}", name, self.inode_number);
         Err("File not found")
     }
 
     fn create(&self, name: &str, type_: FileType) -> Result<Arc<dyn Inode>, &'static str> {
         println!("NovaFS Debug: create '{}' inside inode {}", name, self.inode_number);
+
+        // Fast-fail before allocating an inode. This prevents damaging rollback paths
+        // when directory entries already exist but bitmap state is stale.
+        if self.lookup(name).is_ok() {
+            return Err("File exists");
+        }
+
         // Allocate inode first
         let new_inode_num = self.fs.alloc_inode()?;
         println!("create: name='{}' allocated inode={}", name, new_inode_num);
@@ -1200,7 +1206,7 @@ impl<D: BlockDevice + Send + Sync + 'static> Inode for NovaInode<D> {
         let entry_size = size_of::<DirEntry>();
         let mut offset = 0;
         let mut loop_count = 0;
-        const MAX_LOOP: usize = 256;
+        const MAX_LOOP: usize = 100000;
         
         while offset < size {
             loop_count += 1;

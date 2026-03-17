@@ -2,6 +2,7 @@ use sel4_sys::*;
 use xmas_elf::{ElfFile, program};
 use crate::memory::{SlotAllocator, ObjectAllocator, FrameAllocator};
 use crate::vspace::VSpace;
+use crate::process::MappedFrame;
 use libnova::cap::{cap_rights_new, CNode};
 
 // Temporary constant until we confirm sel4_sys export
@@ -35,7 +36,7 @@ impl<'a> ElfLoader<'a> {
         frame_allocator: &mut FrameAllocator,
         target_vspace: &mut VSpace,
         elf_data: &[u8],
-        mapped_frames: &mut alloc::vec::Vec<seL4_CPtr>,
+        mapped_frames: &mut alloc::vec::Vec<MappedFrame>,
     ) -> Result<usize, seL4_Error> {
         println!("[Loader] load_elf called. Data len: {}", elf_data.len());
         if elf_data.len() > MAX_ELF_SIZE {
@@ -83,7 +84,7 @@ impl<'a> ElfLoader<'a> {
 
                 for page_vaddr in (start_page..end_page).step_by(PAGE_SIZE) {
                     // 1. Allocate Frame using FrameAllocator
-                    let frame_cap = frame_allocator.alloc(
+                    let (frame_cap, _recycled) = frame_allocator.alloc(
                         allocator,
                         self.boot_info,
                         slot_allocator
@@ -95,6 +96,11 @@ impl<'a> ElfLoader<'a> {
                     }
                     
                     println!("[Loader] Allocated frame {} for vaddr {:x}", frame_cap, page_vaddr);
+
+                    let read = flags.is_read() || flags.is_execute();
+                    let write = flags.is_write();
+                    let target_rights = cap_rights_new(false, false, read, write);
+                    let default_attr = sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
 
                     let res = (|| -> Result<(), seL4_Error> {
                         // 2. Map to RootServer for copying
@@ -177,13 +183,6 @@ impl<'a> ElfLoader<'a> {
                         slot_allocator.free(copy_cap);
 
                         // 5. Map to Target VSpace
-                        // Convert ELF flags to seL4 rights
-                        let read = flags.is_read() || flags.is_execute();
-                        let write = flags.is_write();
-                        // let exec = flags.is_execute(); // seL4 x86 often ignores this or ties to Read
-                        
-                        let target_rights = cap_rights_new(false, false, read, write); 
-                        
                         println!("[Loader] Mapping frame {} to target vaddr {:x} with rights {:?} (R={}, W={}). PML4={}", 
                             frame_cap, page_vaddr, target_rights, read, write, target_vspace.pml4_cap);
 
@@ -211,7 +210,13 @@ impl<'a> ElfLoader<'a> {
                     }
                     
                     // Track the allocated frame
-                    mapped_frames.push(frame_cap);
+                    mapped_frames.push(MappedFrame {
+                        cap: frame_cap,
+                        vaddr: page_vaddr,
+                        rights: target_rights,
+                        attr: default_attr,
+                        reclaim_to_frame_allocator: true,
+                    });
                 }
             }
         }

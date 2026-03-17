@@ -3,10 +3,19 @@
 > 本文档用于记录项目里程碑、已完成任务以及下一步计划。每次重大变更后必须更新。
 
 ## 📅 当前状态
-- **日期**: 2026-03-15
+- **日期**: 2026-03-16
 - **阶段**: 0.8.0 - 稳定性回归 + 微内核拆分启动 (Stabilization + Microkernel Split Kickoff)
 - **版本**: `v0.1.0-alpha`
 - **状态**: 主线构建与全量测试可通过，已启动 RootServer 降权与服务化改造
+
+## 🧭 微内核化执行路径图 (Execution Path Map)
+- [x] **P0 稳定基线锁定**: 维持 `test.ps1` 全绿，所有架构改造以“可回退”为前提。
+- [ ] **M1 FS IPC 协议与服务环路** (进行中): 建立 `fs.v1` 请求/响应协议、服务端事件循环、健康探针（ping）。
+    - 已完成：`fs.v1` 协议常量预留（`FS_LABEL_PING` / `FS_STATUS_READY` / `FS_PROTO_V1`）。
+    - 进行中：独立 service endpoint 设计（当前与 syscall endpoint 共享会引发竞争，已回退到稳定路径）。
+- [ ] **M2 RootServer 文件 syscall 转发切换**: `open/read/write/close/...` 从 RootServer 本地 VFS 切到 `fs_server` IPC。
+- [ ] **M3 Shell 文件命令服务化**: `ls/cat/touch/mkdir/rm/mv/...` 统一走 `fs_server`。
+- [ ] **M4 失效恢复与回归收口**: `fs_server` 崩溃/重启场景下保持可恢复，新增故障回归用例。
 
 ## ✅ 已完成任务 (Completed)
 
@@ -28,10 +37,30 @@
 - [x] **服务注册可观测性增强**:
     - Shell 新增 `services` 命令，直接展示当前内核服务注册表（名称 + endpoint slot）。
     - RootServer 在服务进程启动成功后执行引导注册（`serial.v1`/`fs.v1`），与服务自注册形成双保险，避免早期观测盲区。
+    - 引入 Name Service v0 能力：`sys_service_lookup` 在精确匹配失败后支持版本回退（如 `serial` -> `serial.v1`），并新增 Shell `svc <name>` 诊断命令。
 - [x] **集成测试增强（服务化回归）**:
     - `test.ps1` 增加 `serial_server` / `fs_server` 构建步骤。
     - Stage 34-35 改为校验服务注册可见性（`serial.v1`/`fs.v1`）、Shell 环境变量生效，以及 `runhello` 拉起成功日志，降低 PID 复用导致的脆弱性。
+    - 新增 `svc serial` 自动化校验，覆盖版本回退解析链路。
     - 修复 Stage 1 过宽匹配（误将 `Process 1 exited` 识别为主流程结束）并完成全流程回归：`All Tests Passed`。
+
+### 2026-03-16: 微内核化演进第三步 (Phase 4 Progress Sync)
+- [x] **进度核对与补标**:
+    - 将已落地的 Name Service（版本回退解析）状态同步到 Phase 4 任务清单，避免“代码已实现但未勾选”的状态漂移。
+
+### 2026-03-16: 微内核化演进第四步 (Phase 4 M1 IPC Loop)
+- [x] **协议面预留完成**:
+    - 增加 `fs.v1` 协议常量（`FS_LABEL_PING` / `FS_STATUS_READY` / `FS_PROTO_V1`），为后续独立端点接入做准备。
+- [x] **稳定性回退完成（避免共享端点竞争）**:
+    - 发现 `fs_server` 直接 `Recv` 共享 syscall endpoint 会引发非确定性异常，已回退为稳定的 `yield` 模式。
+    - `test.ps1` 移除 `fsping` 强制校验，恢复主线回归确定性。
+
+### 2026-03-17: 回归稳定性修复 (Stability Hardening)
+- [x] **服务启动链恢复稳定**:
+    - 回退 RootServer 启动路径中的高风险映射逻辑，恢复经验证稳定的 deferred service 拉起流程。
+    - `test.ps1` 在 `NOVA_TEST_TIMEOUT_SECONDS=110` 下验证通过（`All Tests Passed`）。
+- [x] **测试超时策略收敛**:
+    - `test.ps1` 默认超时从 `300s` 调整为 `120s`，并支持 `NOVA_TEST_TIMEOUT_SECONDS` 覆盖。
 
 ### 2026-03-15: 稳定性修复与回归验证 (Stability Regression)
 - [x] **NovaFS 创建路径防护**:
@@ -190,7 +219,7 @@
 #### Phase 3: 核心功能完善 (Current - Core System Maturity)
 > *由于 NovaFS 功能尚简陋（如不支持子目录、大文件），且进程管理缺失关键特性（如 fork/exec），本阶段优先完善核心功能，推迟架构重构。*
 
-- [ ] **文件系统增强 (File System 2.0)**:
+- [x] **文件系统增强 (File System 2.0)**:
     - [x] **目录树支持**: 实现子目录 (`mkdir`), 支持路径解析 (`..` support, `/home/user/doc.txt`).
     - [x] **大文件支持**: 引入二级间接索引 (Double Indirect Block), 突破 70KB 限制 (Shell `writetest` added).
     - [x] **文件删除完善**: 优化 `rm` / `unlink`, 已实现 Direct/Indirect/Double-Indirect 数据块的全量回收 (Bitmap Clearing).
@@ -206,9 +235,10 @@
         - [x] `sys_spawn`: 环境变量支持与参数传递优化.
     - [ ] **ELF Loader 改进**: 支持动态链接器 (ld.so) 预留接口.
 
-- [ ] **内存管理增强 (Memory Management)**:
-    - [ ] **Shared Memory**: 实现 `sys_mmap` (Shared), 为未来微内核 IPC 做准备.
-    - [ ] **Heap Management**: 完善 `sys_brk` 的内存回收机制 (Shrink).
+- [x] **内存管理增强 (Memory Management)**:
+    - [x] **Shared Memory**: 已实现 `sys_mmap` (Shared) 多页映射能力（当前上限 16 页 / 64KB），补齐 `sys_munmap_shared` + 引用计数回收 + 进程退出自动清理；跨进程共享内存读写回归（父写子读/子写父读）已恢复并通过。
+    - [x] **Heap Management**: 已完成 `sys_brk` 内存回收机制 (Shrink) 并通过回归测试.
+    - [x] **OOM/碎片治理**: 引入碎片感知分配策略（避免大块被小对象过早消耗）、关键 syscall 的内存准入水位保护、以及 `meminfo`/压力测试中的碎片与 OOM 计数可观测性。
 
 #### Phase 4: 微内核化演进 (Future - Microkernel Evolution)
 - [ ] **架构重构**:
@@ -216,8 +246,10 @@
     - [x] 创建 `services/fs_server` 目录结构。
     - [x] 服务进程纳入 workspace 构建。
     - [x] 建立服务注册 syscall SDK（register/lookup_exists）。
-    - [ ] RootServer 启动阶段自动拉起 `serial_server` 并切换日志路径。
-    - [ ] RootServer 启动阶段自动拉起 `fs_server` 并迁移 VFS 入口。
-    - [ ] 建立 Name Service（统一服务发现与版本管理）。
+    - [ ] RootServer 启动阶段自动拉起 `serial_server`。
+    - [ ] RootServer 日志路径切换到 `serial_server` IPC。
+    - [ ] RootServer 启动阶段自动拉起 `fs_server`。
+    - [ ] 迁移 VFS 入口到 `fs_server`（Shell 文件操作改走 IPC）。
+    - [x] 建立 Name Service（统一服务发现与版本管理，含版本回退解析）。
     - [ ] 将 Shell 文件操作改为通过 `fs_server` IPC 转发。
 

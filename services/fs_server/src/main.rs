@@ -33,6 +33,8 @@ pub extern "C" fn _start(
         sys_print(ep_cap, "[fs_server] pid invalid\n");
     }
 
+    sys_print(ep_cap, "[fs_server] service loop ready (yield mode)\n");
+
     loop {
         sys_yield(ep_cap);
     }

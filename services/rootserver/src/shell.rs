@@ -11,8 +11,8 @@ const HISTORY_LEN: usize = 16;
 
 const COMMANDS: &[&str] = &[
     "help", "clear", "echo", "cat", "whoami", "status", "bootinfo", "alloc", "meminfo",
-    "ps", "services", "ls", "kill", "exec", "history", "post", "runhello", "cd", "mkdir", "rm", "cp", "mv", "touch", "pwd",
-    "renice", "pci", "date", "disk_read", "disk_write", "mkfs", "mount", "sync", "write", "encrypt", "decrypt", "ln", "chmod", "chown",
+    "ps", "services", "svc", "ls", "kill", "exec", "history", "post", "runhello", "cd", "mkdir", "rm", "cp", "mv", "touch", "pwd",
+    "fsping", "renice", "pci", "date", "disk_read", "disk_write", "mkfs", "mount", "sync", "write", "encrypt", "decrypt", "ln", "chmod", "chown",
     "env", "export", "unset"
 ];
 
@@ -632,6 +632,8 @@ impl Shell {
             println!("  meminfo   - Show memory usage summary");
             println!("  ps        - List tracked processes");
             println!("  services  - List registered kernel services");
+            println!("  svc       - Resolve service (svc <name>)");
+            println!("  fsping    - Ping fs service health endpoint");
             println!("  ls        - List available files");
             println!("  kill      - Kill a process by PID");
             println!("  exec      - Execute a program (e.g. exec hello)");
@@ -849,14 +851,22 @@ impl Shell {
                 let bi = unsafe { &*self.boot_info };
                 let slots = unsafe { &*self.slots };
                 let alloc = unsafe { &*self.allocator };
+                let frame_alloc = unsafe { &*self.frame_allocator };
 
                 let (total_slots, used_slots, free_slots) = slots.stats();
                 let (total_untyped, ram_untyped, used_bytes, total_bytes, last_used) =
                     alloc.stats(bi);
+                let free_ram = alloc.free_ram_bytes(bi);
+                let fragmented_tail = alloc.fragmentation_bytes(bi);
+                let (oom_events, last_oom_bits) = alloc.oom_stats();
 
                 println!("[MEM] CSpace Slots: total={}, used={}, free={}", total_slots, used_slots, free_slots);
                 println!("[MEM] Untyped Caps: total={}, ram={}", total_untyped, ram_untyped);
                 println!("[MEM] RAM Untyped Usage: used={} bytes, total={} bytes", used_bytes, total_bytes);
+                println!("[MEM] RAM Untyped Free: {} bytes", free_ram);
+                println!("[MEM] Fragmented Tail (<4K): {} bytes", fragmented_tail);
+                println!("[MEM] OOM Events: {}, LastOOMSizeBits={}", oom_events, last_oom_bits);
+                println!("[MEM] Frame Cache: {} recycled frames", frame_alloc.free_count());
                 println!("[MEM] Untyped LastUsedIdx: {}", last_used);
             }
         } else if self.word_eq(word_start, word_end, "ps") {
@@ -904,6 +914,44 @@ impl Shell {
                 println!("--------------------------------");
                 for (name, endpoint) in entries {
                     println!("{:<20} {}", name, endpoint);
+                }
+            }
+        } else if self.word_eq(word_start, word_end, "svc") {
+            let len = end - rest_start;
+            if len == 0 {
+                println!("Usage: svc <name>");
+            } else {
+                let query = self.buffer[rest_start..end]
+                    .iter()
+                    .collect::<alloc::string::String>();
+
+                if let Some(ep) = crate::services::lookup(&query) {
+                    println!("service {} => {} (endpoint {})", query, query, ep);
+                } else if let Some((resolved_name, ep, _version)) =
+                    crate::services::lookup_latest(&query)
+                {
+                    println!(
+                        "service {} => {} (endpoint {})",
+                        query, resolved_name, ep
+                    );
+                } else {
+                    println!("service {} => <not found>", query);
+                }
+            }
+        } else if self.word_eq(word_start, word_end, "fsping") {
+            match crate::services::ping("fs") {
+                Ok((status, proto)) => {
+                    if status == libnova::fs_ipc::FS_STATUS_READY {
+                        println!("[SVC] fs ping ok (proto v{})", proto);
+                    } else {
+                        println!(
+                            "[SVC] fs ping unexpected status=0x{:x} proto={}",
+                            status, proto
+                        );
+                    }
+                }
+                Err(e) => {
+                    println!("[SVC] fs ping failed: {}", e);
                 }
             }
         } else if self.word_eq(word_start, word_end, "kill") {

@@ -114,6 +114,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f449e6c6c08c865631d4890cfacf252b3d396c9bcc83adb6623cdb02a8336c41"
 
 [[package]]
+name = "fs_server"
+version = "0.1.0"
+dependencies = [
+ "libnova",
+ "linked_list_allocator",
+ "sel4-sys",
+]
+
+[[package]]
 name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -332,6 +341,15 @@ dependencies = [
  "bindgen",
  "cmake",
  "cty",
+]
+
+[[package]]
+name = "serial_server"
+version = "0.1.0"
+dependencies = [
+ "libnova",
+ "linked_list_allocator",
+ "sel4-sys",
 ]
 
 [[package]]

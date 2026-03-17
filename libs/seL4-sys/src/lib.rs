@@ -125,7 +125,7 @@ pub unsafe fn seL4_Call(dest: seL4_CPtr, msgInfo: seL4_MessageInfo) -> seL4_Mess
     let mut mr1 = seL4_GetMR(1);
     let mut mr2 = seL4_GetMR(2);
     let mut mr3 = seL4_GetMR(3);
-    let _badge: seL4_Word;
+    let mut dest_badge = dest;
     
     // seL4_SysCall constant from bindings
     
@@ -136,17 +136,17 @@ pub unsafe fn seL4_Call(dest: seL4_CPtr, msgInfo: seL4_MessageInfo) -> seL4_Mess
         "mov rsp, rbx",   // Restore RSP from RBX
         "pop rbx",        // Restore RBX
         in("rdx") seL4_Syscall_ID::seL4_SysCall as isize, 
-        in("rdi") dest,
+        inout("rdi") dest_badge,
         inout("rsi") info_val,
         inout("r10") mr0,
         inout("r8") mr1,
         inout("r9") mr2,
         inout("r15") mr3,
-        lateout("rdi") _badge,
         out("rcx") _,
         out("r11") _,
-        // out("rbx") _, // removed
     );
+
+    let _ = dest_badge;
 
     seL4_SetMR(0, mr0);
     seL4_SetMR(1, mr1);
@@ -172,7 +172,7 @@ pub unsafe fn seL4_CallWithMRs(
     let mut out_mr1 = mr1;
     let mut out_mr2 = mr2;
     let mut out_mr3 = mr3;
-    let badge: seL4_Word;
+    let mut dest_badge = dest;
 
     core::arch::asm!(
         "push rbx",
@@ -181,20 +181,19 @@ pub unsafe fn seL4_CallWithMRs(
         "mov rsp, rbx",
         "pop rbx",
         in("rdx") seL4_Syscall_ID::seL4_SysCall as isize,
-        in("rdi") dest,
+        inout("rdi") dest_badge,
         inout("rsi") info_val,
         inout("r10") out_mr0,
         inout("r8") out_mr1,
         inout("r9") out_mr2,
         inout("r15") out_mr3,
-        lateout("rdi") badge,
         out("rcx") _,
         out("r11") _,
     );
 
     (
         seL4_MessageInfo { words: [info_val] },
-        badge,
+        dest_badge,
         out_mr0,
         out_mr1,
         out_mr2,
@@ -211,7 +210,7 @@ pub unsafe fn seL4_RecvWithMRs(
     sender: *mut seL4_Word,
 ) -> (seL4_MessageInfo, seL4_Word, seL4_Word, seL4_Word, seL4_Word) {
     let mut info_val: seL4_Word = 0;
-    let badge: seL4_Word;
+    let mut src_badge = src;
     let mut out_mr0: seL4_Word = 0;
     let mut out_mr1: seL4_Word = 0;
     let mut out_mr2: seL4_Word = 0;
@@ -224,19 +223,18 @@ pub unsafe fn seL4_RecvWithMRs(
         "mov rsp, rbx",
         "pop rbx",
         in("rdx") seL4_Syscall_ID::seL4_SysRecv as isize,
-        in("rdi") src,
+        inout("rdi") src_badge,
         inout("rsi") info_val,
         lateout("r10") out_mr0,
         lateout("r8") out_mr1,
         lateout("r9") out_mr2,
         lateout("r15") out_mr3,
-        lateout("rdi") badge,
         out("rcx") _,
         out("r11") _,
     );
 
     if !sender.is_null() {
-        *sender = badge;
+        *sender = src_badge;
     }
 
     (
@@ -311,7 +309,7 @@ pub unsafe fn seL4_ReplyRecvWithMRs(
 /// - `sender` must be null or point to valid writable memory for a `seL4_Word`.
 pub unsafe fn seL4_Recv(src: seL4_CPtr, sender: *mut seL4_Word) -> seL4_MessageInfo {
     let mut info_val: seL4_Word = 0;
-    let mut badge: seL4_Word;
+    let mut src_badge = src;
     let mut mr0: seL4_Word = 0;
     let mut mr1: seL4_Word = 0;
     let mut mr2: seL4_Word = 0;
@@ -324,19 +322,18 @@ pub unsafe fn seL4_Recv(src: seL4_CPtr, sender: *mut seL4_Word) -> seL4_MessageI
         "mov rsp, rbx",
         "pop rbx",
         in("rdx") seL4_Syscall_ID::seL4_SysRecv as isize,
-        in("rdi") src,
+        inout("rdi") src_badge,
         inout("rsi") info_val,
         lateout("r10") mr0,
         lateout("r8") mr1,
         lateout("r9") mr2,
         lateout("r15") mr3,
-        lateout("rdi") badge,
         out("rcx") _,
         out("r11") _,
     );
 
     if !sender.is_null() {
-        *sender = badge;
+        *sender = src_badge;
     }
 
     seL4_SetMR(0, mr0);
@@ -355,7 +352,7 @@ pub unsafe fn seL4_Recv(src: seL4_CPtr, sender: *mut seL4_Word) -> seL4_MessageI
 ///   IPC buffer must be initialized appropriately via `seL4_SetIPCBuffer`.
 pub unsafe fn seL4_ReplyRecv(src: seL4_CPtr, msgInfo: seL4_MessageInfo, sender: *mut seL4_Word) -> seL4_MessageInfo {
     let mut info_val = msgInfo.words[0];
-    let mut badge: seL4_Word;
+    let mut src_badge = src;
     
     let mut mr0 = seL4_GetMR(0);
     let mut mr1 = seL4_GetMR(1);
@@ -369,19 +366,18 @@ pub unsafe fn seL4_ReplyRecv(src: seL4_CPtr, msgInfo: seL4_MessageInfo, sender: 
         "mov rsp, rbx",
         "pop rbx",
         in("rdx") seL4_Syscall_ID::seL4_SysReplyRecv as isize,
-        in("rdi") src,
+        inout("rdi") src_badge,
         inout("rsi") info_val,
         inout("r10") mr0,
         inout("r8") mr1,
         inout("r9") mr2,
         inout("r15") mr3,
-        lateout("rdi") badge,
         out("rcx") _,
         out("r11") _,
     );
 
     if !sender.is_null() {
-        *sender = badge;
+        *sender = src_badge;
     }
 
     seL4_SetMR(0, mr0);
