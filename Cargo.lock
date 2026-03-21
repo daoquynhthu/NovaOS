@@ -120,6 +120,7 @@ dependencies = [
  "libnova",
  "linked_list_allocator",
  "sel4-sys",
+ "spin",
 ]
 
 [[package]]

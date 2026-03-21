@@ -5,8 +5,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 mod allocator;
+use libnova::fs_ipc::{close_direct as fs_close_direct, link_direct as fs_link_direct, open_direct as fs_open_direct, read_direct as fs_read_direct, rename_direct as fs_rename_direct, symlink_direct as fs_symlink_direct, unlink_direct as fs_unlink_direct, write_direct as fs_write_direct, FS_MAX_RW_LEN};
 use libnova::syscall::*;
-use libnova::println;
+use libnova::{print, println};
 use sel4_sys::{seL4_CPtr, seL4_IPCBuffer};
 
 use core::panic::PanicInfo;
@@ -26,6 +27,660 @@ const SHM_CHILD_VADDR: usize = 0x6FFD_0000;
 const SHM_PARENT_VADDR: usize = 0x6FFE_0000;
 const SHM_PARENT_MAGIC: u64 = 0xA1B2_C3D4_E5F6_0718;
 const SHM_CHILD_MAGIC: u64 = 0x1837_26F5_E4D3_C2B1;
+const FS_PROXY_SMOKE_PATH: &str = "/fs_proxy_smoke.txt";
+const FS_SYSCALL_SMOKE_PATH: &str = "/fs_syscall_smoke.txt";
+const FS_CMD_PATH_MAX: usize = 255;
+
+struct EarlyArgs {
+    loop_mode: bool,
+    fs_proxy_smoke: bool,
+    fs_syscall_smoke: bool,
+    shm_child_key: Option<usize>,
+    fs_cat_len: usize,
+    fs_cat_path: [u8; FS_CMD_PATH_MAX],
+    fs_cp_src_len: usize,
+    fs_cp_src_path: [u8; FS_CMD_PATH_MAX],
+    fs_cp_dest_len: usize,
+    fs_cp_dest_path: [u8; FS_CMD_PATH_MAX],
+    fs_mv_src_len: usize,
+    fs_mv_src_path: [u8; FS_CMD_PATH_MAX],
+    fs_mv_dest_len: usize,
+    fs_mv_dest_path: [u8; FS_CMD_PATH_MAX],
+    fs_link_target_len: usize,
+    fs_link_target_path: [u8; FS_CMD_PATH_MAX],
+    fs_link_path_len: usize,
+    fs_link_path: [u8; FS_CMD_PATH_MAX],
+    fs_symlink_target_len: usize,
+    fs_symlink_target_path: [u8; FS_CMD_PATH_MAX],
+    fs_symlink_path_len: usize,
+    fs_symlink_path: [u8; FS_CMD_PATH_MAX],
+    fs_rm_len: usize,
+    fs_rm_path: [u8; FS_CMD_PATH_MAX],
+    fs_touch_len: usize,
+    fs_touch_path: [u8; FS_CMD_PATH_MAX],
+}
+
+impl EarlyArgs {
+    const fn new() -> Self {
+        Self {
+            loop_mode: false,
+            fs_proxy_smoke: false,
+            fs_syscall_smoke: false,
+            shm_child_key: None,
+            fs_cat_len: 0,
+            fs_cat_path: [0; FS_CMD_PATH_MAX],
+            fs_cp_src_len: 0,
+            fs_cp_src_path: [0; FS_CMD_PATH_MAX],
+            fs_cp_dest_len: 0,
+            fs_cp_dest_path: [0; FS_CMD_PATH_MAX],
+            fs_mv_src_len: 0,
+            fs_mv_src_path: [0; FS_CMD_PATH_MAX],
+            fs_mv_dest_len: 0,
+            fs_mv_dest_path: [0; FS_CMD_PATH_MAX],
+            fs_link_target_len: 0,
+            fs_link_target_path: [0; FS_CMD_PATH_MAX],
+            fs_link_path_len: 0,
+            fs_link_path: [0; FS_CMD_PATH_MAX],
+            fs_symlink_target_len: 0,
+            fs_symlink_target_path: [0; FS_CMD_PATH_MAX],
+            fs_symlink_path_len: 0,
+            fs_symlink_path: [0; FS_CMD_PATH_MAX],
+            fs_rm_len: 0,
+            fs_rm_path: [0; FS_CMD_PATH_MAX],
+            fs_touch_len: 0,
+            fs_touch_path: [0; FS_CMD_PATH_MAX],
+        }
+    }
+
+    fn fs_cat_path(&self) -> Option<&str> {
+        if self.fs_cat_len == 0 {
+            None
+        } else {
+            core::str::from_utf8(&self.fs_cat_path[..self.fs_cat_len]).ok()
+        }
+    }
+
+    fn fs_touch_path(&self) -> Option<&str> {
+        if self.fs_touch_len == 0 {
+            None
+        } else {
+            core::str::from_utf8(&self.fs_touch_path[..self.fs_touch_len]).ok()
+        }
+    }
+
+    fn fs_rm_path(&self) -> Option<&str> {
+        if self.fs_rm_len == 0 {
+            None
+        } else {
+            core::str::from_utf8(&self.fs_rm_path[..self.fs_rm_len]).ok()
+        }
+    }
+
+    fn fs_mv_paths(&self) -> Option<(&str, &str)> {
+        if self.fs_mv_src_len == 0 || self.fs_mv_dest_len == 0 {
+            None
+        } else {
+            let src = core::str::from_utf8(&self.fs_mv_src_path[..self.fs_mv_src_len]).ok()?;
+            let dest = core::str::from_utf8(&self.fs_mv_dest_path[..self.fs_mv_dest_len]).ok()?;
+            Some((src, dest))
+        }
+    }
+
+    fn fs_link_paths(&self) -> Option<(&str, &str)> {
+        if self.fs_link_target_len == 0 || self.fs_link_path_len == 0 {
+            None
+        } else {
+            let target = core::str::from_utf8(&self.fs_link_target_path[..self.fs_link_target_len]).ok()?;
+            let link = core::str::from_utf8(&self.fs_link_path[..self.fs_link_path_len]).ok()?;
+            Some((target, link))
+        }
+    }
+
+    fn fs_symlink_paths(&self) -> Option<(&str, &str)> {
+        if self.fs_symlink_target_len == 0 || self.fs_symlink_path_len == 0 {
+            None
+        } else {
+            let target = core::str::from_utf8(&self.fs_symlink_target_path[..self.fs_symlink_target_len]).ok()?;
+            let link = core::str::from_utf8(&self.fs_symlink_path[..self.fs_symlink_path_len]).ok()?;
+            Some((target, link))
+        }
+    }
+
+    fn fs_cp_paths(&self) -> Option<(&str, &str)> {
+        if self.fs_cp_src_len == 0 || self.fs_cp_dest_len == 0 {
+            None
+        } else {
+            let src = core::str::from_utf8(&self.fs_cp_src_path[..self.fs_cp_src_len]).ok()?;
+            let dest = core::str::from_utf8(&self.fs_cp_dest_path[..self.fs_cp_dest_len]).ok()?;
+            Some((src, dest))
+        }
+    }
+}
+
+fn copy_str_to_buf(src: &str, dst: &mut [u8]) -> usize {
+    let bytes = src.as_bytes();
+    let len = core::cmp::min(bytes.len(), dst.len());
+    dst[..len].copy_from_slice(&bytes[..len]);
+    len
+}
+
+unsafe fn arg_ptr_to_str(ptr: *const u8) -> Option<&'static str> {
+    if ptr.is_null() {
+        return None;
+    }
+    let mut len = 0usize;
+    while *ptr.add(len) != 0 {
+        len += 1;
+    }
+    let s_slice = core::slice::from_raw_parts(ptr, len);
+    let s = core::str::from_utf8(s_slice).ok()?;
+    Some(core::mem::transmute(s))
+}
+
+fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
+    let mut parsed = EarlyArgs::new();
+    if argv.is_null() {
+        return parsed;
+    }
+
+    let mut expect_shm_key = false;
+    let mut expect_fs_cat_path = false;
+    let mut expect_fs_cp_src_path = false;
+    let mut expect_fs_cp_dest_path = false;
+    let mut expect_fs_link_target_path = false;
+    let mut expect_fs_link_path = false;
+    let mut expect_fs_mv_src_path = false;
+    let mut expect_fs_mv_dest_path = false;
+    let mut expect_fs_rm_path = false;
+    let mut expect_fs_symlink_target = false;
+    let mut expect_fs_symlink_path = false;
+    let mut expect_fs_touch_path = false;
+
+    unsafe {
+        for idx in 0..argc {
+            let Some(arg) = arg_ptr_to_str(*argv.add(idx)) else {
+                continue;
+            };
+
+            if expect_shm_key {
+                if let Ok(k) = arg.parse::<usize>() {
+                    parsed.shm_child_key = Some(k);
+                }
+                expect_shm_key = false;
+                continue;
+            }
+            if expect_fs_cat_path {
+                parsed.fs_cat_len = copy_str_to_buf(arg, &mut parsed.fs_cat_path);
+                expect_fs_cat_path = false;
+                continue;
+            }
+            if expect_fs_cp_src_path {
+                parsed.fs_cp_src_len = copy_str_to_buf(arg, &mut parsed.fs_cp_src_path);
+                expect_fs_cp_src_path = false;
+                expect_fs_cp_dest_path = true;
+                continue;
+            }
+            if expect_fs_cp_dest_path {
+                parsed.fs_cp_dest_len = copy_str_to_buf(arg, &mut parsed.fs_cp_dest_path);
+                expect_fs_cp_dest_path = false;
+                continue;
+            }
+            if expect_fs_mv_src_path {
+                parsed.fs_mv_src_len = copy_str_to_buf(arg, &mut parsed.fs_mv_src_path);
+                expect_fs_mv_src_path = false;
+                expect_fs_mv_dest_path = true;
+                continue;
+            }
+            if expect_fs_mv_dest_path {
+                parsed.fs_mv_dest_len = copy_str_to_buf(arg, &mut parsed.fs_mv_dest_path);
+                expect_fs_mv_dest_path = false;
+                continue;
+            }
+            if expect_fs_link_target_path {
+                parsed.fs_link_target_len = copy_str_to_buf(arg, &mut parsed.fs_link_target_path);
+                expect_fs_link_target_path = false;
+                expect_fs_link_path = true;
+                continue;
+            }
+            if expect_fs_link_path {
+                parsed.fs_link_path_len = copy_str_to_buf(arg, &mut parsed.fs_link_path);
+                expect_fs_link_path = false;
+                continue;
+            }
+            if expect_fs_rm_path {
+                parsed.fs_rm_len = copy_str_to_buf(arg, &mut parsed.fs_rm_path);
+                expect_fs_rm_path = false;
+                continue;
+            }
+            if expect_fs_symlink_target {
+                parsed.fs_symlink_target_len = copy_str_to_buf(arg, &mut parsed.fs_symlink_target_path);
+                expect_fs_symlink_target = false;
+                expect_fs_symlink_path = true;
+                continue;
+            }
+            if expect_fs_symlink_path {
+                parsed.fs_symlink_path_len = copy_str_to_buf(arg, &mut parsed.fs_symlink_path);
+                expect_fs_symlink_path = false;
+                continue;
+            }
+            if expect_fs_touch_path {
+                parsed.fs_touch_len = copy_str_to_buf(arg, &mut parsed.fs_touch_path);
+                expect_fs_touch_path = false;
+                continue;
+            }
+
+            if arg == "loop" {
+                parsed.loop_mode = true;
+            }
+            if arg == "shm_child" {
+                expect_shm_key = true;
+            }
+            if arg == "fs_proxy_smoke" {
+                parsed.fs_proxy_smoke = true;
+            }
+            if arg == "fs_syscall_smoke" {
+                parsed.fs_syscall_smoke = true;
+            }
+            if arg == "fs_cat" {
+                expect_fs_cat_path = true;
+            }
+            if arg == "fs_cp" {
+                expect_fs_cp_src_path = true;
+            }
+            if arg == "fs_link" {
+                expect_fs_link_target_path = true;
+            }
+            if arg == "fs_mv" {
+                expect_fs_mv_src_path = true;
+            }
+            if arg == "fs_rm" {
+                expect_fs_rm_path = true;
+            }
+            if arg == "fs_symlink" {
+                expect_fs_symlink_target = true;
+            }
+            if arg == "fs_touch" {
+                expect_fs_touch_path = true;
+            }
+        }
+    }
+
+    parsed
+}
+
+fn parse_env_usize(envp: *const *const u8, key: &str) -> Option<usize> {
+    if envp.is_null() {
+        return None;
+    }
+
+    unsafe {
+        let mut curr = envp;
+        while !(*curr).is_null() {
+            let s_ptr = *curr;
+            let mut len = 0;
+            while *s_ptr.add(len) != 0 {
+                len += 1;
+            }
+            let s_slice = core::slice::from_raw_parts(s_ptr, len);
+            if let Ok(s) = core::str::from_utf8(s_slice) {
+                if let Some(value) = s.strip_prefix(key).and_then(|rest| rest.strip_prefix('=')) {
+                    if let Ok(parsed) = value.parse::<usize>() {
+                        return Some(parsed);
+                    }
+                }
+            }
+            curr = curr.add(1);
+        }
+    }
+
+    None
+}
+
+fn run_fs_proxy_smoke(envp: *const *const u8) -> isize {
+    println!("[FS_PROXY] Starting smoke test...");
+    let Some(fs_ep) = parse_env_usize(envp, "NOVA_FS_SERVICE_EP").map(|slot| slot as seL4_CPtr) else {
+        println!("[FS_PROXY] missing NOVA_FS_SERVICE_EP");
+        return 209;
+    };
+
+    let fd = fs_open_direct(fs_ep, FS_PROXY_SMOKE_PATH, 1);
+    if fd < 0 {
+        println!("[FS_PROXY] open(write) failed: {}", fd);
+        return 210;
+    }
+
+    let payload = b"fs_proxy_path_ok";
+    let written = fs_write_direct(fs_ep, fd as usize, payload);
+    if written != payload.len() as isize {
+        println!("[FS_PROXY] write failed: {}", written);
+        let _ = fs_close_direct(fs_ep, fd as usize);
+        return 211;
+    }
+
+    let close_write = fs_close_direct(fs_ep, fd as usize);
+    if close_write != 0 {
+        println!("[FS_PROXY] close(write) failed: {}", close_write);
+        return 212;
+    }
+
+    let fd_read = fs_open_direct(fs_ep, FS_PROXY_SMOKE_PATH, 0);
+    if fd_read < 0 {
+        println!("[FS_PROXY] open(read) failed: {}", fd_read);
+        return 213;
+    }
+
+    let mut read_buf = [0u8; 32];
+    let read_len = fs_read_direct(fs_ep, fd_read as usize, &mut read_buf);
+    let close_read = fs_close_direct(fs_ep, fd_read as usize);
+    if close_read != 0 {
+        println!("[FS_PROXY] close(read) failed: {}", close_read);
+        return 214;
+    }
+    if read_len != payload.len() as isize {
+        println!("[FS_PROXY] read length mismatch: {}", read_len);
+        return 215;
+    }
+    if &read_buf[..payload.len()] != payload {
+        println!("[FS_PROXY] read content mismatch");
+        return 216;
+    }
+
+    println!("[FS_PROXY] PASS");
+    125
+}
+
+fn run_fs_syscall_smoke(ep_cap: seL4_CPtr) -> isize {
+    println!("[FS_SYSCALL] Starting syscall smoke test...");
+
+    let fd = sys_open(ep_cap, FS_SYSCALL_SMOKE_PATH, 1);
+    if fd < 0 {
+        println!("[FS_SYSCALL] open(write) failed: {}", fd);
+        return 217;
+    }
+
+    let payload = b"fs_syscall_path_ok";
+    let written = sys_write(ep_cap, fd as usize, payload);
+    if written != payload.len() as isize {
+        println!("[FS_SYSCALL] write failed: {}", written);
+        let _ = sys_close(ep_cap, fd as usize);
+        return 218;
+    }
+
+    let close_write = sys_close(ep_cap, fd as usize);
+    if close_write != 0 {
+        println!("[FS_SYSCALL] close(write) failed: {}", close_write);
+        return 219;
+    }
+
+    let fd_read = sys_open(ep_cap, FS_SYSCALL_SMOKE_PATH, 0);
+    if fd_read < 0 {
+        println!("[FS_SYSCALL] open(read) failed: {}", fd_read);
+        return 220;
+    }
+
+    let mut read_buf = [0u8; 32];
+    let read_len = sys_read(ep_cap, fd_read as usize, &mut read_buf);
+    let close_read = sys_close(ep_cap, fd_read as usize);
+    if close_read != 0 {
+        println!("[FS_SYSCALL] close(read) failed: {}", close_read);
+        return 221;
+    }
+    if read_len != payload.len() as isize {
+        println!("[FS_SYSCALL] read length mismatch: {}", read_len);
+        return 222;
+    }
+    if &read_buf[..payload.len()] != payload {
+        println!("[FS_SYSCALL] read content mismatch");
+        return 223;
+    }
+
+    println!("[FS_SYSCALL] PASS");
+    224
+}
+
+fn resolve_fs_ep(envp: *const *const u8) -> core::result::Result<seL4_CPtr, isize> {
+    parse_env_usize(envp, "NOVA_FS_SERVICE_EP")
+        .map(|slot| slot as seL4_CPtr)
+        .ok_or(217)
+}
+
+fn run_fs_touch(envp: *const *const u8, path: &str) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("touch: fs service unavailable");
+            return code;
+        }
+    };
+
+    println!("[FS_CMD] touch begin {}", path);
+    let fd = fs_open_direct(fs_ep, path, 1);
+    if fd < 0 {
+        println!("touch: {}: open failed ({})", path, fd);
+        return 218;
+    }
+    println!("[FS_CMD] touch opened fd={}", fd);
+
+    let close_res = fs_close_direct(fs_ep, fd as usize);
+    if close_res != 0 {
+        println!("touch: {}: close failed ({})", path, close_res);
+        return 219;
+    }
+
+    println!("[FS_CMD] touch ok {}", path);
+
+    126
+}
+
+fn run_fs_cat(envp: *const *const u8, path: &str) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("cat: fs service unavailable");
+            return code;
+        }
+    };
+
+    println!("[FS_CMD] cat begin {}", path);
+    let fd = fs_open_direct(fs_ep, path, 0);
+    if fd < 0 {
+        println!("cat: {}: open failed ({})", path, fd);
+        return 220;
+    }
+
+    let mut buf = [0u8; FS_MAX_RW_LEN];
+    let mut saw_output = false;
+    let mut ended_with_newline = false;
+    loop {
+        let n = fs_read_direct(fs_ep, fd as usize, &mut buf);
+        if n < 0 {
+            println!("cat: {}: read failed ({})", path, n);
+            let _ = fs_close_direct(fs_ep, fd as usize);
+            return 221;
+        }
+        if n == 0 {
+            break;
+        }
+
+        let chunk = &buf[..n as usize];
+        match core::str::from_utf8(chunk) {
+            Ok(s) => {
+                print!("{}", s);
+                saw_output = true;
+                ended_with_newline = s.ends_with('\n');
+            }
+            Err(_) => {
+                println!("(Binary file, {} bytes chunk)", n);
+                let _ = fs_close_direct(fs_ep, fd as usize);
+                return 222;
+            }
+        }
+    }
+
+    let close_res = fs_close_direct(fs_ep, fd as usize);
+    if close_res != 0 {
+        println!("cat: {}: close failed ({})", path, close_res);
+        return 223;
+    }
+
+    if saw_output && !ended_with_newline {
+        println!();
+    }
+
+    println!("[FS_CMD] cat ok {}", path);
+
+    127
+}
+
+fn run_fs_rm(envp: *const *const u8, path: &str) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("rm: fs service unavailable");
+            return code;
+        }
+    };
+
+    println!("[FS_CMD] rm begin {}", path);
+    let res = fs_unlink_direct(fs_ep, path);
+    if res != 0 {
+        println!("rm: cannot remove '{}': {}", path, res);
+        return 224;
+    }
+
+    println!("Removed '{}'", path);
+    println!("[FS_CMD] rm ok {}", path);
+    128
+}
+
+fn run_fs_cp(envp: *const *const u8, src: &str, dest: &str) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("cp: fs service unavailable");
+            return code;
+        }
+    };
+    if src == dest {
+        println!("cp: '{}' and '{}' are the same file", src, dest);
+        return 225;
+    }
+
+    println!("[FS_CMD] cp begin {} -> {}", src, dest);
+    let src_fd = fs_open_direct(fs_ep, src, 0);
+    if src_fd < 0 {
+        println!("cp: read error: {}", src_fd);
+        return 226;
+    }
+
+    let _ = fs_unlink_direct(fs_ep, dest);
+    let dest_fd = fs_open_direct(fs_ep, dest, 1);
+    if dest_fd < 0 {
+        let _ = fs_close_direct(fs_ep, src_fd as usize);
+        println!("cp: write error: {}", dest_fd);
+        return 227;
+    }
+
+    let mut buf = [0u8; FS_MAX_RW_LEN];
+    loop {
+        let read_res = fs_read_direct(fs_ep, src_fd as usize, &mut buf);
+        if read_res < 0 {
+            let _ = fs_close_direct(fs_ep, src_fd as usize);
+            let _ = fs_close_direct(fs_ep, dest_fd as usize);
+            println!("cp: read error: {}", read_res);
+            return 228;
+        }
+        if read_res == 0 {
+            break;
+        }
+        let chunk = &buf[..read_res as usize];
+        let written = fs_write_direct(fs_ep, dest_fd as usize, chunk);
+        if written != read_res {
+            let _ = fs_close_direct(fs_ep, src_fd as usize);
+            let _ = fs_close_direct(fs_ep, dest_fd as usize);
+            println!("cp: write error: {}", written);
+            return 229;
+        }
+    }
+
+    let close_src = fs_close_direct(fs_ep, src_fd as usize);
+    let close_dest = fs_close_direct(fs_ep, dest_fd as usize);
+    if close_src != 0 || close_dest != 0 {
+        println!("cp: close error: src={} dest={}", close_src, close_dest);
+        return 230;
+    }
+
+    println!("Copied '{}' to '{}'", src, dest);
+    println!("[FS_CMD] cp ok {} -> {}", src, dest);
+    129
+}
+
+fn run_fs_mv(envp: *const *const u8, src: &str, dest: &str) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("mv: fs service unavailable");
+            return code;
+        }
+    };
+    if src == dest {
+        println!("mv: '{}' and '{}' are the same file", src, dest);
+        return 231;
+    }
+
+    println!("[FS_CMD] mv begin {} -> {}", src, dest);
+    let res = fs_rename_direct(fs_ep, src, dest);
+    if res != 0 {
+        println!("mv: {}", res);
+        return 232;
+    }
+
+    println!("Renamed '{}' to '{}'", src, dest);
+    println!("[FS_CMD] mv ok {} -> {}", src, dest);
+    130
+}
+
+fn run_fs_link(envp: *const *const u8, target_path: &str, link_path: &str) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("ln: fs service unavailable");
+            return code;
+        }
+    };
+
+    println!("[FS_CMD] link begin {} => {}", link_path, target_path);
+    let res = fs_link_direct(fs_ep, target_path, link_path);
+    if res != 0 {
+        println!("ln: failed to link: {}", res);
+        return 233;
+    }
+
+    println!("Created hard link '{}' => '{}'", link_path, target_path);
+    println!("[FS_CMD] link ok {} => {}", link_path, target_path);
+    131
+}
+
+fn run_fs_symlink(envp: *const *const u8, target: &str, link_path: &str) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("ln: fs service unavailable");
+            return code;
+        }
+    };
+
+    println!("[FS_CMD] symlink begin {} -> {}", link_path, target);
+    let res = fs_symlink_direct(fs_ep, target, link_path);
+    if res != 0 {
+        println!("ln: create failed: {}", res);
+        return 234;
+    }
+
+    println!("Created symbolic link '{}' -> '{}'", link_path, target);
+    println!("[FS_CMD] symlink ok {} -> {}", link_path, target);
+    132
+}
 
 fn usize_to_decimal_str<'a>(mut value: usize, buf: &'a mut [u8; 20]) -> &'a str {
     let mut i = buf.len();
@@ -47,6 +702,7 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
     let ep_cap = ep_cap_usize as seL4_CPtr;
     // Initialize libnova console
     libnova::console::init_console(ep_cap_usize);
+    let early_args = parse_early_args(argc, argv);
 
     println!("DEBUG: User App Updated");
     println!("Process Entry: argc={}", argc);
@@ -370,29 +1026,22 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
 
     } else {
         println!("Process {} (Child) Started!", pid);
-        
-        // Parse child execution mode from args
-        let args_iter = unsafe { libnova::env::Args::new(argc, argv) };
-        let mut loop_mode = false;
-        let mut expect_shm_key = false;
-        let mut shm_child_key: Option<usize> = None;
-        for arg in args_iter {
-            if expect_shm_key {
-                if let Ok(k) = arg.parse::<usize>() {
-                    shm_child_key = Some(k);
-                }
-                expect_shm_key = false;
-                continue;
-            }
-            if arg == "loop" {
-                loop_mode = true;
-            }
-            if arg == "shm_child" {
-                expect_shm_key = true;
-            }
-        }
+        println!(
+            "[FS_CMD] parsed touch={} rm={} cp={} mv={} link={} symlink={} cat={} smoke={} syscall_smoke={} loop={} shm={}",
+            early_args.fs_touch_path().is_some(),
+            early_args.fs_rm_path().is_some(),
+            early_args.fs_cp_paths().is_some(),
+            early_args.fs_mv_paths().is_some(),
+            early_args.fs_link_paths().is_some(),
+            early_args.fs_symlink_paths().is_some(),
+            early_args.fs_cat_path().is_some(),
+            early_args.fs_proxy_smoke,
+            early_args.fs_syscall_smoke,
+            early_args.loop_mode,
+            early_args.shm_child_key.is_some()
+        );
 
-        if let Some(key) = shm_child_key {
+        if let Some(key) = early_args.shm_child_key {
             println!("Child entering shared-memory verification mode...");
             if sys_shm_map(ep_cap, key, SHM_CHILD_VADDR) != 0 {
                 println!("Child SHM map failed.");
@@ -409,7 +1058,34 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
             // Intentionally do not call munmap here to verify exit-time detach/reclaim path.
             println!("Child SHM verification passed.");
             sys_exit(ep_cap, 124);
-        } else if loop_mode {
+        } else if let Some(path) = early_args.fs_touch_path() {
+            let code = run_fs_touch(envp, path);
+            sys_exit(ep_cap, code as usize);
+        } else if let Some(path) = early_args.fs_rm_path() {
+            let code = run_fs_rm(envp, path);
+            sys_exit(ep_cap, code as usize);
+        } else if let Some((src, dest)) = early_args.fs_cp_paths() {
+            let code = run_fs_cp(envp, src, dest);
+            sys_exit(ep_cap, code as usize);
+        } else if let Some((src, dest)) = early_args.fs_mv_paths() {
+            let code = run_fs_mv(envp, src, dest);
+            sys_exit(ep_cap, code as usize);
+        } else if let Some((target, link_path)) = early_args.fs_link_paths() {
+            let code = run_fs_link(envp, target, link_path);
+            sys_exit(ep_cap, code as usize);
+        } else if let Some((target, link_path)) = early_args.fs_symlink_paths() {
+            let code = run_fs_symlink(envp, target, link_path);
+            sys_exit(ep_cap, code as usize);
+        } else if let Some(path) = early_args.fs_cat_path() {
+            let code = run_fs_cat(envp, path);
+            sys_exit(ep_cap, code as usize);
+        } else if early_args.fs_proxy_smoke {
+            let code = run_fs_proxy_smoke(envp);
+            sys_exit(ep_cap, code as usize);
+        } else if early_args.fs_syscall_smoke {
+            let code = run_fs_syscall_smoke(ep_cap);
+            sys_exit(ep_cap, code as usize);
+        } else if early_args.loop_mode {
              println!("Child entering infinite loop...");
              loop {
                  sys_yield(ep_cap);

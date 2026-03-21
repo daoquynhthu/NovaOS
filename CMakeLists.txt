@@ -5,6 +5,15 @@ project(NovaOS C ASM)
 # Use lld linker from Rust toolchain if available
 add_link_options("-fuse-ld=lld")
 
+if(NOT DEFINED CMAKE_BUILD_TYPE AND NOT DEFINED CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
+endif()
+
+find_program(KERNEL_OBJCOPY NAMES llvm-objcopy llvm-objcopy-18 objcopy)
+if(NOT KERNEL_OBJCOPY)
+    message(FATAL_ERROR "Unable to find llvm-objcopy or objcopy on PATH")
+endif()
+
 # 1. 基础配置
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -21,6 +30,48 @@ endif()
 if (NOT DEFINED KernelPlatform)
     set(KernelPlatform "pc99")
 endif()
+
+# Keep the kernel defaults aligned with the current NovaOS bring-up path.
+# RootServer and test workloads rely on debug syscalls and early serial output.
+if (NOT DEFINED KernelVerificationBuild)
+    set(KernelVerificationBuild OFF CACHE BOOL "Disable verified kernel defaults for NovaOS bring-up" FORCE)
+endif()
+if (NOT DEFINED KernelDebugBuild)
+    set(KernelDebugBuild ON CACHE BOOL "Enable kernel debug facilities for NovaOS bring-up" FORCE)
+endif()
+if (NOT DEFINED KernelPrinting)
+    set(KernelPrinting ON CACHE BOOL "Enable kernel serial printing for NovaOS bring-up" FORCE)
+endif()
+if (NOT DEFINED KernelIRQReporting)
+    set(KernelIRQReporting ON CACHE BOOL "Enable IRQ diagnostics during bring-up" FORCE)
+endif()
+if (NOT DEFINED KernelColourPrinting)
+    set(KernelColourPrinting ON CACHE BOOL "Enable coloured kernel diagnostics during bring-up" FORCE)
+endif()
+
+set(NOVA_BOOT_TRACE_LEVEL "1" CACHE STRING "Global NovaOS boot trace level (0=off, 1=critical, 2=bring-up milestones, 3=verbose scheduler/syscall)")
+set_property(CACHE NOVA_BOOT_TRACE_LEVEL PROPERTY STRINGS 0 1 2 3)
+
+function(nova_init_trace_level cache_var description)
+    if (NOT DEFINED ${cache_var})
+        set(${cache_var} "${NOVA_BOOT_TRACE_LEVEL}" CACHE STRING "${description}" FORCE)
+    endif()
+    set_property(CACHE ${cache_var} PROPERTY STRINGS 0 1 2 3)
+endfunction()
+
+nova_init_trace_level(NOVA_BOOT_TRACE_BOOT_LEVEL "Boot flow trace level")
+nova_init_trace_level(NOVA_BOOT_TRACE_APIC_LEVEL "APIC timer trace level")
+nova_init_trace_level(NOVA_BOOT_TRACE_TRAP_LEVEL "Trap/interrupt trace level")
+nova_init_trace_level(NOVA_BOOT_TRACE_RESTORE_LEVEL "restore_user_context trace level")
+nova_init_trace_level(NOVA_BOOT_TRACE_SCHED_LEVEL "Scheduler/thread trace level")
+
+add_compile_definitions(
+    NOVA_BOOT_TRACE_BOOT_LEVEL=${NOVA_BOOT_TRACE_BOOT_LEVEL}
+    NOVA_BOOT_TRACE_APIC_LEVEL=${NOVA_BOOT_TRACE_APIC_LEVEL}
+    NOVA_BOOT_TRACE_TRAP_LEVEL=${NOVA_BOOT_TRACE_TRAP_LEVEL}
+    NOVA_BOOT_TRACE_RESTORE_LEVEL=${NOVA_BOOT_TRACE_RESTORE_LEVEL}
+    NOVA_BOOT_TRACE_SCHED_LEVEL=${NOVA_BOOT_TRACE_SCHED_LEVEL}
+)
 
 # 显式设置 PLATFORM 变量，确保 seL4 能够识别
 set(PLATFORM ${KernelPlatform} CACHE STRING "Platform")
@@ -54,7 +105,7 @@ add_custom_command(
 # Convert kernel.elf to 32-bit ELF for QEMU compatibility
 add_custom_command(
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/kernel/kernel32.elf
-    COMMAND "C:/Program Files/LLVM/bin/llvm-objcopy.exe" -I elf64-x86-64 -O elf32-i386 ${CMAKE_CURRENT_BINARY_DIR}/kernel/kernel.elf ${CMAKE_CURRENT_BINARY_DIR}/kernel/kernel32.elf
+    COMMAND ${KERNEL_OBJCOPY} -I elf64-x86-64 -O elf32-i386 ${CMAKE_CURRENT_BINARY_DIR}/kernel/kernel.elf ${CMAKE_CURRENT_BINARY_DIR}/kernel/kernel32.elf
     DEPENDS kernel.elf
     COMMENT "Converting kernel.elf to 32-bit for QEMU..."
 )
@@ -73,3 +124,4 @@ message(STATUS "NovaOS Configuration:")
 message(STATUS "  Arch: ${KernelSel4Arch}")
 message(STATUS "  Platform: ${KernelPlatform}")
 message(STATUS "  RootServer: ${ROOTSERVER_BIN}")
+message(STATUS "  Trace Level: ${NOVA_BOOT_TRACE_LEVEL} (boot=${NOVA_BOOT_TRACE_BOOT_LEVEL}, apic=${NOVA_BOOT_TRACE_APIC_LEVEL}, trap=${NOVA_BOOT_TRACE_TRAP_LEVEL}, restore=${NOVA_BOOT_TRACE_RESTORE_LEVEL}, sched=${NOVA_BOOT_TRACE_SCHED_LEVEL})")

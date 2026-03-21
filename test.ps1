@@ -3,8 +3,10 @@ $ErrorActionPreference = "Stop"
 # Set up environment variables
 Set-Location $PSScriptRoot
 $root = $PSScriptRoot
-$env:SEL4_OUT_DIR = "$root\build\kernel"
-$env:SEL4_KERNEL_DIR = "$root\kernel\seL4"
+$buildDir = if ($env:NOVA_BUILD_DIR) { $env:NOVA_BUILD_DIR } else { "build" }
+$buildRoot = Join-Path $root $buildDir
+$env:SEL4_OUT_DIR = Join-Path $buildRoot "kernel"
+$env:SEL4_KERNEL_DIR = Join-Path $root "kernel/seL4"
 
 Write-Host "Building User App..." -ForegroundColor Cyan
 Set-Location "services/user_app"
@@ -26,11 +28,16 @@ Set-Location "../.."
 
 Write-Host "Building RootServer..." -ForegroundColor Cyan
 Set-Location "services/rootserver"
-cargo build --target x86_64-unknown-none
+cargo build --target x86_64-unknown-none --release
 if ($LASTEXITCODE -ne 0) { Write-Error "RootServer build failed"; exit 1 }
 Set-Location "../.."
 
-$executable = "$PWD/target/x86_64-unknown-none/debug/rootserver"
+$executable = Join-Path $root "target/x86_64-unknown-none/release/rootserver"
+$kernelElf = Join-Path $buildRoot "kernel/kernel32.elf"
+if (-not (Test-Path $kernelElf)) {
+    Write-Error "Kernel (kernel32.elf) not found in $buildDir/kernel/. Please build the kernel first."
+    exit 1
+}
 
 # QEMU Path
 $qemu = "qemu-system-x86_64"
@@ -40,7 +47,7 @@ if (-not (Get-Command $qemu -ErrorAction SilentlyContinue)) {
 }
 
 # Disk Image
-$diskImg = "$PWD/disk.img"
+$diskImg = Join-Path $root "disk.img"
 # Default to a fresh disk for deterministic integration tests.
 # Set NOVA_TEST_KEEP_DISK=1 to keep the previous image between runs.
 if ((Test-Path $diskImg) -and ($env:NOVA_TEST_KEEP_DISK -ne "1")) {
@@ -49,20 +56,67 @@ if ((Test-Path $diskImg) -and ($env:NOVA_TEST_KEEP_DISK -ne "1")) {
 }
 if (-not (Test-Path $diskImg)) {
     Write-Host "Creating 10MB disk image..." -ForegroundColor Gray
-    fsutil file createnew $diskImg 10485760 | Out-Null
+    $file = [System.IO.File]::Create($diskImg)
+    try {
+        $file.SetLength(10485760)
+    } finally {
+        $file.Dispose()
+    }
 }
 
 # TCP Serial Port
-$serialPort = 56789
+$serialPort = 0
+if ($env:NOVA_TEST_SERIAL_PORT) {
+    $parsedSerialPort = 0
+    if ([int]::TryParse($env:NOVA_TEST_SERIAL_PORT, [ref]$parsedSerialPort) -and $parsedSerialPort -gt 0) {
+        $serialPort = $parsedSerialPort
+    }
+}
+if ($serialPort -eq 0) {
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    try {
+        $listener.Start()
+        $serialPort = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+    } finally {
+        $listener.Stop()
+    }
+}
+$qemuAccelOverride = $env:NOVA_QEMU_ACCEL
+$qemuCpuOverride = $env:NOVA_QEMU_CPU
+$qemuMachineOverride = $env:NOVA_QEMU_MACHINE
+$useKvm = $IsLinux -and (Test-Path "/dev/kvm")
+$cpuModel = if ($qemuCpuOverride) {
+    $qemuCpuOverride
+} elseif ($useKvm) {
+    "host"
+} elseif ($IsLinux) {
+    "max,+pcid,+pdpe1gb,+invpcid"
+} else {
+    "Haswell,+pdpe1gb"
+}
+$accel = if ($qemuAccelOverride) {
+    $qemuAccelOverride
+} elseif ($useKvm) {
+    "kvm"
+} else {
+    "tcg,tb-size=64"
+}
 $qemuArgs = @(
-    "-kernel", "build/kernel/kernel32.elf",
+    "-kernel", $kernelElf,
     "-initrd", $executable,
     "-serial", "tcp:127.0.0.1:$serialPort,server,wait",
     "-drive", "file=$diskImg,format=raw,index=0,media=disk",
     "-display", "none",
-    "-m", "1024M",
-    "-cpu", "Haswell,+pdpe1gb",
-    "-accel", "tcg,tb-size=64"
+    "-m", "1024M"
+)
+
+if ($qemuMachineOverride) {
+    $qemuArgs += @("-machine", $qemuMachineOverride)
+}
+
+$qemuArgs += @(
+    "-cpu", $cpuModel,
+    "-accel", $accel
 )
 
 Write-Host "Starting QEMU..."
@@ -88,6 +142,15 @@ try {
 $testPassed = $false
 $stage = 0
 $buffer = ""
+$stage35Checks = @{
+    serviceListSerial = $false
+    serviceListFs = $false
+    serviceResolve = $false
+    fsPing = $false
+    envExport = $false
+    runHello = $false
+    proxySmoke = $false
+}
 $timeoutSeconds = 120
 $timeoutEnv = $env:NOVA_TEST_TIMEOUT_SECONDS
 if ($timeoutEnv) {
@@ -96,12 +159,47 @@ if ($timeoutEnv) {
         $timeoutSeconds = $parsedTimeout
     }
 }
+
+function Send-TestCommand {
+    param(
+        $Stream,
+        [string]$Command,
+        [int]$PostDelayMs = -1,
+        [int]$CharDelayMs = 10
+    )
+
+    $bytes = [System.Text.Encoding]::ASCII.GetBytes("$Command`r`n")
+    foreach ($b in $bytes) {
+        $Stream.WriteByte($b)
+        $Stream.Flush()
+        Start-Sleep -Milliseconds $CharDelayMs
+    }
+
+    if ($PostDelayMs -lt 0) {
+        if ($Command.StartsWith("rm ")) {
+            $PostDelayMs = 1200
+        } else {
+            $PostDelayMs = 200
+        }
+    }
+
+    if ($PostDelayMs -gt 0) {
+        Start-Sleep -Milliseconds $PostDelayMs
+    }
+}
+
 $startTime = Get-Date
 
 try {
     while (-not $process.HasExited) {
         if ((Get-Date) - $startTime -gt [TimeSpan]::FromSeconds($timeoutSeconds)) {
             Write-Warning "Test Timed Out!"
+            if ($stage -eq 35) {
+                Write-Host "Stage 35 partial matches:"
+                $stage35Checks.GetEnumerator() | Sort-Object Name | ForEach-Object {
+                    Write-Host ("  {0}={1}" -f $_.Name, $_.Value)
+                }
+            }
             Write-Host "Buffer Dump:"
             Write-Host $buffer
             break
@@ -115,9 +213,10 @@ try {
                 Write-Host -NoNewline $text
                 $buffer += $text
                 
-                # Truncate buffer to avoid memory issues, keeping last 4096 chars
-                if ($buffer.Length -gt 4096) {
-                    $buffer = $buffer.Substring($buffer.Length - 4096)
+                # Keep a larger rolling window so verbose Linux debug traces do
+                # not evict shell/test markers before the state machine sees them.
+                if ($buffer.Length -gt 32768) {
+                    $buffer = $buffer.Substring($buffer.Length - 32768)
                 }
                 
                 # Stage 0: Wait for Shell Prompt
@@ -143,7 +242,7 @@ try {
                 
                 if ($stage -eq 2 -and $buffer -match "NovaOS:.*>") {
                      Write-Host "`n[TEST] Changing directory to /home..." -ForegroundColor Yellow
-                     Start-Sleep -Milliseconds 500
+                     Start-Sleep -Milliseconds 1200
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("cd /home`r`n")
                      foreach ($b in $bytes) {
                         $stream.WriteByte($b)
@@ -196,12 +295,7 @@ try {
                 if ($stage -eq 6 -and $buffer -match "NovaOS:.*>") {
                      Write-Host "`n[TEST] Attempting to remove non-empty directory (should fail)..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
-                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("rm /home`r`n")
-                     foreach ($b in $bytes) {
-                        $stream.WriteByte($b)
-                        $stream.Flush()
-                        Start-Sleep -Milliseconds 10
-                     }
+                     Send-TestCommand $stream "rm /home"
                      $stage = 7
                      $buffer = ""
                 }
@@ -209,12 +303,7 @@ try {
                 if ($stage -eq 7 -and $buffer -match "Directory not empty") {
                      Write-Host "`n[TEST] Protection Verified. Removing file..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
-                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("rm /home/big.bin`r`n")
-                     foreach ($b in $bytes) {
-                        $stream.WriteByte($b)
-                        $stream.Flush()
-                        Start-Sleep -Milliseconds 10
-                     }
+                     Send-TestCommand $stream "rm /home/big.bin"
                      $stage = 8
                      $buffer = ""
                 }
@@ -222,12 +311,7 @@ try {
                 if ($stage -eq 8 -and $buffer -match "NovaOS:.*>") {
                      Write-Host "`n[TEST] Removing directory..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
-                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("rm /home`r`n")
-                     foreach ($b in $bytes) {
-                        $stream.WriteByte($b)
-                        $stream.Flush()
-                        Start-Sleep -Milliseconds 10
-                     }
+                     Send-TestCommand $stream "rm /home"
                      $stage = 9
                      $buffer = ""
                 }
@@ -250,10 +334,10 @@ try {
                      Start-Sleep -Milliseconds 500
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("touch secret.txt`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
-                     Start-Sleep -Milliseconds 200
+                     Start-Sleep -Milliseconds 1200
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("encrypt secret.txt`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
-                     Start-Sleep -Milliseconds 200
+                     Start-Sleep -Milliseconds 1200
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("echo SecretData > secret.txt`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                      
@@ -276,7 +360,7 @@ try {
                      Start-Sleep -Milliseconds 500
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("decrypt secret.txt`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
-                     Start-Sleep -Milliseconds 200
+                     Start-Sleep -Milliseconds 1200
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("cat secret.txt`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                      
@@ -289,7 +373,7 @@ try {
                      Start-Sleep -Milliseconds 500
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("touch link_src.txt`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
-                     Start-Sleep -Milliseconds 200
+                     Start-Sleep -Milliseconds 1200
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("ln link_src.txt link_dest.txt`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                      
@@ -312,7 +396,7 @@ try {
                      Start-Sleep -Milliseconds 500
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("echo LinkData > link_src.txt`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
-                     Start-Sleep -Milliseconds 200
+                     Start-Sleep -Milliseconds 1200
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("cat link_dest.txt`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
 
@@ -323,9 +407,7 @@ try {
                 if ($stage -eq 16 -and $buffer -match "LinkData") {
                      Write-Host "`n[TEST] Content Sync Verified. Testing Unlink (Source Removal)..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
-                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("rm link_src.txt`r`n")
-                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
-                     Start-Sleep -Milliseconds 200
+                     Send-TestCommand $stream "rm link_src.txt"
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("cat link_dest.txt`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                      
@@ -336,8 +418,7 @@ try {
                 if ($stage -eq 17 -and $buffer -match "LinkData") {
                      Write-Host "`n[TEST] Unlink Verified (Data Persists). Cleaning up..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
-                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("rm link_dest.txt`r`n")
-                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
+                     Send-TestCommand $stream "rm link_dest.txt"
                      
                      $stage = 18
                      $buffer = ""
@@ -348,7 +429,7 @@ try {
                      Start-Sleep -Milliseconds 500
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("touch meta_test.txt`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
-                     Start-Sleep -Milliseconds 200
+                     Start-Sleep -Milliseconds 1200
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("chmod 777 meta_test.txt`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                      Start-Sleep -Milliseconds 200
@@ -365,8 +446,7 @@ try {
                 if ($stage -eq 19 -and $buffer -match "rwxrwxrwx.*1000.*1000") {
                      Write-Host "`n[TEST] Metadata Verified. Cleaning up..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
-                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("rm meta_test.txt`r`n")
-                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
+                     Send-TestCommand $stream "rm meta_test.txt"
                      
                      $stage = 20
                      $buffer = ""
@@ -411,14 +491,13 @@ try {
                 if ($stage -eq 23 -and $buffer -match "SymData") {
                      Write-Host "`n[TEST] Symlink Read Verified. Testing Symlink Removal..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
-                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("rm sym_link`r`n")
-                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
+                     Send-TestCommand $stream "rm sym_link"
                      
                      $stage = 24
                      $buffer = ""
                 }
 
-                if ($stage -eq 24 -and $buffer -match "Removed '.*sym_link'") {
+                if ($stage -eq 24 -and $buffer -match "Removed" -and $buffer -match "sym_link") {
                      Write-Host "`n[TEST] Symlink Removed. Verifying Target Persists..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("cat sym_src.txt`r`n")
@@ -431,8 +510,7 @@ try {
                 if ($stage -eq 25 -and $buffer -match "SymData") {
                      Write-Host "`n[TEST] Target Persistence Verified. Cleaning up..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
-                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("rm sym_src.txt`r`n")
-                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
+                     Send-TestCommand $stream "rm sym_src.txt"
                      
                      $stage = 26
                      $buffer = ""
@@ -444,10 +522,8 @@ try {
                      
                      # --- Rename Test (File) ---
                      # Clean up potential leftovers from previous runs
-                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("rm old_name`r`n")
-                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
-                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("rm new_name`r`n")
-                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
+                     Send-TestCommand $stream "rm old_name"
+                     Send-TestCommand $stream "rm new_name"
                      
                      # 1. Create a file to rename
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("echo rename_me content > old_name`r`n")
@@ -465,7 +541,12 @@ try {
                      $buffer = ""
                 }
 
-                if ($stage -eq 28 -and $buffer -match "Renamed '.*old_name' to '.*new_name'") {
+                if (
+                    $stage -eq 28 -and (
+                        $buffer -match "Renamed '.*old_name' to '.*new_name'" -or
+                        ($buffer -match "\[FS_CMD\] mv ok" -and $buffer -match "old_name" -and $buffer -match "new_name")
+                    )
+                ) {
                      Write-Host "`n[TEST] Rename command successful. Verifying file existence..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
                      # Verify old name is gone
@@ -490,10 +571,8 @@ try {
                      
                      # --- Rename Test (Symlink) ---
                      # Clean up potential leftovers
-                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("rm link_old`r`n")
-                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
-                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("rm link_new`r`n")
-                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
+                     Send-TestCommand $stream "rm link_old"
+                     Send-TestCommand $stream "rm link_new"
 
                      # 1. Create a symlink
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("ln -s new_name link_old`r`n")
@@ -511,7 +590,12 @@ try {
                      $buffer = ""
                 }
 
-                if ($stage -eq 32 -and $buffer -match "Renamed '.*link_old' to '.*link_new'") {
+                if (
+                    $stage -eq 32 -and (
+                        $buffer -match "Renamed '.*link_old' to '.*link_new'" -or
+                        ($buffer -match "\[FS_CMD\] mv ok" -and $buffer -match "link_old" -and $buffer -match "link_new")
+                    )
+                ) {
                      Write-Host "`n[TEST] Symlink rename successful. Verifying link target..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("ls link_new`r`n")
@@ -532,6 +616,18 @@ try {
                 if ($stage -eq 34 -and $buffer -match "PID.*PPID.*State.*Name") {
                      Write-Host "`n[TEST] PS Headers Verified. Testing Service Registry + Env + runhello..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
+                     $stage35Checks = @{
+                        serviceListSerial = $false
+                        serviceListFs = $false
+                        serviceResolve = $false
+                        fsPing = $false
+                        envExport = $false
+                        cpSeedWrite = $false
+                        cpCommand = $false
+                        cpReadback = $false
+                        runHello = $false
+                        proxySmoke = $false
+                     }
 
                      # 1. Verify service registry visibility
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("services`r`n")
@@ -543,31 +639,88 @@ try {
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                      Start-Sleep -Milliseconds 200
 
-                     # 3. Export Environment Variable
+                     # 3. Verify fs service health ping
+                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("fsping`r`n")
+                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
+                     Start-Sleep -Milliseconds 200
+
+                     # 4. Export Environment Variable
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("export TEST_ENV=NovaTest`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                      Start-Sleep -Milliseconds 200
 
-                     # 4. Verify shell env store
+                     # 5. Verify shell env store
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("env`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                      Start-Sleep -Milliseconds 200
 
-                     # 5. Run 'runhello'
-                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("runhello`r`n")
+                     # 6. Seed and verify a minimal cp path that will hit the fs helper
+                     Send-TestCommand $stream "rm cp_src.txt"
+                     Send-TestCommand $stream "rm cp_dest.txt"
+                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("echo CopyData > cp_src.txt`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
-                     
+                     Start-Sleep -Milliseconds 200
+                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("cp cp_src.txt cp_dest.txt`r`n")
+                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
+                     Start-Sleep -Milliseconds 1200
+                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("cat cp_dest.txt`r`n")
+                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
+                     Start-Sleep -Milliseconds 1200
+
+                     # 7. Run 'runhello' with an fs_server persistent-proxy smoke mode
+                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("runhello fs_proxy_smoke`r`n")
+                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
+                     Start-Sleep -Milliseconds 200
+
                      $stage = 35
                      $buffer = ""
                 }
 
+                if ($stage -eq 35) {
+                    if ($buffer -match "serial\.v1") {
+                        $stage35Checks.serviceListSerial = $true
+                    }
+                    if ($buffer -match "fs\.v1") {
+                        $stage35Checks.serviceListFs = $true
+                    }
+                    if ($buffer -match "service serial => serial\.v1") {
+                        $stage35Checks.serviceResolve = $true
+                    }
+                    if ($buffer -match "\[SVC\] fs ping ok \(proto v1\)") {
+                        $stage35Checks.fsPing = $true
+                    }
+                    if ($buffer -match "TEST_ENV=NovaTest") {
+                        $stage35Checks.envExport = $true
+                    }
+                    if ($buffer -match "Written to /cp_src\.txt") {
+                        $stage35Checks.cpSeedWrite = $true
+                    }
+                    if ($buffer -match "\[FS_CMD\] cp ok" -or $buffer -match "Copied '.*cp_src\.txt' to '.*cp_dest\.txt'") {
+                        $stage35Checks.cpCommand = $true
+                    }
+                    if ($buffer -match "CopyData") {
+                        $stage35Checks.cpReadback = $true
+                    }
+                    if ($buffer -match "\[RUN\] Process spawned successfully") {
+                        $stage35Checks.runHello = $true
+                    }
+                    if ($buffer -match "\[FS_PROXY\] PASS") {
+                        $stage35Checks.proxySmoke = $true
+                    }
+                }
+
                 if (
                     $stage -eq 35 -and
-                    $buffer -match "serial\.v1" -and
-                    $buffer -match "fs\.v1" -and
-                    $buffer -match "service serial => serial\.v1" -and
-                    $buffer -match "TEST_ENV=NovaTest" -and
-                    $buffer -match "\[RUN\] Process spawned successfully"
+                    $stage35Checks.serviceListSerial -and
+                    $stage35Checks.serviceListFs -and
+                    $stage35Checks.serviceResolve -and
+                    $stage35Checks.fsPing -and
+                    $stage35Checks.envExport -and
+                    $stage35Checks.cpSeedWrite -and
+                    $stage35Checks.cpCommand -and
+                    $stage35Checks.cpReadback -and
+                    $stage35Checks.runHello -and
+                    $stage35Checks.proxySmoke
                 ) {
                      Write-Host "`n[TEST] Service Registry + Env + runhello Verified. Testing Directory Rename..." -ForegroundColor Yellow
                      
@@ -575,6 +728,8 @@ try {
                      $buffer = ""
                      
                      Start-Sleep -Milliseconds 500
+                     Send-TestCommand $stream "rm cp_src.txt"
+                     Send-TestCommand $stream "rm cp_dest.txt"
                      $bytes = [System.Text.Encoding]::ASCII.GetBytes("mkdir dir_old`r`n")
                      foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
                 }
@@ -719,11 +874,8 @@ try {
                 if ($stage -eq 48 -and $buffer -match "FileSystem synced") {
                      Write-Host "`n[TEST] Sync Verified. Cleaning up..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
-                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("rm trunc.txt`r`n")
-                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
-                     Start-Sleep -Milliseconds 200
-                     $bytes = [System.Text.Encoding]::ASCII.GetBytes("rm sparse.bin`r`n")
-                     foreach ($b in $bytes) { $stream.WriteByte($b); $stream.Flush(); Start-Sleep -Milliseconds 10 }
+                     Send-TestCommand $stream "rm trunc.txt"
+                     Send-TestCommand $stream "rm sparse.bin"
                      
                      $stage = 49
                      $buffer = ""

@@ -416,6 +416,92 @@ pub fn sys_unlink(ep: seL4_CPtr, path: &str) -> isize {
     ipc::get_mr(0) as isize
 }
 
+pub fn sys_link(ep: seL4_CPtr, target_path: &str, link_path: &str) -> isize {
+    let target_len = target_path.len();
+    let link_len = link_path.len();
+
+    ipc::set_mr(0, target_len as seL4_Word);
+    ipc::set_mr(1, link_len as seL4_Word);
+
+    let mut word_idx = 2;
+    let mut byte_idx = 0;
+    let mut current_word = 0u64;
+
+    for &b in target_path.as_bytes() {
+        current_word |= (b as u64) << (byte_idx * 8);
+        byte_idx += 1;
+        if byte_idx == 8 {
+            ipc::set_mr(word_idx, current_word);
+            word_idx += 1;
+            byte_idx = 0;
+            current_word = 0;
+        }
+    }
+
+    for &b in link_path.as_bytes() {
+        current_word |= (b as u64) << (byte_idx * 8);
+        byte_idx += 1;
+        if byte_idx == 8 {
+            ipc::set_mr(word_idx, current_word);
+            word_idx += 1;
+            byte_idx = 0;
+            current_word = 0;
+        }
+    }
+
+    if byte_idx > 0 {
+        ipc::set_mr(word_idx, current_word);
+        word_idx += 1;
+    }
+
+    let info = ipc::MessageInfo::new(40, 0, 0, word_idx as seL4_Word);
+    let _ = ipc::call(ep, info);
+    ipc::get_mr(0) as isize
+}
+
+pub fn sys_symlink(ep: seL4_CPtr, target: &str, link_path: &str) -> isize {
+    let target_len = target.len();
+    let link_len = link_path.len();
+
+    ipc::set_mr(0, target_len as seL4_Word);
+    ipc::set_mr(1, link_len as seL4_Word);
+
+    let mut word_idx = 2;
+    let mut byte_idx = 0;
+    let mut current_word = 0u64;
+
+    for &b in target.as_bytes() {
+        current_word |= (b as u64) << (byte_idx * 8);
+        byte_idx += 1;
+        if byte_idx == 8 {
+            ipc::set_mr(word_idx, current_word);
+            word_idx += 1;
+            byte_idx = 0;
+            current_word = 0;
+        }
+    }
+
+    for &b in link_path.as_bytes() {
+        current_word |= (b as u64) << (byte_idx * 8);
+        byte_idx += 1;
+        if byte_idx == 8 {
+            ipc::set_mr(word_idx, current_word);
+            word_idx += 1;
+            byte_idx = 0;
+            current_word = 0;
+        }
+    }
+
+    if byte_idx > 0 {
+        ipc::set_mr(word_idx, current_word);
+        word_idx += 1;
+    }
+
+    let info = ipc::MessageInfo::new(26, 0, 0, word_idx as seL4_Word);
+    let _ = ipc::call(ep, info);
+    ipc::get_mr(0) as isize
+}
+
 pub fn sys_rename(ep: seL4_CPtr, old_path: &str, new_path: &str) -> isize {
     let old_len = old_path.len();
     let new_len = new_path.len();

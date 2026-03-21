@@ -241,6 +241,7 @@ pub struct FileDescriptor {
     pub path: alloc::string::String,
     pub offset: usize,
     pub mode: FileMode,
+    pub remote_fd: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,6 +255,7 @@ pub enum FileMode {
 #[derive(Debug, Clone)]
 pub struct Process {
     pub name: alloc::string::String,
+    pub fs_forwarding_enabled: bool,
     pub tcb_cap: seL4_CPtr,
     pub vspace: VSpace,
     pub fault_ep_cap: seL4_CPtr,
@@ -485,6 +487,7 @@ impl Process {
         
         Ok(Process {
             name: alloc::string::String::from(name),
+            fs_forwarding_enabled: true,
             tcb_cap,
             vspace,
             fault_ep_cap: 0,
@@ -511,6 +514,7 @@ impl Process {
     pub fn new(tcb_cap: seL4_CPtr, vspace: VSpace) -> Self {
         Process { 
             name: alloc::string::String::from("unknown"),
+            fs_forwarding_enabled: true,
             tcb_cap, 
             vspace, 
             fault_ep_cap: 0, 

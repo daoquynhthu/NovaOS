@@ -4,8 +4,10 @@ $ErrorActionPreference = "Stop"
 # Set up environment variables for seL4-sys build
 Set-Location $PSScriptRoot
 $root = $PSScriptRoot
-$env:SEL4_OUT_DIR = "$root\build\kernel"
-$env:SEL4_KERNEL_DIR = "$root\kernel\seL4"
+$buildDir = if ($env:NOVA_BUILD_DIR) { $env:NOVA_BUILD_DIR } else { "build" }
+$buildRoot = Join-Path $root $buildDir
+$env:SEL4_OUT_DIR = Join-Path $buildRoot "kernel"
+$env:SEL4_KERNEL_DIR = Join-Path $root "kernel/seL4"
 
 Write-Host "SEL4_OUT_DIR: $env:SEL4_OUT_DIR"
 Write-Host "SEL4_KERNEL_DIR: $env:SEL4_KERNEL_DIR"
@@ -24,7 +26,7 @@ if ($LASTEXITCODE -ne 0) { Write-Error "Cargo build failed"; exit 1 }
 Set-Location "../.."
 
 # Verify Kernel exists
-if (-not (Test-Path "build/kernel/kernel32.elf")) {
+if (-not (Test-Path (Join-Path $buildRoot "kernel/kernel32.elf"))) {
     Write-Error "Kernel (kernel32.elf) not found in build/kernel/. Please build the kernel first."
     exit 1
 }
@@ -32,4 +34,4 @@ if (-not (Test-Path "build/kernel/kernel32.elf")) {
 Write-Host "Build Complete!" -ForegroundColor Green
 Write-Host "User App:   target/x86_64-unknown-none/release/user_app"
 Write-Host "RootServer: target/x86_64-unknown-none/release/rootserver"
-Write-Host "Kernel:     build/kernel/kernel32.elf"
+Write-Host "Kernel:     $buildDir/kernel/kernel32.elf"

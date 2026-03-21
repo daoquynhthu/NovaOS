@@ -36,6 +36,7 @@ pub struct Shell {
     syscall_ep_cap: sel4_sys::seL4_CPtr,
     cwd: alloc::string::String,
     env_vars: alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>,
+    pending_prompt_pid: Option<usize>,
 }
 
 impl Shell {
@@ -65,6 +66,7 @@ impl Shell {
             syscall_ep_cap: 0,
             cwd: alloc::string::String::from("/"),
             env_vars,
+            pending_prompt_pid: None,
         }
     }
 
@@ -146,6 +148,17 @@ impl Shell {
         print!("\x1b[1;32mNovaOS:{}>\x1b[0m ", self.cwd);
     }
 
+    fn prompt_deferred(&self) -> bool {
+        self.pending_prompt_pid.is_some()
+    }
+
+    pub fn on_process_exit(&mut self, pid: usize) {
+        if self.pending_prompt_pid == Some(pid) {
+            self.pending_prompt_pid = None;
+            self.print_prompt();
+        }
+    }
+
     pub fn on_key(&mut self, k: Key) {
         match k {
             Key::Enter => {
@@ -154,7 +167,9 @@ impl Shell {
                 self.draft_valid = false;
                 self.execute_command();
                 self.clear_line();
-                self.print_prompt();
+                if !self.prompt_deferred() {
+                    self.print_prompt();
+                }
             }
             Key::Backspace => {
                 self.history_view = None;
@@ -602,6 +617,53 @@ impl Shell {
         res
     }
 
+    fn load_hello_binary(&self) -> Option<alloc::vec::Vec<u8>> {
+        {
+            let vfs_lock = crate::vfs::VFS.lock();
+            if let Some(fs) = vfs_lock.as_ref() {
+                if let Ok(data) = fs.read_file("/bin/hello") {
+                    return Some(data);
+                }
+            }
+        }
+
+        crate::filesystem::get_file("hello").map(|data| data.to_vec())
+    }
+
+    fn build_child_env(&self, include_fs_service: bool) -> alloc::vec::Vec<alloc::string::String> {
+        let mut env_vec: alloc::vec::Vec<alloc::string::String> = self.env_vars.iter()
+            .map(|(k, v)| alloc::format!("{}={}", k, v))
+            .collect();
+        if include_fs_service {
+            if let Some((_, fs_ep, _)) = crate::services::lookup_latest("fs") {
+                env_vec.push(alloc::format!("NOVA_FS_SERVICE_EP={}", fs_ep));
+            }
+        }
+        env_vec
+    }
+
+    fn spawn_fs_helper_args(&mut self, args: &[&str]) -> bool {
+        let Some(data) = self.load_hello_binary() else {
+            return false;
+        };
+        let env_vec = self.build_child_env(true);
+        if !env_vec.iter().any(|entry| entry.starts_with("NOVA_FS_SERVICE_EP=")) {
+            return false;
+        }
+        let env_slice: alloc::vec::Vec<&str> = env_vec.iter().map(|s| s.as_str()).collect();
+        if let Some(pid) = self.spawn_process("hello", &data, &args, &env_slice) {
+            self.pending_prompt_pid = Some(pid);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn spawn_fs_helper(&mut self, mode: &str, path: &str) -> bool {
+        let args = [mode, path];
+        self.spawn_fs_helper_args(&args)
+    }
+
     fn execute_command(&mut self) {
         let Some((start, end)) = self.trim_range() else {
             return;
@@ -639,7 +701,7 @@ impl Shell {
             println!("  exec      - Execute a program (e.g. exec hello)");
             println!("  history   - Show recent commands");
             println!("  post      - Run POST tests again");
-            println!("  runhello  - Run minimal user-mode program");
+            println!("  runhello  - Run minimal user-mode program [args...]");
             println!("  shutdown  - Power off the system");
             println!("  renice    - Change process priority (renice <pid> <prio>)");
             println!("  pci       - List PCI devices");
@@ -940,13 +1002,20 @@ impl Shell {
             }
         } else if self.word_eq(word_start, word_end, "fsping") {
             match crate::services::ping("fs") {
-                Ok((status, proto)) => {
+                Ok((status, proto, op_pair, rw_pair)) => {
                     if status == libnova::fs_ipc::FS_STATUS_READY {
-                        println!("[SVC] fs ping ok (proto v{})", proto);
+                        let open_count = (op_pair >> 32) as u32;
+                        let close_count = (op_pair & 0xFFFF_FFFF) as u32;
+                        let read_count = (rw_pair >> 32) as u32;
+                        let write_count = (rw_pair & 0xFFFF_FFFF) as u32;
+                        println!(
+                            "[SVC] fs ping ok (proto v{}) open={} read={} write={} close={}",
+                            proto, open_count, read_count, write_count, close_count
+                        );
                     } else {
                         println!(
-                            "[SVC] fs ping unexpected status=0x{:x} proto={}",
-                            status, proto
+                            "[SVC] fs ping unexpected status=0x{:x} proto={} op=0x{:x} rw=0x{:x}",
+                            status, proto, op_pair, rw_pair
                         );
                     }
                 }
@@ -1173,26 +1242,23 @@ impl Shell {
                 unsafe { tests::run_all(&*self.boot_info, &mut *self.allocator, &mut *self.slots, &mut *self.frame_allocator) };
             }
         } else if self.word_eq(word_start, word_end, "runhello") {
-            let mut data_opt: Option<alloc::vec::Vec<u8>> = None;
-            {
-                let vfs_lock = crate::vfs::VFS.lock();
-                if let Some(fs) = vfs_lock.as_ref() {
-                    if let Ok(data) = fs.read_file("/bin/hello") {
-                        data_opt = Some(data);
-                    }
-                }
-            }
-            
-            // Prepare environment variables
-            let env_vec: alloc::vec::Vec<alloc::string::String> = self.env_vars.iter()
-                .map(|(k, v)| alloc::format!("{}={}", k, v))
-                .collect();
+            let data_opt = self.load_hello_binary();
+            let env_vec = self.build_child_env(true);
             let env_slice: alloc::vec::Vec<&str> = env_vec.iter().map(|s| s.as_str()).collect();
+            let arg_storage = if rest_start < end {
+                let full_line = &self.buffer[rest_start..end];
+                let full_line_str = full_line.iter().collect::<alloc::string::String>();
+                full_line_str
+                    .split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect::<alloc::vec::Vec<_>>()
+            } else {
+                alloc::vec::Vec::new()
+            };
+            let args: alloc::vec::Vec<&str> = arg_storage.iter().map(|s| s.as_str()).collect();
 
             if let Some(data) = data_opt {
-                self.spawn_process("hello", &data, &[], &env_slice);
-            } else if let Some(data) = crate::filesystem::get_file("hello") {
-                 self.spawn_process("hello", data, &[], &env_slice);
+                self.spawn_process("hello", &data, &args, &env_slice);
             } else {
                 println!("Error: hello binary not found in /bin");
             }
@@ -1376,7 +1442,11 @@ impl Shell {
                 let s = &self.buffer[rest_start..end];
                 let s = s.iter().collect::<alloc::string::String>();
                 let path_str = self.resolve_path(&s);
-                
+
+                if self.spawn_fs_helper("fs_cat", &path_str) {
+                    return;
+                }
+
                 let fs_lock = crate::fs::DISK_FS.lock();
                 if let Some(fs) = fs_lock.as_ref() {
                     match crate::vfs::resolve_path(fs, &self.cwd, &path_str) {
@@ -1416,7 +1486,23 @@ impl Shell {
                 let s = &self.buffer[rest_start..end];
                 let s = s.iter().collect::<alloc::string::String>();
                 let path_str = self.resolve_path(&s);
-                
+
+                let name = if let Some(idx) = path_str.rfind('/') {
+                    if idx == 0 { &path_str[1..] }
+                    else { &path_str[idx+1..] }
+                } else {
+                    path_str.as_str()
+                };
+
+                if name.is_empty() || name == "." || name == ".." {
+                    println!("rm: invalid argument");
+                    return;
+                }
+
+                if self.spawn_fs_helper("fs_rm", &path_str) {
+                    return;
+                }
+
                 let fs_lock = crate::fs::DISK_FS.lock();
                 if let Some(fs) = fs_lock.as_ref() {
                     let (parent_path, name) = if let Some(idx) = path_str.rfind('/') {
@@ -1426,18 +1512,14 @@ impl Shell {
                         (self.cwd.as_str(), path_str.as_str())
                     };
                     
-                    if name.is_empty() || name == "." || name == ".." {
-                        println!("rm: invalid argument");
-                    } else {
-                        match crate::vfs::resolve_path(fs, &self.cwd, parent_path) {
-                            Ok(parent) => {
-                                match parent.remove(name) {
-                                    Ok(_) => println!("Removed '{}'", path_str),
-                                    Err(e) => println!("rm: cannot remove '{}': {}", path_str, e),
-                                }
-                            },
-                            Err(e) => println!("rm: {}: {}", parent_path, e),
-                        }
+                    match crate::vfs::resolve_path(fs, &self.cwd, parent_path) {
+                        Ok(parent) => {
+                            match parent.remove(name) {
+                                Ok(_) => println!("Removed '{}'", path_str),
+                                Err(e) => println!("rm: cannot remove '{}': {}", path_str, e),
+                            }
+                        },
+                        Err(e) => println!("rm: {}: {}", parent_path, e),
                     }
                 } else {
                     println!("rm: Filesystem not mounted");
@@ -1469,6 +1551,11 @@ impl Shell {
                      
                      let src_path = self.resolve_path(&src_str);
                      let dest_path = self.resolve_path(&dest_str);
+
+                     let helper_args = ["fs_cp", src_path.as_str(), dest_path.as_str()];
+                     if self.spawn_fs_helper_args(&helper_args) {
+                         return;
+                     }
                      
                      let fs_lock = crate::fs::DISK_FS.lock();
                      if let Some(fs) = fs_lock.as_ref() {
@@ -1589,6 +1676,10 @@ impl Shell {
                      let fs_lock = crate::fs::DISK_FS.lock();
                      if let Some(fs) = fs_lock.as_ref() {
                           if is_symlink {
+                               let helper_args = ["fs_symlink", target_str.as_str(), link_path.as_str()];
+                               if self.spawn_fs_helper_args(&helper_args) {
+                                   return;
+                               }
                                // Symlink creation
                                let (parent_path, name) = if let Some(idx) = link_path.rfind('/') {
                                     if idx == 0 { ("/", &link_path[1..]) }
@@ -1618,6 +1709,10 @@ impl Shell {
                           } else {
                               // Hard link creation
                               let target_path = self.resolve_path(&target_str);
+                              let helper_args = ["fs_link", target_path.as_str(), link_path.as_str()];
+                              if self.spawn_fs_helper_args(&helper_args) {
+                                  return;
+                              }
                               match crate::vfs::resolve_path(fs, &self.cwd, &target_path) {
                                   Ok(target_inode) => {
                                        let (parent_path, name) = if let Some(idx) = link_path.rfind('/') {
@@ -1807,6 +1902,11 @@ impl Shell {
                                dest_path.push_str(src_name);
                           }
 
+                          let helper_args = ["fs_mv", src_path.as_str(), dest_path.as_str()];
+                          if self.spawn_fs_helper_args(&helper_args) {
+                              return;
+                          }
+
                           // Split paths
                           let (src_parent_path, src_name) = if let Some(idx) = src_path.rfind('/') {
                                if idx == 0 { ("/", &src_path[1..]) }
@@ -1852,7 +1952,23 @@ impl Shell {
                 let s = &self.buffer[rest_start..end];
                 let s = s.iter().collect::<alloc::string::String>();
                 let path_str = self.resolve_path(&s);
-                
+
+                let name = if let Some(idx) = path_str.rfind('/') {
+                    if idx == 0 { &path_str[1..] }
+                    else { &path_str[idx+1..] }
+                } else {
+                    path_str.as_str()
+                };
+
+                if name.is_empty() {
+                    println!("touch: Invalid name");
+                    return;
+                }
+
+                if self.spawn_fs_helper("fs_touch", &path_str) {
+                    return;
+                }
+
                 let fs_lock = crate::fs::DISK_FS.lock();
                 if let Some(fs) = fs_lock.as_ref() {
                     let (parent_path, name) = if let Some(idx) = path_str.rfind('/') {
@@ -1861,26 +1977,21 @@ impl Shell {
                     } else {
                         (self.cwd.as_str(), path_str.as_str())
                     };
-                    
-                    if name.is_empty() {
-                         println!("touch: Invalid name");
-                    } else {
-                        match crate::vfs::resolve_path(fs, &self.cwd, parent_path) {
-                             Ok(parent) => {
-                                 if let Ok(_) = parent.lookup(name) {
-                                      // Exists, do nothing
-                                 } else {
-                                      match parent.create(name, crate::vfs::FileType::File) {
-                                          Ok(_) => println!("Created '{}'", path_str),
-                                          Err(e) => println!("touch: {}", e),
-                                      }
-                                 }
-                             },
-                             Err(e) => println!("touch: {}: {}", parent_path, e),
-                        }
+                    match crate::vfs::resolve_path(fs, &self.cwd, parent_path) {
+                        Ok(parent) => {
+                            if let Ok(_) = parent.lookup(name) {
+                                // Exists, do nothing
+                            } else {
+                                match parent.create(name, crate::vfs::FileType::File) {
+                                    Ok(_) => println!("Created '{}'", path_str),
+                                    Err(e) => println!("touch: {}", e),
+                                }
+                            }
+                        },
+                        Err(e) => println!("touch: {}: {}", parent_path, e),
                     }
                 } else {
-                     println!("touch: Filesystem not mounted");
+                    println!("touch: Filesystem not mounted");
                 }
             }
         } else if self.word_eq(word_start, word_end, "pwd") {
@@ -2020,13 +2131,13 @@ impl Shell {
         }
     }
 
-    fn spawn_process(&mut self, name: &str, elf_data: &[u8], args: &[&str], env: &[&str]) {
+    fn spawn_process(&mut self, name: &str, elf_data: &[u8], args: &[&str], env: &[&str]) -> Option<usize> {
         if self.boot_info.is_null() || self.allocator.is_null() || self.slots.is_null() || self.frame_allocator.is_null() {
             println!("spawn_process: unavailable");
-            return;
+            return None;
         }
 
-        use crate::process::{Process, get_process_manager};
+        use crate::process::{Process, MAX_PROCESSES, get_process_manager};
         use sel4_sys::*;
 
         let bi = unsafe { &*self.boot_info };
@@ -2034,15 +2145,17 @@ impl Shell {
         let slots = unsafe { &mut *self.slots };
         let frame_alloc = unsafe { &mut *self.frame_allocator };
 
-        // 1. Allocate PID
+        // 1. Allocate PID.
+        // Keep PID 0 reserved for the initial integration-suite role to avoid
+        // accidentally re-triggering full /bin/hello test flow from shell commands.
         let mut pm = get_process_manager();
-        let pid = match pm.allocate_pid() {
-            Ok(p) => p,
-            Err(e) => {
-                    println!("[RUN] Failed to allocate PID: {:?}", e);
-                    return;
-            }
-        };
+        let pid = (1..MAX_PROCESSES)
+            .find(|candidate| pm.get_process(*candidate).is_none())
+            .unwrap_or(MAX_PROCESSES);
+        if pid == MAX_PROCESSES {
+            println!("[RUN] Failed to allocate PID: no non-zero PID available");
+            return None;
+        }
         
         let badge = 100 + pid;
 
@@ -2051,7 +2164,7 @@ impl Shell {
             Ok(s) => s,
             Err(_) => {
                 println!("[RUN] Failed to allocate slot for badged EP");
-                return;
+                return None;
             }
         };
 
@@ -2066,7 +2179,7 @@ impl Shell {
             badge as seL4_Word
         ) {
             println!("[RUN] Failed to mint badged endpoint: {:?}", e);
-            return;
+            return None;
         }
 
         println!("[RUN] Spawning process '{}' (PID {})...", name, pid);
@@ -2075,13 +2188,18 @@ impl Shell {
         match Process::spawn(alloc, slots, frame_alloc, bi, name, elf_data, args, env, 100, badged_ep_slot, 32, 0, 0) {
             Ok(process) => {
                     // 4. Add to Manager
-                    if let Err(e) = pm.add_process(process) {
+                    if let Err(e) = pm.add_process_at(pid, process) {
                         println!("[RUN] Failed to add process to manager: {:?}", e);
+                        None
                     } else {
                         println!("[RUN] Process spawned successfully (PID {}).", pid);
+                        Some(pid)
                     }
             }
-            Err(e) => println!("[RUN] Spawn failed: {:?}", e),
+            Err(e) => {
+                println!("[RUN] Spawn failed: {:?}", e);
+                None
+            }
         }
     }
 

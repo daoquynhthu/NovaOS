@@ -1,10 +1,16 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
+use libnova::fs_ipc::{FS_LABEL_PING, FS_PROTO_V1, FS_STATUS_READY};
+use core::sync::atomic::{AtomicU64, Ordering};
 use sel4_sys::{seL4_CPtr, seL4_Word};
 use spin::Mutex;
 
 static SERVICE_REGISTRY: Mutex<Option<BTreeMap<String, seL4_CPtr>>> = Mutex::new(None);
+static FS_FWD_OPEN: AtomicU64 = AtomicU64::new(0);
+static FS_FWD_CLOSE: AtomicU64 = AtomicU64::new(0);
+static FS_FWD_READ: AtomicU64 = AtomicU64::new(0);
+static FS_FWD_WRITE: AtomicU64 = AtomicU64::new(0);
 
 pub fn init() {
     let mut registry = SERVICE_REGISTRY.lock();
@@ -76,10 +82,42 @@ pub fn list() -> Vec<(String, seL4_CPtr)> {
     }
 }
 
-pub fn ping(name: &str) -> Result<(seL4_Word, seL4_Word), &'static str> {
-    let exists = lookup(name).is_some() || lookup_latest(name).is_some();
-    if !exists {
-        return Err("service-not-found");
+pub fn note_fs_forward(label: seL4_Word) {
+    match label {
+        libnova::fs_ipc::FS_LABEL_OPEN => {
+            FS_FWD_OPEN.fetch_add(1, Ordering::Relaxed);
+        }
+        libnova::fs_ipc::FS_LABEL_CLOSE => {
+            FS_FWD_CLOSE.fetch_add(1, Ordering::Relaxed);
+        }
+        libnova::fs_ipc::FS_LABEL_READ => {
+            FS_FWD_READ.fetch_add(1, Ordering::Relaxed);
+        }
+        libnova::fs_ipc::FS_LABEL_WRITE => {
+            FS_FWD_WRITE.fetch_add(1, Ordering::Relaxed);
+        }
+        _ => {}
     }
-    Err("ping-disabled-shared-endpoint")
+}
+
+pub fn ping(name: &str) -> Result<(seL4_Word, seL4_Word, seL4_Word, seL4_Word), &'static str> {
+    let _endpoint = if let Some(ep) = lookup(name) {
+        ep
+    } else if let Some((_resolved, ep, _version)) = lookup_latest(name) {
+        ep
+    } else {
+        return Err("service-not-found");
+    };
+
+    let _ = FS_LABEL_PING;
+    let open_count = FS_FWD_OPEN.load(Ordering::Relaxed) as seL4_Word;
+    let close_count = FS_FWD_CLOSE.load(Ordering::Relaxed) as seL4_Word;
+    let read_count = FS_FWD_READ.load(Ordering::Relaxed) as seL4_Word;
+    let write_count = FS_FWD_WRITE.load(Ordering::Relaxed) as seL4_Word;
+    Ok((
+        FS_STATUS_READY,
+        FS_PROTO_V1,
+        (open_count << 32) | (close_count & 0xFFFF_FFFF),
+        (read_count << 32) | (write_count & 0xFFFF_FFFF),
+    ))
 }

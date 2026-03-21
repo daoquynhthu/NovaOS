@@ -227,6 +227,17 @@ fn test_user_hello_program(
                 sender_badge = new_badge;
                 mrs = new_mrs;
             }
+            9 => { // sys_get_pid
+                // Return non-zero so this self-test instance follows child path
+                // and exits quickly without running the full suite again.
+                let (new_info, new_badge, new_mrs) = syscall_ep.reply_recv_with_mrs(
+                    libnova::ipc::MessageInfo::new(0, 0, 0, 1),
+                    [1, 0, 0, 0]
+                );
+                info = new_info;
+                sender_badge = new_badge;
+                mrs = new_mrs;
+            }
             _ => {
                 println!("[INFO] Unknown syscall label: {}. Badge: {}", label, sender_badge);
                 break;
@@ -250,6 +261,8 @@ fn test_process_manager() {
     
     // Create a dummy process (invalid caps, just for structural test)
     let dummy_process = Process {
+        name: alloc::string::String::from("dummy"),
+        fs_forwarding_enabled: true,
         tcb_cap: 999,
         vspace: crate::vspace::VSpace { pml4_cap: 888, paging_caps: [None; 32], paging_cap_count: 0 },
         fault_ep_cap: 0,
@@ -267,7 +280,6 @@ fn test_process_manager() {
         gid: 0,
         ppid: 0,
         children: alloc::vec::Vec::new(),
-        name: alloc::string::String::from("dummy"),
         exit_code: None,
         waiting_for_child: None,
         mmap_top: 0x7000_0000,

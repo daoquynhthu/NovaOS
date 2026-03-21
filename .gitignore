@@ -1,5 +1,7 @@
 # Ignore build artifacts
 build/
+build-linux/
+build-linux-*/
 target/
 cargo/
 
@@ -54,3 +56,5 @@ auditoration1.md
 
 # Temporary scripts (optional, but let's keep the main ones)
 # build.ps1 and run_qemu.ps1 are kept.
+
+.env
