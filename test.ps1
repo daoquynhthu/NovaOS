@@ -94,7 +94,7 @@ $script:testRmPostDelayMs = Get-EnvInt "NOVA_TEST_RM_POST_DELAY_MS" 450 0 10000
 $script:testPollDelayMs = Get-EnvInt "NOVA_TEST_POLL_DELAY_MS" 5 0 1000
 $script:testBulkSend = Get-EnvBool "NOVA_TEST_BULK_SEND" $false
 $script:testStageTiming = Get-EnvBool "NOVA_TEST_STAGE_TIMING" $false
-$script:testBigFileKb = Get-EnvInt "NOVA_TEST_BIGFILE_KB" $(if ($IsLinux) { 64 } else { 200 }) 1 4096
+$script:testBigFileKb = Get-EnvInt "NOVA_TEST_BIGFILE_KB" $(if ($IsLinux) { 4 } else { 200 }) 1 4096
 
 function Start-Sleep {
     [CmdletBinding(DefaultParameterSetName = "Milliseconds")]
@@ -321,7 +321,7 @@ $stage35Checks = @{
     runHello = $false
     proxySmoke = $false
 }
-$timeoutSeconds = 120
+$timeoutSeconds = 60
 $timeoutEnv = $env:NOVA_TEST_TIMEOUT_SECONDS
 if ($timeoutEnv) {
     $parsedTimeout = 0

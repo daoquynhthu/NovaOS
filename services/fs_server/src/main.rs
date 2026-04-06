@@ -66,7 +66,7 @@ use libnova::fs_ipc::{
     fs_err_not_implemented_word, FS_LABEL_CHMOD, FS_LABEL_CHOWN, FS_LABEL_CLOSE, FS_LABEL_DECRYPT,
     FS_LABEL_ENCRYPT, FS_LABEL_LINK, FS_LABEL_LIST, FS_LABEL_MKDIR, FS_LABEL_OPEN, FS_LABEL_PING, FS_LABEL_READ,
     FS_LABEL_REFRESH, FS_LABEL_RENAME, FS_LABEL_SYNC, FS_LABEL_SYMLINK, FS_LABEL_TRUNCATE,
-    FS_LABEL_UNLINK, FS_LABEL_WRITE, FS_PROTO_V1, FS_STATUS_READY,
+    FS_LABEL_UNLINK, FS_LABEL_WRITE, FS_LABEL_WRITETEST, FS_PROTO_V1, FS_STATUS_READY,
 };
 use libnova::ipc;
 use libnova::syscall::{
@@ -371,6 +371,52 @@ fn local_truncate(fs: &Arc<dyn FileSystem>, path: &str, size: u64) -> i64 {
         Ok(_) => 0,
         Err(_) => FS_ERR_IO,
     }
+}
+
+fn local_writetest(fs: &Arc<dyn FileSystem>, path: &str, size_kb: usize) -> i64 {
+    let mut entry = match open_inode(fs, path, 1) {
+        Ok(entry) => entry,
+        Err(err) => return err,
+    };
+
+    if entry.inode.control(3, 0).is_err() {
+        return FS_ERR_IO;
+    }
+
+    let total_bytes = size_kb.saturating_mul(1024);
+    let mut written_total = 0usize;
+    let mut chunk = [0u8; 4096];
+
+    println!(
+        "[FS_SERVER] writetest path={} size_kb={} total_bytes={}",
+        path,
+        size_kb,
+        total_bytes
+    );
+
+    while written_total < total_bytes {
+        let chunk_len = core::cmp::min(chunk.len(), total_bytes - written_total);
+        for i in 0..chunk_len {
+            chunk[i] = ((written_total + i) % 256) as u8;
+        }
+
+        match entry.inode.write_at(entry.offset, &chunk[..chunk_len]) {
+            Ok(n) if n == chunk_len => {
+                entry.offset += n;
+                written_total += n;
+                WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(_) => return FS_ERR_IO,
+            Err(_) => return FS_ERR_IO,
+        }
+    }
+
+    println!(
+        "[FS_SERVER] writetest done path={} bytes={}",
+        path,
+        written_total
+    );
+    0
 }
 
 fn local_chmod(fs: &Arc<dyn FileSystem>, path: &str, mode: u16) -> i64 {
@@ -1125,6 +1171,19 @@ pub extern "C" fn _start(
 
                 let mut data = [0u8; MAX_RW_LEN];
                 let data_len = copy_bytes_from_msg(2, len, info.length() as usize, &mut data);
+                if data_len > 0 && data_len <= 16 {
+                    print!("[FS_SERVER] write data len={} hex", data_len);
+                    for byte in &data[..data_len] {
+                        print!(" {:02x}", byte);
+                    }
+                    println!();
+                }
+                println!(
+                    "[FS_SERVER] write fd={} len={} offset={}",
+                    fd,
+                    len,
+                    entry.offset
+                );
                 if entry.mode == 3 {
                     if let Ok(meta) = entry.inode.metadata() {
                         entry.offset = meta.size;
@@ -1140,7 +1199,39 @@ pub extern "C" fn _start(
                     Err(_) => FS_ERR_IO,
                 };
 
+                println!(
+                    "[FS_SERVER] write done fd={} wrote={} new_offset={}",
+                    fd,
+                    written,
+                    entry.offset
+                );
                 ipc::set_mr(0, written as u64);
+                ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
+            }
+            FS_LABEL_WRITETEST => {
+                let path_len = ipc::get_mr(0) as usize;
+                let size_kb = ipc::get_mr(1) as usize;
+                let mut path_buf = [0u8; MAX_PATH_LEN];
+                let actual_len = copy_bytes_from_msg(2, path_len, info.length() as usize, &mut path_buf);
+                let path_str = match core::str::from_utf8(&path_buf[..actual_len]) {
+                    Ok(s) if !s.is_empty() => s,
+                    _ => {
+                        ipc::set_mr(0, FS_ERR_INVAL as u64);
+                        ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
+                        continue;
+                    }
+                };
+
+                if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
+                    ipc::set_mr(0, FS_ERR_IO as u64);
+                    ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
+                    continue;
+                }
+
+                let res = current_fs()
+                    .map(|fs| local_writetest(&fs, path_str, size_kb))
+                    .unwrap_or(FS_ERR_IO);
+                ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
             FS_LABEL_READ => {

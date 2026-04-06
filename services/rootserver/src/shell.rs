@@ -1,6 +1,7 @@
 
 use crate::drivers::keyboard::Key;
 use alloc::string::ToString;
+use libnova::fs_ipc::encrypt_direct as fs_encrypt_direct;
 use libnova::cap::cap_rights_new;
 use crate::memory::{SlotAllocator, UntypedAllocator, FrameAllocator};
 use crate::tests;
@@ -11,7 +12,7 @@ const HISTORY_LEN: usize = 16;
 
 const COMMANDS: &[&str] = &[
     "help", "clear", "echo", "cat", "whoami", "status", "bootinfo", "alloc", "meminfo",
-    "ps", "services", "svc", "ls", "kill", "exec", "history", "post", "runhello", "cd", "mkdir", "rm", "cp", "mv", "touch", "pwd",
+    "ps", "services", "svc", "ls", "kill", "exec", "history", "post", "runhello", "cd", "mkdir", "rm", "cp", "mv", "touch", "writetest", "pwd",
     "fsping", "renice", "pci", "date", "disk_read", "disk_write", "mkfs", "mount", "sync", "write", "encrypt", "decrypt", "ln", "chmod", "chown",
     "env", "export", "unset"
 ];
@@ -693,6 +694,7 @@ impl Shell {
             println!("  rm        - Remove file/directory");
             println!("  cp        - Copy file");
             println!("  mv        - Move/Rename file");
+            println!("  writetest - Write a large test file");
             println!("  pwd       - Print working directory");
             println!("  whoami    - Show user info");
             println!("  status    - Show system status");
@@ -1208,6 +1210,19 @@ impl Shell {
                 if self.spawn_fs_helper("fs_encrypt", &path_str) {
                     return;
                 }
+                if let Some((_, fs_ep, _)) = crate::services::lookup_latest_ready("fs") {
+                    match fs_encrypt_direct(fs_ep, &path_str) {
+                        0 => {
+                            println!("File '{}' encrypted.", filename);
+                            return;
+                        }
+                        1 => {
+                            println!("File '{}' is already encrypted.", filename);
+                            return;
+                        }
+                        e => println!("Failed to encrypt: {}", e),
+                    }
+                }
                 let vfs_lock = crate::vfs::VFS.lock();
                 if let Some(fs) = vfs_lock.as_ref() {
                     match fs.resolve_path("/", &path_str) {
@@ -1636,6 +1651,19 @@ impl Shell {
             };
             if self.spawn_fs_helper("fs_encrypt", &path_str) {
                 return;
+            }
+            if let Some((_, fs_ep, _)) = crate::services::lookup_latest_ready("fs") {
+                match fs_encrypt_direct(fs_ep, &path_str) {
+                    0 => {
+                        println!("File '{}' encrypted.", path_str);
+                        return;
+                    }
+                    1 => {
+                        println!("File '{}' is already encrypted.", path_str);
+                        return;
+                    }
+                    e => println!("Failed to encrypt: {}", e),
+                }
             }
             let fs_lock = crate::fs::DISK_FS.lock();
             if let Some(fs) = fs_lock.as_ref() {
@@ -2128,6 +2156,11 @@ impl Shell {
             
             let path_str = self.resolve_path(&filename);
             println!("Writing {} KB to {}", size_kb, path_str);
+
+            let size_str = size_kb.to_string();
+            if self.spawn_fs_helper_args(&["fs_writetest", path_str.as_str(), size_str.as_str()]) {
+                return;
+            }
             
             let mut data = alloc::vec::Vec::with_capacity(size_kb * 1024);
             for i in 0..size_kb * 1024 {

@@ -11,6 +11,7 @@ use libnova::fs_ipc::{
     list_direct as fs_list_direct, mkdir_direct as fs_mkdir_direct, open_direct as fs_open_direct, read_direct as fs_read_direct,
     rename_direct as fs_rename_direct, sync_direct as fs_sync_direct, symlink_direct as fs_symlink_direct,
     truncate_direct as fs_truncate_direct, unlink_direct as fs_unlink_direct, write_direct as fs_write_direct,
+    writetest_direct as fs_writetest_direct,
     FS_MAX_RW_LEN,
 };
 use libnova::syscall::*;
@@ -48,6 +49,9 @@ struct EarlyArgs {
     fs_cat_path: [u8; FS_CMD_PATH_MAX],
     fs_ls_len: usize,
     fs_ls_path: [u8; FS_CMD_PATH_MAX],
+    fs_writetest_len: usize,
+    fs_writetest_path: [u8; FS_CMD_PATH_MAX],
+    fs_writetest_kb: usize,
     fs_cp_src_len: usize,
     fs_cp_src_path: [u8; FS_CMD_PATH_MAX],
     fs_cp_dest_len: usize,
@@ -102,6 +106,9 @@ impl EarlyArgs {
             fs_cat_path: [0; FS_CMD_PATH_MAX],
             fs_ls_len: 0,
             fs_ls_path: [0; FS_CMD_PATH_MAX],
+            fs_writetest_len: 0,
+            fs_writetest_path: [0; FS_CMD_PATH_MAX],
+            fs_writetest_kb: 0,
             fs_cp_src_len: 0,
             fs_cp_src_path: [0; FS_CMD_PATH_MAX],
             fs_cp_dest_len: 0,
@@ -159,6 +166,15 @@ impl EarlyArgs {
             None
         } else {
             core::str::from_utf8(&self.fs_ls_path[..self.fs_ls_len]).ok()
+        }
+    }
+
+    fn fs_writetest_args(&self) -> Option<(&str, usize)> {
+        if self.fs_writetest_len == 0 {
+            None
+        } else {
+            let path = core::str::from_utf8(&self.fs_writetest_path[..self.fs_writetest_len]).ok()?;
+            Some((path, self.fs_writetest_kb))
         }
     }
 
@@ -310,6 +326,8 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
     let mut expect_shm_key = false;
     let mut expect_fs_cat_path = false;
     let mut expect_fs_ls_path = false;
+    let mut expect_fs_writetest_path = false;
+    let mut expect_fs_writetest_kb = false;
     let mut expect_fs_cp_src_path = false;
     let mut expect_fs_cp_dest_path = false;
     let mut expect_fs_link_target_path = false;
@@ -353,6 +371,19 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
             if expect_fs_ls_path {
                 parsed.fs_ls_len = copy_str_to_buf(arg, &mut parsed.fs_ls_path);
                 expect_fs_ls_path = false;
+                continue;
+            }
+            if expect_fs_writetest_path {
+                parsed.fs_writetest_len = copy_str_to_buf(arg, &mut parsed.fs_writetest_path);
+                expect_fs_writetest_path = false;
+                expect_fs_writetest_kb = true;
+                continue;
+            }
+            if expect_fs_writetest_kb {
+                if let Ok(kb) = arg.parse::<usize>() {
+                    parsed.fs_writetest_kb = kb;
+                }
+                expect_fs_writetest_kb = false;
                 continue;
             }
             if expect_fs_cp_src_path {
@@ -496,6 +527,9 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
             }
             if arg == "fs_ls" {
                 expect_fs_ls_path = true;
+            }
+            if arg == "fs_writetest" {
+                expect_fs_writetest_path = true;
             }
             if arg == "fs_cp" {
                 expect_fs_cp_src_path = true;
@@ -726,6 +760,7 @@ fn run_fs_cat(envp: *const *const u8, path: &str) -> isize {
     }
 
     let mut buf = [0u8; FS_MAX_RW_LEN];
+    let mut collected = Vec::new();
     let mut saw_output = false;
     let mut ended_with_newline = false;
     loop {
@@ -735,14 +770,35 @@ fn run_fs_cat(envp: *const *const u8, path: &str) -> isize {
             let _ = fs_close_direct(fs_ep, fd as usize);
             return 221;
         }
+        println!("[FS_CMD] cat read {} bytes path={}", n, path);
         if n == 0 {
             break;
         }
 
         let chunk = &buf[..n as usize];
+        if !chunk.is_empty() {
+            let first = chunk[0];
+            let last = chunk[chunk.len() - 1];
+            println!(
+                "[FS_CMD] cat chunk len={} first={:02x} last={:02x}",
+                chunk.len(),
+                first,
+                last
+            );
+            if chunk.len() <= 16 {
+                print!("[FS_CMD] cat hex");
+                for byte in chunk {
+                    print!(" {:02x}", byte);
+                }
+                println!();
+            }
+        }
         match core::str::from_utf8(chunk) {
             Ok(s) => {
                 print!("{}", s);
+                if collected.len() <= 4096 {
+                    collected.extend_from_slice(s.as_bytes());
+                }
                 saw_output = true;
                 ended_with_newline = s.ends_with('\n');
             }
@@ -762,6 +818,13 @@ fn run_fs_cat(envp: *const *const u8, path: &str) -> isize {
 
     if saw_output && !ended_with_newline {
         println!();
+    }
+
+    println!("[FS_CMD] cat bytes={} path={}", collected.len(), path);
+    if saw_output && !collected.is_empty() {
+        if let Ok(summary) = core::str::from_utf8(&collected) {
+            println!("[FS_CMD] cat data {}", summary);
+        }
     }
 
     println!("[FS_CMD] cat ok {}", path);
@@ -820,6 +883,27 @@ fn run_fs_write_text(envp: *const *const u8, path: &str, content: &str) -> isize
 
     println!("Written to {}", path);
     println!("[FS_CMD] write ok {}", path);
+    0
+}
+
+fn run_fs_writetest(envp: *const *const u8, path: &str, size_kb: usize) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("writetest: fs service unavailable");
+            return code;
+        }
+    };
+
+    println!("Writing {} KB to {}", size_kb, path);
+    let res = fs_writetest_direct(fs_ep, path, size_kb);
+    if res != 0 {
+        println!("writetest: {}: write failed ({})", path, res);
+        return 246;
+    }
+
+    println!("Write success");
+    println!("[FS_CMD] writetest ok {} size={}KB", path, size_kb);
     0
 }
 
@@ -1483,7 +1567,7 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
     } else {
         println!("Process {} (Child) Started!", pid);
         println!(
-            "[FS_CMD] parsed touch={} rm={} mkdir={} cp={} mv={} truncate={} chmod={} chown={} link={} symlink={} cat={} write={} encrypt={} decrypt={} sync={} smoke={} syscall_smoke={} loop={} shm={}",
+            "[FS_CMD] parsed touch={} rm={} mkdir={} cp={} mv={} truncate={} chmod={} chown={} link={} symlink={} cat={} ls={} writetest={} write={} encrypt={} decrypt={} sync={} smoke={} syscall_smoke={} loop={} shm={}",
             early_args.fs_touch_path().is_some(),
             early_args.fs_rm_path().is_some(),
             early_args.fs_mkdir_path().is_some(),
@@ -1495,6 +1579,8 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
             early_args.fs_link_paths().is_some(),
             early_args.fs_symlink_paths().is_some(),
             early_args.fs_cat_path().is_some(),
+            early_args.fs_ls_path().is_some(),
+            early_args.fs_writetest_args().is_some(),
             early_args.fs_write_args().is_some(),
             early_args.fs_encrypt_path().is_some(),
             early_args.fs_decrypt_path().is_some(),
@@ -1527,6 +1613,9 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
             sys_exit(ep_cap, code as usize);
         } else if let Some(path) = early_args.fs_ls_path() {
             let code = run_fs_ls(envp, path);
+            sys_exit(ep_cap, code as usize);
+        } else if let Some((path, kb)) = early_args.fs_writetest_args() {
+            let code = run_fs_writetest(envp, path, kb);
             sys_exit(ep_cap, code as usize);
         } else if let Some(path) = early_args.fs_rm_path() {
             let code = run_fs_rm(envp, path);
