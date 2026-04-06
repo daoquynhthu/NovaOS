@@ -724,3 +724,59 @@
 - 当前意义：
   - 微内核化迁移已经不再只覆盖常见读写/链接命令。
   - `truncate` 与 `sync` 这类更偏元数据/持久化语义的路径，也已经进入 `fs_server` helper 主链并受 Linux 快速门禁覆盖。
+
+### 2026-04-06: 测试驱动开始从静默猜测改为完成信号驱动
+
+- 改动范围：
+  - `test.ps1` 取消了依赖 `NOVA_TEST_PROMPT_SETTLE_MS` 的静默窗口触发逻辑。
+  - `mkdir /home`、`meta_cleanup` 等阶段改为基于明确完成标记推进，不再依赖“等一段时间看看上一个进程应该是不是结束了”的方式。
+  - 其余阶段继续按输出 token 和 shell prompt 联合推进，整体目标是把测试节拍从时间猜测迁移到明确输出信号。
+- 验证结果：
+  - `test.ps1` 语法解析通过。
+  - `timeout 240s env NOVA_BUILD_DIR=build-linux NOVA_TEST_TIMEOUT_SECONDS=120 ./test.sh` 通过，最终出现 `All Tests Passed`。
+- 风险：
+  - `Send-TestCommand` 仍保留少量节流型延时，当前只去掉了最脆弱的 quiet-window 推进。
+  - 如果后续需要更强的完成语义，仍应继续把 helper 输出改成显式 ack，而不是重新堆 sleep。
+- 下一步：
+  - 跑一次完整 `./test.sh` 验证 prompt 驱动改造是否稳定。
+  - 继续收缩剩余固定等待，尽量把下一条命令的发送改成“前一条完成后再发”。
+
+### 2026-04-06: metadata 阶段改为 helper 完成信号串行推进，2min 门禁恢复通过
+
+- 改动范围：
+  - `test.ps1`
+    - `meta_test.txt` 这段 metadata 测试不再依赖 prompt 逐级推进。
+    - `touch -> chmod -> chown -> ls` 改成按 helper 的 `[FS_CMD] ... ok` 完成标记串行触发，减少对 shell prompt 返还节拍的耦合。
+    - `ls meta_test.txt` 的判据放宽为同时兼容 `rwxrwxrwx` 与 `1000/1000` 组合输出，避免 helper 输出里的控制字符把旧 regex 卡死。
+- 验证结果：
+  - `timeout 240s env NOVA_BUILD_DIR=build-linux NOVA_TEST_TIMEOUT_SECONDS=120 ./test.sh` 通过，最终出现 `All Tests Passed`。
+  - 这次确认 2 分钟回归门禁仍然足够，不需要因为 metadata 阶段的时序问题额外放大超时窗口。
+- 当前意义：
+  - 测试驱动更进一步从“等 prompt 猜下一步”迁移到了“等 helper 完成信号再发下一步”。
+  - 这也符合当前微内核化迁移的方向：命令路径已经越来越像显式事件驱动，而不是时序赌博。
+
+### 2026-04-06: `ls` 服务化补齐，`ls trunc.bin/sparse.bin` 判据修复，2min 门禁再次恢复通过
+
+- 改动范围：
+  - `libs/libnova/src/fs_ipc.rs`
+    - 新增 `FS_LABEL_LIST` 和 `list_direct()`，让 helper 可以直接对 `fs_server` 发 `ls` 请求。
+  - `services/user_app/src/main.rs`
+    - 新增 `fs_ls` helper 模式，直连 `fs.v1` 打印文件元数据。
+  - `services/rootserver/src/shell.rs`
+    - `ls` 默认优先走 helper，不再只依赖 RootServer 本地格式化路径。
+  - `services/fs_server/src/main.rs`
+    - 增加 `FS_LABEL_LIST` 处理，复刻 RootServer 的 `ls` 格式输出。
+  - `test.ps1`
+    - 放宽 `ls trunc.txt` 与 `ls sparse.bin` 的判据，兼容 helper 输出里的控制字符。
+    - 调整 Linux 测试节拍默认值，避免新增 `ls` helper hop 后把 2 分钟门禁压坏。
+- 验证结果：
+  - `timeout 240s env NOVA_BUILD_DIR=build-linux NOVA_TEST_TIMEOUT_SECONDS=120 ./test.sh` 通过。
+  - 最终日志出现：
+    - `Size 100 Verified`
+    - `Sparse Size Verified`
+    - `Sync Verified`
+    - `All Tests Passed`
+- 当前意义：
+  - `ls` 已经从 RootServer 本地命令进一步迁移到 `fs_server`，说明微内核化不再只覆盖写路径，还覆盖了读元数据路径。
+  - 之前卡在 stage 43 / 47 的问题本质上是 helper 输出格式与旧正则不匹配，不是业务语义回退。
+  - 2 分钟门禁仍然可用，说明这次服务化并没有引入新的性能回归。

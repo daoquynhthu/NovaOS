@@ -7,10 +7,11 @@ use alloc::vec::Vec;
 mod allocator;
 use libnova::fs_ipc::{
     chmod_direct as fs_chmod_direct, chown_direct as fs_chown_direct, close_direct as fs_close_direct,
-    link_direct as fs_link_direct, mkdir_direct as fs_mkdir_direct, open_direct as fs_open_direct,
-    read_direct as fs_read_direct, rename_direct as fs_rename_direct, sync_direct as fs_sync_direct,
-    symlink_direct as fs_symlink_direct, truncate_direct as fs_truncate_direct,
-    unlink_direct as fs_unlink_direct, write_direct as fs_write_direct, FS_MAX_RW_LEN,
+    decrypt_direct as fs_decrypt_direct, encrypt_direct as fs_encrypt_direct, link_direct as fs_link_direct,
+    list_direct as fs_list_direct, mkdir_direct as fs_mkdir_direct, open_direct as fs_open_direct, read_direct as fs_read_direct,
+    rename_direct as fs_rename_direct, sync_direct as fs_sync_direct, symlink_direct as fs_symlink_direct,
+    truncate_direct as fs_truncate_direct, unlink_direct as fs_unlink_direct, write_direct as fs_write_direct,
+    FS_MAX_RW_LEN,
 };
 use libnova::syscall::*;
 use libnova::{print, println};
@@ -45,6 +46,8 @@ struct EarlyArgs {
     shm_child_key: Option<usize>,
     fs_cat_len: usize,
     fs_cat_path: [u8; FS_CMD_PATH_MAX],
+    fs_ls_len: usize,
+    fs_ls_path: [u8; FS_CMD_PATH_MAX],
     fs_cp_src_len: usize,
     fs_cp_src_path: [u8; FS_CMD_PATH_MAX],
     fs_cp_dest_len: usize,
@@ -82,6 +85,10 @@ struct EarlyArgs {
     fs_write_path: [u8; FS_CMD_PATH_MAX],
     fs_write_content_len: usize,
     fs_write_content: [u8; FS_CMD_CONTENT_MAX],
+    fs_encrypt_len: usize,
+    fs_encrypt_path: [u8; FS_CMD_PATH_MAX],
+    fs_decrypt_len: usize,
+    fs_decrypt_path: [u8; FS_CMD_PATH_MAX],
 }
 
 impl EarlyArgs {
@@ -93,6 +100,8 @@ impl EarlyArgs {
             shm_child_key: None,
             fs_cat_len: 0,
             fs_cat_path: [0; FS_CMD_PATH_MAX],
+            fs_ls_len: 0,
+            fs_ls_path: [0; FS_CMD_PATH_MAX],
             fs_cp_src_len: 0,
             fs_cp_src_path: [0; FS_CMD_PATH_MAX],
             fs_cp_dest_len: 0,
@@ -130,6 +139,10 @@ impl EarlyArgs {
             fs_write_path: [0; FS_CMD_PATH_MAX],
             fs_write_content_len: 0,
             fs_write_content: [0; FS_CMD_CONTENT_MAX],
+            fs_encrypt_len: 0,
+            fs_encrypt_path: [0; FS_CMD_PATH_MAX],
+            fs_decrypt_len: 0,
+            fs_decrypt_path: [0; FS_CMD_PATH_MAX],
         }
     }
 
@@ -138,6 +151,14 @@ impl EarlyArgs {
             None
         } else {
             core::str::from_utf8(&self.fs_cat_path[..self.fs_cat_len]).ok()
+        }
+    }
+
+    fn fs_ls_path(&self) -> Option<&str> {
+        if self.fs_ls_len == 0 {
+            None
+        } else {
+            core::str::from_utf8(&self.fs_ls_path[..self.fs_ls_len]).ok()
         }
     }
 
@@ -216,6 +237,22 @@ impl EarlyArgs {
         }
     }
 
+    fn fs_encrypt_path(&self) -> Option<&str> {
+        if self.fs_encrypt_len == 0 {
+            None
+        } else {
+            core::str::from_utf8(&self.fs_encrypt_path[..self.fs_encrypt_len]).ok()
+        }
+    }
+
+    fn fs_decrypt_path(&self) -> Option<&str> {
+        if self.fs_decrypt_len == 0 {
+            None
+        } else {
+            core::str::from_utf8(&self.fs_decrypt_path[..self.fs_decrypt_len]).ok()
+        }
+    }
+
     fn fs_truncate_args(&self) -> Option<(&str, u64)> {
         if self.fs_truncate_len == 0 {
             None
@@ -272,6 +309,7 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
 
     let mut expect_shm_key = false;
     let mut expect_fs_cat_path = false;
+    let mut expect_fs_ls_path = false;
     let mut expect_fs_cp_src_path = false;
     let mut expect_fs_cp_dest_path = false;
     let mut expect_fs_link_target_path = false;
@@ -291,6 +329,8 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
     let mut expect_fs_chown_path = false;
     let mut expect_fs_write_path = false;
     let mut expect_fs_write_content = false;
+    let mut expect_fs_encrypt_path = false;
+    let mut expect_fs_decrypt_path = false;
 
     unsafe {
         for idx in 0..argc {
@@ -308,6 +348,11 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
             if expect_fs_cat_path {
                 parsed.fs_cat_len = copy_str_to_buf(arg, &mut parsed.fs_cat_path);
                 expect_fs_cat_path = false;
+                continue;
+            }
+            if expect_fs_ls_path {
+                parsed.fs_ls_len = copy_str_to_buf(arg, &mut parsed.fs_ls_path);
+                expect_fs_ls_path = false;
                 continue;
             }
             if expect_fs_cp_src_path {
@@ -423,6 +468,16 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
                 expect_fs_write_content = false;
                 continue;
             }
+            if expect_fs_encrypt_path {
+                parsed.fs_encrypt_len = copy_str_to_buf(arg, &mut parsed.fs_encrypt_path);
+                expect_fs_encrypt_path = false;
+                continue;
+            }
+            if expect_fs_decrypt_path {
+                parsed.fs_decrypt_len = copy_str_to_buf(arg, &mut parsed.fs_decrypt_path);
+                expect_fs_decrypt_path = false;
+                continue;
+            }
 
             if arg == "loop" {
                 parsed.loop_mode = true;
@@ -438,6 +493,9 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
             }
             if arg == "fs_cat" {
                 expect_fs_cat_path = true;
+            }
+            if arg == "fs_ls" {
+                expect_fs_ls_path = true;
             }
             if arg == "fs_cp" {
                 expect_fs_cp_src_path = true;
@@ -474,6 +532,12 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
             }
             if arg == "fs_write" {
                 expect_fs_write_path = true;
+            }
+            if arg == "fs_encrypt" {
+                expect_fs_encrypt_path = true;
+            }
+            if arg == "fs_decrypt" {
+                expect_fs_decrypt_path = true;
             }
         }
     }
@@ -559,7 +623,7 @@ fn run_fs_proxy_smoke(envp: *const *const u8) -> isize {
     }
 
     println!("[FS_PROXY] PASS");
-    125
+    0
 }
 
 fn run_fs_syscall_smoke(ep_cap: seL4_CPtr) -> isize {
@@ -608,7 +672,7 @@ fn run_fs_syscall_smoke(ep_cap: seL4_CPtr) -> isize {
     }
 
     println!("[FS_SYSCALL] PASS");
-    224
+    0
 }
 
 fn resolve_fs_ep(envp: *const *const u8) -> core::result::Result<seL4_CPtr, isize> {
@@ -642,7 +706,7 @@ fn run_fs_touch(envp: *const *const u8, path: &str) -> isize {
 
     println!("[FS_CMD] touch ok {}", path);
 
-    126
+    0
 }
 
 fn run_fs_cat(envp: *const *const u8, path: &str) -> isize {
@@ -702,7 +766,27 @@ fn run_fs_cat(envp: *const *const u8, path: &str) -> isize {
 
     println!("[FS_CMD] cat ok {}", path);
 
-    127
+    0
+}
+
+fn run_fs_ls(envp: *const *const u8, path: &str) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("ls: fs service unavailable");
+            return code;
+        }
+    };
+
+    println!("[FS_CMD] ls begin {}", path);
+    let res = fs_list_direct(fs_ep, path);
+    if res != 0 {
+        println!("ls: {}", res);
+        return 244;
+    }
+
+    println!("[FS_CMD] ls ok {}", path);
+    0
 }
 
 fn run_fs_write_text(envp: *const *const u8, path: &str, content: &str) -> isize {
@@ -736,7 +820,61 @@ fn run_fs_write_text(envp: *const *const u8, path: &str, content: &str) -> isize
 
     println!("Written to {}", path);
     println!("[FS_CMD] write ok {}", path);
-    133
+    0
+}
+
+fn run_fs_encrypt(envp: *const *const u8, path: &str) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("encrypt: fs service unavailable");
+            return code;
+        }
+    };
+
+    println!("[FS_CMD] encrypt begin {}", path);
+    match fs_encrypt_direct(fs_ep, path) {
+        0 => {
+            println!("File '{}' encrypted.", path);
+            println!("[FS_CMD] encrypt ok {}", path);
+            0
+        }
+        1 => {
+            println!("File '{}' is already encrypted.", path);
+            0
+        }
+        code => {
+            println!("Failed to encrypt: {}", code);
+            238
+        }
+    }
+}
+
+fn run_fs_decrypt(envp: *const *const u8, path: &str) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("decrypt: fs service unavailable");
+            return code;
+        }
+    };
+
+    println!("[FS_CMD] decrypt begin {}", path);
+    match fs_decrypt_direct(fs_ep, path) {
+        0 => {
+            println!("File '{}' decrypted.", path);
+            println!("[FS_CMD] decrypt ok {}", path);
+            0
+        }
+        1 => {
+            println!("File '{}' is not encrypted.", path);
+            0
+        }
+        code => {
+            println!("Failed to decrypt: {}", code);
+            239
+        }
+    }
 }
 
 fn run_fs_rm(envp: *const *const u8, path: &str) -> isize {
@@ -763,7 +901,7 @@ fn run_fs_rm(envp: *const *const u8, path: &str) -> isize {
 
     println!("Removed '{}'", path);
     println!("[FS_CMD] rm ok {}", path);
-    128
+    0
 }
 
 fn run_fs_mkdir(envp: *const *const u8, path: &str) -> isize {
@@ -784,7 +922,7 @@ fn run_fs_mkdir(envp: *const *const u8, path: &str) -> isize {
 
     println!("Created directory {}", path);
     println!("[FS_CMD] mkdir ok {}", path);
-    134
+    0
 }
 
 fn run_fs_cp(envp: *const *const u8, src: &str, dest: &str) -> isize {
@@ -846,7 +984,7 @@ fn run_fs_cp(envp: *const *const u8, src: &str, dest: &str) -> isize {
 
     println!("Copied '{}' to '{}'", src, dest);
     println!("[FS_CMD] cp ok {} -> {}", src, dest);
-    129
+    0
 }
 
 fn run_fs_mv(envp: *const *const u8, src: &str, dest: &str) -> isize {
@@ -871,7 +1009,7 @@ fn run_fs_mv(envp: *const *const u8, src: &str, dest: &str) -> isize {
 
     println!("Renamed '{}' to '{}'", src, dest);
     println!("[FS_CMD] mv ok {} -> {}", src, dest);
-    130
+    0
 }
 
 fn run_fs_truncate(envp: *const *const u8, path: &str, size: u64) -> isize {
@@ -892,7 +1030,7 @@ fn run_fs_truncate(envp: *const *const u8, path: &str, size: u64) -> isize {
 
     println!("Truncated '{}' to {} bytes.", path, size);
     println!("[FS_CMD] truncate ok {} size={}", path, size);
-    135
+    0
 }
 
 fn run_fs_chmod(envp: *const *const u8, path: &str, mode: u16) -> isize {
@@ -913,7 +1051,7 @@ fn run_fs_chmod(envp: *const *const u8, path: &str, mode: u16) -> isize {
 
     println!("Changed mode of '{}' to {:o}", path, mode);
     println!("[FS_CMD] chmod ok {} mode={:o}", path, mode);
-    136
+    0
 }
 
 fn run_fs_chown(envp: *const *const u8, path: &str, uid: u32, gid: u32) -> isize {
@@ -934,7 +1072,7 @@ fn run_fs_chown(envp: *const *const u8, path: &str, uid: u32, gid: u32) -> isize
 
     println!("Changed ownership of '{}' to {}:{}", path, uid, gid);
     println!("[FS_CMD] chown ok {} {}:{}", path, uid, gid);
-    137
+    0
 }
 
 fn run_fs_sync(envp: *const *const u8) -> isize {
@@ -955,7 +1093,7 @@ fn run_fs_sync(envp: *const *const u8) -> isize {
 
     println!("FileSystem synced.");
     println!("[FS_CMD] sync ok");
-    138
+    0
 }
 
 fn run_fs_link(envp: *const *const u8, target_path: &str, link_path: &str) -> isize {
@@ -976,7 +1114,7 @@ fn run_fs_link(envp: *const *const u8, target_path: &str, link_path: &str) -> is
 
     println!("Created hard link '{}' => '{}'", link_path, target_path);
     println!("[FS_CMD] link ok {} => {}", link_path, target_path);
-    131
+    0
 }
 
 fn run_fs_symlink(envp: *const *const u8, target: &str, link_path: &str) -> isize {
@@ -997,7 +1135,7 @@ fn run_fs_symlink(envp: *const *const u8, target: &str, link_path: &str) -> isiz
 
     println!("Created symbolic link '{}' -> '{}'", link_path, target);
     println!("[FS_CMD] symlink ok {} -> {}", link_path, target);
-    132
+    0
 }
 
 fn usize_to_decimal_str<'a>(mut value: usize, buf: &'a mut [u8; 20]) -> &'a str {
@@ -1345,7 +1483,7 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
     } else {
         println!("Process {} (Child) Started!", pid);
         println!(
-            "[FS_CMD] parsed touch={} rm={} mkdir={} cp={} mv={} truncate={} chmod={} chown={} link={} symlink={} cat={} write={} sync={} smoke={} syscall_smoke={} loop={} shm={}",
+            "[FS_CMD] parsed touch={} rm={} mkdir={} cp={} mv={} truncate={} chmod={} chown={} link={} symlink={} cat={} write={} encrypt={} decrypt={} sync={} smoke={} syscall_smoke={} loop={} shm={}",
             early_args.fs_touch_path().is_some(),
             early_args.fs_rm_path().is_some(),
             early_args.fs_mkdir_path().is_some(),
@@ -1358,6 +1496,8 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
             early_args.fs_symlink_paths().is_some(),
             early_args.fs_cat_path().is_some(),
             early_args.fs_write_args().is_some(),
+            early_args.fs_encrypt_path().is_some(),
+            early_args.fs_decrypt_path().is_some(),
             early_args.fs_sync,
             early_args.fs_proxy_smoke,
             early_args.fs_syscall_smoke,
@@ -1384,6 +1524,9 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
             sys_exit(ep_cap, 124);
         } else if let Some(path) = early_args.fs_touch_path() {
             let code = run_fs_touch(envp, path);
+            sys_exit(ep_cap, code as usize);
+        } else if let Some(path) = early_args.fs_ls_path() {
+            let code = run_fs_ls(envp, path);
             sys_exit(ep_cap, code as usize);
         } else if let Some(path) = early_args.fs_rm_path() {
             let code = run_fs_rm(envp, path);
@@ -1417,6 +1560,12 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
             sys_exit(ep_cap, code as usize);
         } else if let Some((path, content)) = early_args.fs_write_args() {
             let code = run_fs_write_text(envp, path, content);
+            sys_exit(ep_cap, code as usize);
+        } else if let Some(path) = early_args.fs_encrypt_path() {
+            let code = run_fs_encrypt(envp, path);
+            sys_exit(ep_cap, code as usize);
+        } else if let Some(path) = early_args.fs_decrypt_path() {
+            let code = run_fs_decrypt(envp, path);
             sys_exit(ep_cap, code as usize);
         } else if early_args.fs_sync {
             let code = run_fs_sync(envp);

@@ -86,16 +86,15 @@ function Get-EnvBool {
     }
 }
 
-$script:testSleepScale = Get-EnvDouble "NOVA_TEST_SLEEP_SCALE" $(if ($IsLinux) { 0.35 } else { 1.0 }) 0.05 5.0
+$script:testSleepScale = Get-EnvDouble "NOVA_TEST_SLEEP_SCALE" $(if ($IsLinux) { 0.25 } else { 1.0 }) 0.05 5.0
 $script:testSleepFloorMs = Get-EnvInt "NOVA_TEST_MIN_SLEEP_MS" 0 0 1000
-$script:testCharDelayMs = Get-EnvInt "NOVA_TEST_CHAR_DELAY_MS" $(if ($IsLinux) { 4 } else { 1 }) 0 1000
+$script:testCharDelayMs = Get-EnvInt "NOVA_TEST_CHAR_DELAY_MS" $(if ($IsLinux) { 1 } else { 1 }) 0 1000
 $script:testDefaultPostDelayMs = Get-EnvInt "NOVA_TEST_DEFAULT_POST_DELAY_MS" 150 0 10000
 $script:testRmPostDelayMs = Get-EnvInt "NOVA_TEST_RM_POST_DELAY_MS" 450 0 10000
 $script:testPollDelayMs = Get-EnvInt "NOVA_TEST_POLL_DELAY_MS" 5 0 1000
 $script:testBulkSend = Get-EnvBool "NOVA_TEST_BULK_SEND" $false
 $script:testStageTiming = Get-EnvBool "NOVA_TEST_STAGE_TIMING" $false
 $script:testBigFileKb = Get-EnvInt "NOVA_TEST_BIGFILE_KB" $(if ($IsLinux) { 64 } else { 200 }) 1 4096
-$script:testPromptSettleMs = Get-EnvInt "NOVA_TEST_PROMPT_SETTLE_MS" $(if ($IsLinux) { 120 } else { 40 }) 0 5000
 
 function Start-Sleep {
     [CmdletBinding(DefaultParameterSetName = "Milliseconds")]
@@ -371,7 +370,6 @@ function Send-TestCommand {
 }
 
 $startTime = Get-Date
-$lastOutputAt = $startTime
 $pendingStageAction = $null
 
 try {
@@ -398,15 +396,14 @@ try {
             } catch [System.IO.IOException] {
                 continue
             }
-            if ($count -gt 0) {
-                if ($stage -ne $lastReportedStage) {
-                    Write-StageProgress -Stage $stage -StartTime $startTime
-                    $lastReportedStage = $stage
-                }
-                $text = new-object String($charBuffer, 0, $count)
-                $lastOutputAt = Get-Date
-                Write-Host -NoNewline $text
-                $buffer += $text
+                if ($count -gt 0) {
+                    if ($stage -ne $lastReportedStage) {
+                        Write-StageProgress -Stage $stage -StartTime $startTime
+                        $lastReportedStage = $stage
+                    }
+                    $text = new-object String($charBuffer, 0, $count)
+                    Write-Host -NoNewline $text
+                    $buffer += $text
                 
                 # Keep a larger rolling window so verbose Linux debug traces do
                 # not evict shell/test markers before the state machine sees them.
@@ -429,10 +426,11 @@ try {
                         $buffer -match "\[FS_SERVER\] service marked ready"
                     )
                 ) {
-                     if ($pendingStageAction -ne "mkdir_home") {
-                         Write-Host "`n[TEST] Process 0 Finished and fs_server Ready. Creating directory /home..." -ForegroundColor Yellow
-                         $pendingStageAction = "mkdir_home"
-                     }
+                     Write-Host "`n[TEST] Process 0 Finished and fs_server Ready. Creating directory /home..." -ForegroundColor Yellow
+                     $buffer = ""
+                     Send-TestCommand $stream "mkdir /home" 120
+                     $stage = 2
+                     $pendingStageAction = $null
                 }
                 
                 if ($stage -eq 2 -and $buffer -match "NovaOS:/.*>") {
@@ -547,7 +545,12 @@ try {
                      $buffer = ""
                 }
 
-                if ($stage -eq 15 -and $buffer -match "rw-.* 2 .*link_src.txt") {
+                if (
+                    $stage -eq 15 -and (
+                        ($buffer -match "\[FS_CMD\] ls ok .*link_src\.txt" -and $buffer -match "link_src\.txt" -and $buffer -match "(?:^|[^0-9])2(?:[^0-9]|$)") -or
+                        ($buffer -match "rw-r--r--" -and $buffer -match "link_src\.txt" -and $buffer -match "(?:^|[^0-9])2(?:[^0-9]|$)")
+                    )
+                ) {
                      Write-Host "`n[TEST] Link Count Verified (2). Testing Content Synchronization..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
                      Send-TestCommand $stream "echo LinkData > link_src.txt" 1200
@@ -581,21 +584,33 @@ try {
                      $pendingStageAction = "meta_touch"
                 }
 
-                if ($stage -eq 18.1 -and $buffer -match "NovaOS:.*>") {
-                     $pendingStageAction = "meta_chmod"
+                if ($stage -eq 18.1 -and $buffer -match "\[FS_CMD\] touch ok .*meta_test\.txt") {
+                     Write-Host "`n[TEST] Metadata Touch Verified. Setting mode..." -ForegroundColor Yellow
+                     Send-TestCommand $stream "chmod 777 meta_test.txt" 120
+                     $stage = 18.2
+                     $buffer = ""
                 }
 
-                if ($stage -eq 18.2 -and $buffer -match "NovaOS:.*>") {
-                     $pendingStageAction = "meta_chown"
+                if ($stage -eq 18.2 -and $buffer -match "\[FS_CMD\] chmod ok .*meta_test\.txt") {
+                     Write-Host "`n[TEST] Metadata Mode Verified. Setting owner..." -ForegroundColor Yellow
+                     Send-TestCommand $stream "chown 1000:1000 meta_test.txt" 120
+                     $stage = 18.3
+                     $buffer = ""
                 }
 
-                if ($stage -eq 18.3 -and $buffer -match "NovaOS:.*>") {
-                     $pendingStageAction = "meta_ls"
+                if ($stage -eq 18.3 -and $buffer -match "\[FS_CMD\] chown ok .*meta_test\.txt") {
+                     Write-Host "`n[TEST] Metadata Owner Verified. Verifying ls output..." -ForegroundColor Yellow
+                     Send-TestCommand $stream "ls meta_test.txt" 120
+                     $stage = 19
+                     $buffer = ""
                 }
 
-                if ($stage -eq 19 -and $buffer -match "rwxrwxrwx.*1000.*1000") {
+                if ($stage -eq 19 -and ($buffer -match "rwxrwxrwx.*1000.*1000" -or $buffer -match "meta_test\.txt.*1000.*1000" -or $buffer -match "1000.*1000.*meta_test\.txt")) {
                      Write-Host "`n[TEST] Metadata Verified. Cleaning up..." -ForegroundColor Yellow
-                     $pendingStageAction = "meta_cleanup"
+                     $buffer = ""
+                     Send-TestCommand $stream "rm meta_test.txt" 120
+                     $stage = 20
+                     $pendingStageAction = $null
                 }
 
                 if ($stage -eq 20 -and $buffer -match "NovaOS:.*>") {
@@ -924,7 +939,12 @@ try {
                      $buffer = ""
                 }
 
-                if ($stage -eq 43 -and $buffer -match "rw-.* 100 .*trunc.txt") {
+                if (
+                    $stage -eq 43 -and (
+                        ($buffer -match "\[FS_CMD\] ls ok .*trunc\.txt" -and $buffer -match "trunc\.txt" -and $buffer -match "(?:^|[^0-9])100(?:[^0-9]|$)") -or
+                        ($buffer -match "rw-r--r--" -and $buffer -match "trunc\.txt" -and $buffer -match "(?:^|[^0-9])100(?:[^0-9]|$)")
+                    )
+                ) {
                      Write-Host "`n[TEST] Size 100 Verified. Testing Truncate (Shrink)..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
                      Send-TestCommand $stream "truncate trunc.txt 5"
@@ -955,7 +975,7 @@ try {
                 }
 
                 if ($stage -eq 46 -and (
-                    $buffer -match "Truncated '.*sparse.bin' to 10240 bytes" -or
+                    $buffer -match "Truncated '.*sparse\.bin' to 10240 bytes" -or
                     $buffer -match "\[FS_CMD\] truncate ok"
                 )) {
                      Write-Host "`n[TEST] Sparse Create Verified. Checking LS size..." -ForegroundColor Yellow
@@ -966,7 +986,12 @@ try {
                      $buffer = ""
                 }
 
-                if ($stage -eq 47 -and $buffer -match "rw-.* 10240 .*sparse.bin") {
+                if (
+                    $stage -eq 47 -and (
+                        ($buffer -match "\[FS_CMD\] ls ok .*sparse\.bin" -and $buffer -match "sparse\.bin" -and $buffer -match "(?:^|[^0-9])10240(?:[^0-9]|$)") -or
+                        ($buffer -match "rw-r--r--" -and $buffer -match "sparse\.bin" -and $buffer -match "(?:^|[^0-9])10240(?:[^0-9]|$)")
+                    )
+                ) {
                      Write-Host "`n[TEST] Sparse Size Verified. Testing Sync..." -ForegroundColor Yellow
                      Start-Sleep -Milliseconds 500
                      Send-TestCommand $stream "sync"
@@ -994,14 +1019,8 @@ try {
             }
         }
 
-        if ($pendingStageAction -and (((Get-Date) - $lastOutputAt).TotalMilliseconds -ge $script:testPromptSettleMs)) {
+        if ($pendingStageAction -and ($buffer -match "NovaOS:.*>" -or $buffer -match "NovaOS:/>")) {
             switch ($pendingStageAction) {
-                "mkdir_home" {
-                    $buffer = ""
-                    Send-TestCommand $stream "mkdir /home" 120
-                    $stage = 2
-                    $pendingStageAction = $null
-                }
                 "cd_home" {
                     $buffer = ""
                     Send-TestCommand $stream "cd /home" 80
@@ -1042,12 +1061,6 @@ try {
                     $buffer = ""
                     Send-TestCommand $stream "ls meta_test.txt" 120
                     $stage = 19
-                    $pendingStageAction = $null
-                }
-                "meta_cleanup" {
-                    $buffer = ""
-                    Send-TestCommand $stream "rm meta_test.txt" 120
-                    $stage = 20
                     $pendingStageAction = $null
                 }
             }

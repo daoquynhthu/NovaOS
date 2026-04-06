@@ -1205,6 +1205,9 @@ impl Shell {
                 println!("DEBUG: encrypt command for '{}'", filename);
                 let path_str = self.resolve_path(&filename);
                 println!("DEBUG: resolved path '{}'", path_str);
+                if self.spawn_fs_helper("fs_encrypt", &path_str) {
+                    return;
+                }
                 let vfs_lock = crate::vfs::VFS.lock();
                 if let Some(fs) = vfs_lock.as_ref() {
                     match fs.resolve_path("/", &path_str) {
@@ -1238,6 +1241,9 @@ impl Shell {
             } else {
                 let filename = self.buffer[rest_start..end].iter().collect::<alloc::string::String>();
                 let path_str = self.resolve_path(&filename);
+                if self.spawn_fs_helper("fs_decrypt", &path_str) {
+                    return;
+                }
                 let vfs_lock = crate::vfs::VFS.lock();
                 if let Some(fs) = vfs_lock.as_ref() {
                     match fs.resolve_path("/", &path_str) {
@@ -1301,6 +1307,10 @@ impl Shell {
             } else {
                 self.cwd.clone()
             };
+
+            if self.spawn_fs_helper("fs_ls", &path_str) {
+                return;
+            }
             
             let fs_lock = crate::fs::DISK_FS.lock();
             if let Some(fs) = fs_lock.as_ref() {
@@ -1624,7 +1634,9 @@ impl Shell {
                 println!("Usage: encrypt <file>");
                 return;
             };
-            
+            if self.spawn_fs_helper("fs_encrypt", &path_str) {
+                return;
+            }
             let fs_lock = crate::fs::DISK_FS.lock();
             if let Some(fs) = fs_lock.as_ref() {
                 match fs.resolve_path_ex(&self.cwd, &path_str, true) {
@@ -1657,7 +1669,9 @@ impl Shell {
                 println!("Usage: decrypt <file>");
                 return;
             };
-            
+            if self.spawn_fs_helper("fs_decrypt", &path_str) {
+                return;
+            }
             let fs_lock = crate::fs::DISK_FS.lock();
             if let Some(fs) = fs_lock.as_ref() {
                 match fs.resolve_path_ex(&self.cwd, &path_str, true) {
