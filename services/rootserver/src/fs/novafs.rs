@@ -1329,6 +1329,7 @@ impl<D: BlockDevice + Send + Sync + 'static> Inode for NovaInode<D> {
             
             if modified {
                 self.fs.write_block(real_block, block_buf)?;
+                self.fs.sync()?;
                 
                 // DROP LOCK to avoid deadlock in lookup
                 drop(parent_inode);
@@ -1450,6 +1451,13 @@ impl<D: BlockDevice + Send + Sync + 'static> NovaInode<D> {
         if let Err(e) = self.fs.write_block(real_block, block_buf) {
             println!("NovaFS Error: add_dir_entry write failed: {}", e);
             return Err("Write failed");
+        }
+
+        // Persist directory entry updates even when we reuse an existing free slot
+        // and therefore do not grow the directory inode size.
+        if let Err(e) = self.fs.sync() {
+            println!("NovaFS Error: add_dir_entry sync failed: {}", e);
+            return Err("Sync failed");
         }
         
         if !found_free {

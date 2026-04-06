@@ -49,7 +49,7 @@ if (NOT DEFINED KernelColourPrinting)
     set(KernelColourPrinting ON CACHE BOOL "Enable coloured kernel diagnostics during bring-up" FORCE)
 endif()
 
-set(NOVA_BOOT_TRACE_LEVEL "1" CACHE STRING "Global NovaOS boot trace level (0=off, 1=critical, 2=bring-up milestones, 3=verbose scheduler/syscall)")
+set(NOVA_BOOT_TRACE_LEVEL "0" CACHE STRING "Global NovaOS boot trace level (0=off, 1=critical, 2=bring-up milestones, 3=verbose scheduler/syscall)")
 set_property(CACHE NOVA_BOOT_TRACE_LEVEL PROPERTY STRINGS 0 1 2 3)
 
 function(nova_init_trace_level cache_var description)

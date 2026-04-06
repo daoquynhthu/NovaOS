@@ -152,10 +152,13 @@ impl Shell {
         self.pending_prompt_pid.is_some()
     }
 
-    pub fn on_process_exit(&mut self, pid: usize) {
+    pub fn on_process_exit(&mut self, pid: usize) -> bool {
         if self.pending_prompt_pid == Some(pid) {
             self.pending_prompt_pid = None;
             self.print_prompt();
+            true
+        } else {
+            false
         }
     }
 
@@ -635,7 +638,7 @@ impl Shell {
             .map(|(k, v)| alloc::format!("{}={}", k, v))
             .collect();
         if include_fs_service {
-            if let Some((_, fs_ep, _)) = crate::services::lookup_latest("fs") {
+            if let Some((_, fs_ep, _)) = crate::services::lookup_latest_ready("fs") {
                 env_vec.push(alloc::format!("NOVA_FS_SERVICE_EP={}", fs_ep));
             }
         }
@@ -662,6 +665,10 @@ impl Shell {
     fn spawn_fs_helper(&mut self, mode: &str, path: &str) -> bool {
         let args = [mode, path];
         self.spawn_fs_helper_args(&args)
+    }
+
+    fn mark_fs_service_dirty(&self) {
+        crate::services::bump_fs_view_epoch();
     }
 
     fn execute_command(&mut self) {
@@ -863,6 +870,9 @@ impl Shell {
              }
 
         } else if self.word_eq(word_start, word_end, "sync") {
+            if self.spawn_fs_helper_args(&["fs_sync"]) {
+                return;
+            }
             let fs_lock = crate::fs::DISK_FS.lock();
             if let Some(fs) = fs_lock.as_ref() {
                 match fs.sync() {
@@ -972,10 +982,14 @@ impl Shell {
             if entries.is_empty() {
                 println!("No services registered.");
             } else {
-                println!("Name                 Endpoint");
-                println!("--------------------------------");
-                for (name, endpoint) in entries {
-                    println!("{:<20} {}", name, endpoint);
+                println!("Name                 Endpoint   State");
+                println!("------------------------------------------");
+                for (name, endpoint, state) in entries {
+                    let state_str = match state {
+                        crate::services::ServiceState::Bootstrapping => "bootstrapping",
+                        crate::services::ServiceState::Ready => "ready",
+                    };
+                    println!("{:<20} {:<10} {}", name, endpoint, state_str);
                 }
             }
         } else if self.word_eq(word_start, word_end, "svc") {
@@ -987,14 +1001,25 @@ impl Shell {
                     .iter()
                     .collect::<alloc::string::String>();
 
-                if let Some(ep) = crate::services::lookup(&query) {
-                    println!("service {} => {} (endpoint {})", query, query, ep);
-                } else if let Some((resolved_name, ep, _version)) =
-                    crate::services::lookup_latest(&query)
-                {
+                if let Some(entry) = crate::services::lookup_entry(&query) {
+                    let state_str = match entry.state {
+                        crate::services::ServiceState::Bootstrapping => "bootstrapping",
+                        crate::services::ServiceState::Ready => "ready",
+                    };
                     println!(
-                        "service {} => {} (endpoint {})",
-                        query, resolved_name, ep
+                        "service {} => {} (endpoint {}, state {})",
+                        query, query, entry.endpoint, state_str
+                    );
+                } else if let Some((resolved_name, entry, _version)) =
+                    crate::services::lookup_latest_entry(&query)
+                {
+                    let state_str = match entry.state {
+                        crate::services::ServiceState::Bootstrapping => "bootstrapping",
+                        crate::services::ServiceState::Ready => "ready",
+                    };
+                    println!(
+                        "service {} => {} (endpoint {}, state {})",
+                        query, resolved_name, entry.endpoint, state_str
                     );
                 } else {
                     println!("service {} => <not found>", query);
@@ -1190,7 +1215,10 @@ impl Shell {
                                     println!("DEBUG: encrypt command read flags: 0x{:x}", flags);
                                     // Set Encrypted bit (1)
                                     match inode.control(2, flags | 1) {
-                                         Ok(_) => println!("File '{}' encrypted.", filename),
+                                         Ok(_) => {
+                                             println!("File '{}' encrypted.", filename);
+                                             self.mark_fs_service_dirty();
+                                         }
                                          Err(e) => println!("Failed to encrypt: {}", e),
                                      }
                                  },
@@ -1219,7 +1247,10 @@ impl Shell {
                                  Ok(flags) => {
                                      // Clear Encrypted bit (1)
                                      match inode.control(2, flags & !1) {
-                                         Ok(_) => println!("File '{}' decrypted.", filename),
+                                         Ok(_) => {
+                                             println!("File '{}' decrypted.", filename);
+                                             self.mark_fs_service_dirty();
+                                         }
                                          Err(e) => println!("Failed to decrypt: {}", e),
                                      }
                                  },
@@ -1404,28 +1435,37 @@ impl Shell {
                 let s = &self.buffer[rest_start..end];
                 let s = s.iter().collect::<alloc::string::String>();
                 let path_str = self.resolve_path(&s);
-                
-                let (parent_path, name) = if let Some(idx) = path_str.rfind('/') {
-                    if idx == 0 { ("/", &path_str[1..]) }
-                    else { (&path_str[..idx], &path_str[idx+1..]) }
+
+                let name = if let Some(idx) = path_str.rfind('/') {
+                    &path_str[idx + 1..]
                 } else {
-                    (self.cwd.as_str(), path_str.as_str())
+                    path_str.as_str()
                 };
-                
+
                 if name.is_empty() {
                     println!("mkdir: Invalid name");
                 } else {
+                    if self.spawn_fs_helper("fs_mkdir", &path_str) {
+                        return;
+                    }
+                    let (parent_path, name) = if let Some(idx) = path_str.rfind('/') {
+                        if idx == 0 { ("/", &path_str[1..]) }
+                        else { (&path_str[..idx], &path_str[idx+1..]) }
+                    } else {
+                        (self.cwd.as_str(), path_str.as_str())
+                    };
                     let fs_lock = crate::fs::DISK_FS.lock();
                     if let Some(fs) = fs_lock.as_ref() {
                          match crate::vfs::resolve_path(fs, &self.cwd, parent_path) {
                              Ok(parent) => {
-                                 match parent.create(name, crate::vfs::FileType::Directory) {
-                                    Ok(_) => {
-                                        println!("Created directory {}", path_str);
-                                        fs.sync().ok();
-                                    },
-                                    Err(e) => println!("mkdir: {}", e),
-                                }
+                                    match parent.create(name, crate::vfs::FileType::Directory) {
+                                        Ok(_) => {
+                                            println!("Created directory {}", path_str);
+                                            fs.sync().ok();
+                                            self.mark_fs_service_dirty();
+                                        },
+                                        Err(e) => println!("mkdir: {}", e),
+                                    }
                              },
                              Err(e) => println!("mkdir: parent {}: {}", parent_path, e),
                          }
@@ -1594,7 +1634,10 @@ impl Shell {
                                  println!("File '{}' is already encrypted.", path_str);
                              } else {
                                  match inode.control(2, flags | 1) {
-                                     Ok(_) => println!("File '{}' encrypted.", path_str),
+                                     Ok(_) => {
+                                         println!("File '{}' encrypted.", path_str);
+                                         self.mark_fs_service_dirty();
+                                     }
                                      Err(e) => println!("Failed to encrypt: {}", e),
                                  }
                              }
@@ -1624,7 +1667,10 @@ impl Shell {
                                  println!("File '{}' is not encrypted.", path_str);
                              } else {
                                  match inode.control(2, flags & !1) {
-                                     Ok(_) => println!("File '{}' decrypted.", path_str),
+                                     Ok(_) => {
+                                         println!("File '{}' decrypted.", path_str);
+                                         self.mark_fs_service_dirty();
+                                     }
                                      Err(e) => println!("Failed to decrypt: {}", e),
                                  }
                              }
@@ -1772,6 +1818,9 @@ impl Shell {
                      
                      if let Ok(mode) = u16::from_str_radix(&mode_str, 8) {
                          let path_str = self.resolve_path(&file_str);
+                         if self.spawn_fs_helper_args(&["fs_chmod", &mode_str, &path_str]) {
+                             return;
+                         }
                          let fs_lock = crate::fs::DISK_FS.lock();
                          if let Some(fs) = fs_lock.as_ref() {
                               match crate::vfs::resolve_path(fs, &self.cwd, &path_str) {
@@ -1821,6 +1870,9 @@ impl Shell {
                      if parts.len() == 2 {
                          if let (Ok(uid), Ok(gid)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
                              let path_str = self.resolve_path(&file_str);
+                             if self.spawn_fs_helper_args(&["fs_chown", &owner_str, &path_str]) {
+                                 return;
+                             }
                              let fs_lock = crate::fs::DISK_FS.lock();
                              if let Some(fs) = fs_lock.as_ref() {
                                   match crate::vfs::resolve_path(fs, &self.cwd, &path_str) {
@@ -2013,6 +2065,9 @@ impl Shell {
                     let size = size_str.parse::<u64>().unwrap_or(0);
                     
                     let path_str = self.resolve_path(filename);
+                    if self.spawn_fs_helper_args(&["fs_truncate", &path_str, size_str]) {
+                        return;
+                    }
                     
                     let fs_lock = crate::fs::DISK_FS.lock();
                     if let Some(fs) = fs_lock.as_ref() {
@@ -2066,9 +2121,12 @@ impl Shell {
             }
             
             let fs_lock = crate::fs::DISK_FS.lock();
-            if let Some(fs) = fs_lock.as_ref() {
-                 match fs.write_file(&path_str, &data) {
-                     Ok(_) => println!("Write success"),
+                 if let Some(fs) = fs_lock.as_ref() {
+                      match fs.write_file(&path_str, &data) {
+                     Ok(_) => {
+                         println!("Write success");
+                         self.mark_fs_service_dirty();
+                     }
                      Err(e) => println!("Write failed: {}", e),
                  }
             } else {
@@ -2092,21 +2150,32 @@ impl Shell {
                  let s = s.iter().collect::<alloc::string::String>();
                  let path_str = self.resolve_path(&s);
                  
-                 let content_s = &self.buffer[rest_start..content_end];
+                 let mut content_str = self.buffer[rest_start..content_end]
+                     .iter()
+                     .collect::<alloc::string::String>();
+                 if content_str.ends_with(' ') {
+                     content_str.pop();
+                 }
+
+                 let helper_args = ["fs_write", path_str.as_str(), content_str.as_str()];
+                 if self.spawn_fs_helper_args(&helper_args) {
+                     return;
+                 }
+
                  let mut content_vec = alloc::vec::Vec::new();
-                 for c in content_s {
+                 for c in content_str.chars() {
                       let mut b = [0; 4];
                       let s = c.encode_utf8(&mut b);
                       content_vec.extend_from_slice(s.as_bytes());
-                 }
-                 if !content_vec.is_empty() && content_vec[content_vec.len()-1] == b' ' {
-                     content_vec.pop();
                  }
 
                  let fs_lock = crate::fs::DISK_FS.lock();
                  if let Some(fs) = fs_lock.as_ref() {
                       match fs.write_file(&path_str, &content_vec) {
-                          Ok(_) => println!("Written to {}", path_str),
+                          Ok(_) => {
+                              println!("Written to {}", path_str);
+                              self.mark_fs_service_dirty();
+                          }
                           Err(e) => println!("echo: write error: {}", e),
                       }
                  } else {

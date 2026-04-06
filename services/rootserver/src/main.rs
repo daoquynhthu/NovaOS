@@ -12,6 +12,7 @@ extern crate alloc;
 extern crate libnova;
 
 use crate::vfs::FileSystem;
+use crate::drivers::block::BlockDevice;
 
 mod runtime;
 mod memory;
@@ -32,6 +33,7 @@ mod services;
 mod crypto;
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use sel4_sys::{
     seL4_BootInfo, seL4_CPtr, seL4_Word,
 };
@@ -92,13 +94,21 @@ fn deny_if_memory_pressure(
 }
 
 fn resolve_fs_service_endpoint() -> Option<seL4_CPtr> {
-    if let Some(ep) = services::lookup("fs.v1") {
+    if let Some(ep) = services::lookup_ready("fs.v1") {
         return Some(ep);
     }
-    if let Some(ep) = services::lookup("fs") {
+    if let Some(ep) = services::lookup_ready("fs") {
         return Some(ep);
     }
-    services::lookup_latest("fs").map(|(_, ep, _)| ep)
+    services::lookup_latest_ready("fs").map(|(_, ep, _)| ep)
+}
+
+fn refresh_local_fs_view(ata: Arc<crate::drivers::ata::AtaDriver>) -> Result<(), &'static str> {
+    let fs = crate::fs::novafs::NovaFS::new(ata, 0)?;
+    let fs_arc = alloc::sync::Arc::new(fs.clone());
+    *crate::fs::DISK_FS.lock() = Some(fs_arc.clone());
+    *crate::vfs::VFS.lock() = Some(fs_arc);
+    Ok(())
 }
 
 fn lookup_remote_fd(pid: usize, fd: usize) -> Option<usize> {
@@ -1301,7 +1311,8 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     drivers::DriverEvent::SerialInput(byte) => {
                          // Serial to Key mapping
                          let key = match byte {
-                             b'\r' | b'\n' => Some(drivers::keyboard::Key::Enter),
+                             b'\r' => Some(drivers::keyboard::Key::Enter),
+                             b'\n' => None,
                              b'\x08' | 0x7F => Some(drivers::keyboard::Key::Backspace),
                              b'\t' => Some(drivers::keyboard::Key::Tab),
                              0x1B => Some(drivers::keyboard::Key::Esc),
@@ -1384,7 +1395,12 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         println!("[KERNEL] Failed to exit process {}: {:?}", pid, e);
                         get_process_manager().remove_process(pid);
                     }
-                    shell.on_process_exit(pid);
+                    let helper_prompt_released = shell.on_process_exit(pid);
+                    if helper_prompt_released {
+                        if let Err(e) = refresh_local_fs_view(ata.clone()) {
+                            println!("[KERNEL] Failed to refresh local FS view after helper exit: {}", e);
+                        }
+                    }
 
                     if pid == 0 && !deferred_services_spawned {
                         println!("[KERNEL] Main test process exited. Launching deferred service processes...");
@@ -2777,6 +2793,104 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         }
                     }
                     reply_mrs[0] = res as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                41 => { // sys_block_read(block_id) -> (bytes_read, data...)
+                    let block_id = mrs[0] as u32;
+                    if pid == 3 && block_id < 4 {
+                        println!("[KERNEL] sys_block_read from pid={} block={}", pid, block_id);
+                    }
+                    let mut block = [0u8; 512];
+
+                    match ata.read_block(block_id, &mut block) {
+                        Ok(()) => {
+                            reply_mrs[0] = block.len() as u64;
+                            copy_bytes_to_ipc_after_mr0(&block);
+                            reply_info = libnova::ipc::MessageInfo::new(
+                                0,
+                                0,
+                                0,
+                                1 + block.len().div_ceil(core::mem::size_of::<seL4_Word>()) as u64,
+                            );
+                        }
+                        Err(e) => {
+                            println!("[KERNEL] sys_block_read: block={} failed: {}", block_id, e);
+                            reply_mrs[0] = (-1i64) as u64;
+                            reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                        }
+                    }
+                    need_reply = true;
+                    manual_reply = true;
+                }
+                42 => { // sys_block_write(block_id, 512-byte block)
+                    let block_id = mrs[0] as u32;
+                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                    let mut block = [0u8; 512];
+
+                    for (i, byte) in block.iter_mut().enumerate() {
+                        let word_idx = 1 + (i / 8);
+                        let word = if word_idx < 4 { mrs[word_idx] } else { ipc_buf.msg[word_idx] };
+                        *byte = ((word >> ((i % 8) * 8)) & 0xFF) as u8;
+                    }
+
+                    let res = match ata.write_block(block_id, &block) {
+                        Ok(()) => 0i64,
+                        Err(e) => {
+                            println!("[KERNEL] sys_block_write: block={} failed: {}", block_id, e);
+                            -1
+                        }
+                    };
+                    reply_mrs[0] = res as u64;
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                43 => { // sys_block_info() -> (sector_count, is_rotational)
+                    println!("[KERNEL] sys_block_info from pid={}", pid);
+                    reply_mrs[0] = ata.sector_count;
+                    reply_mrs[1] = if ata.is_rotational() { 1 } else { 0 };
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 2);
+                    need_reply = true;
+                }
+                44 => { // sys_get_unix_time() -> unix_timestamp
+                    reply_mrs[0] = crate::drivers::rtc::RtcDriver::new().get_unix_timestamp();
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                45 => { // sys_service_set_ready (MR0=len, MR1..=name)
+                    let len = mrs[0] as usize;
+                    let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
+                    let msg_len = info.length() as usize;
+                    let mut name_bytes = alloc::vec::Vec::with_capacity(len);
+                    let mut current_len = 0usize;
+                    let mut word_idx = 1usize;
+                    while current_len < len && word_idx < msg_len {
+                        let word = if word_idx < 4 { mrs[word_idx] } else { ipc_buf.msg[word_idx] };
+                        let bytes = word.to_le_bytes();
+                        for b in bytes.iter() {
+                            if current_len < len {
+                                name_bytes.push(*b);
+                                current_len += 1;
+                            }
+                        }
+                        word_idx += 1;
+                    }
+                    let name_str = alloc::string::String::from_utf8(name_bytes).unwrap_or_default();
+                    if services::mark_ready(&name_str) {
+                        println!("[KERNEL] Service '{}' marked ready.", name_str);
+                        reply_mrs[0] = 0;
+                    } else {
+                        println!(
+                            "[KERNEL] Service '{}' ready signal ignored (not registered).",
+                            name_str
+                        );
+                        reply_mrs[0] = 1;
+                    }
+                    reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                    need_reply = true;
+                }
+                46 => { // sys_fs_view_epoch() -> current epoch
+                    reply_mrs[0] = services::current_fs_view_epoch();
                     reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
                     need_reply = true;
                 }

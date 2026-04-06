@@ -13,7 +13,9 @@ const PAGE_SIZE: usize = 4096;
 // Address where we map pages temporarily to copy data
 // Must be a valid user-space address that doesn't conflict with the loaded ELF or Heap
 pub const COPY_WINDOW_ADDR: usize = 0x1000_0000;
-const MAX_ELF_SIZE: usize = 64 * 1024; // 64KB
+// Service binaries now include more shared filesystem logic. Keep a bounded
+// static loader buffer, but allow moderately larger userland ELFs.
+const MAX_ELF_SIZE: usize = 128 * 1024; // 128KB
 
 #[repr(align(8))]
 struct AlignedElfBuf([u8; MAX_ELF_SIZE]);

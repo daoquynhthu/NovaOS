@@ -102,6 +102,18 @@ pub fn sys_get_pid(ep: seL4_CPtr) -> usize {
     ipc::get_mr(0) as usize
 }
 
+pub fn sys_get_time(ep: seL4_CPtr) -> u64 {
+    let info = ipc::MessageInfo::new(6, 0, 0, 0);
+    let _ = ipc::call(ep, info);
+    ipc::get_mr(0)
+}
+
+pub fn sys_get_unix_time(ep: seL4_CPtr) -> u64 {
+    let info = ipc::MessageInfo::new(44, 0, 0, 0);
+    let _ = ipc::call(ep, info);
+    ipc::get_mr(0)
+}
+
 fn write_packed_bytes(start_word: usize, bytes: &[u8]) -> usize {
     let mut word_idx = start_word;
     let mut i = 0;
@@ -147,6 +159,29 @@ pub fn sys_service_lookup_exists(ep: seL4_CPtr, name: &str) -> bool {
     match ipc::call(ep, info) {
         Ok(resp) => seL4_MessageInfo_get_extraCaps(resp.inner) > 0,
         Err(_) => false,
+    }
+}
+
+pub fn sys_service_set_ready(ep: seL4_CPtr, name: &str) -> isize {
+    let name_bytes = name.as_bytes();
+    let len = name_bytes.len();
+    if len == 0 || len > 255 {
+        return -1;
+    }
+
+    ipc::set_mr(0, len as seL4_Word);
+    let next_word = write_packed_bytes(1, name_bytes);
+    let info = ipc::MessageInfo::new(45, 0, 0, next_word as seL4_Word);
+    let _ = ipc::call(ep, info);
+    ipc::get_mr(0) as isize
+}
+
+pub fn sys_fs_view_epoch(ep: seL4_CPtr) -> u64 {
+    let info = ipc::MessageInfo::new(46, 0, 0, 0);
+    if ipc::call(ep, info).is_ok() {
+        ipc::get_mr(0)
+    } else {
+        0
     }
 }
 
@@ -541,6 +576,63 @@ pub fn sys_rename(ep: seL4_CPtr, old_path: &str, new_path: &str) -> isize {
     }
     
     let info = ipc::MessageInfo::new(37, 0, 0, word_idx as seL4_Word);
+    let _ = ipc::call(ep, info);
+    ipc::get_mr(0) as isize
+}
+
+pub fn sys_block_info(ep: seL4_CPtr) -> Option<(u64, bool)> {
+    let info = ipc::MessageInfo::new(43, 0, 0, 0);
+    let _ = ipc::call(ep, info);
+    let sectors = ipc::get_mr(0);
+    let rotational = ipc::get_mr(1) != 0;
+    if sectors == 0 {
+        None
+    } else {
+        Some((sectors, rotational))
+    }
+}
+
+pub fn sys_block_read(ep: seL4_CPtr, block_id: u32, buf: &mut [u8; 512]) -> isize {
+    ipc::set_mr(0, block_id as seL4_Word);
+    let info = ipc::MessageInfo::new(41, 0, 0, 1);
+    let _ = ipc::call(ep, info);
+    let status = ipc::get_mr(0) as isize;
+    if status < 0 {
+        return status;
+    }
+
+    let bytes_read = status as usize;
+    if bytes_read != buf.len() {
+        return -1;
+    }
+
+    unsafe {
+        let ipc_buf = &*seL4_GetIPCBuffer();
+        let offset = core::mem::size_of::<seL4_Word>();
+        let ptr = (ipc_buf.msg.as_ptr() as *const u8).add(offset);
+        core::ptr::copy_nonoverlapping(ptr, buf.as_mut_ptr(), bytes_read);
+    }
+
+    status
+}
+
+pub fn sys_block_write(ep: seL4_CPtr, block_id: u32, buf: &[u8; 512]) -> isize {
+    ipc::set_mr(0, block_id as seL4_Word);
+
+    let mut word_idx = 1usize;
+    let mut i = 0usize;
+    while i < buf.len() {
+        let mut word = 0u64;
+        let chunk_end = if i + 8 > buf.len() { buf.len() } else { i + 8 };
+        for j in i..chunk_end {
+            word |= (buf[j] as u64) << ((j - i) * 8);
+        }
+        ipc::set_mr(word_idx, word as seL4_Word);
+        word_idx += 1;
+        i += 8;
+    }
+
+    let info = ipc::MessageInfo::new(42, 0, 0, word_idx as seL4_Word);
     let _ = ipc::call(ep, info);
     ipc::get_mr(0) as isize
 }

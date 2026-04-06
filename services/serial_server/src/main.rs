@@ -3,7 +3,7 @@
 
 mod allocator;
 
-use libnova::syscall::{sys_get_pid, sys_print, sys_service_lookup_exists, sys_service_register, sys_yield};
+use libnova::syscall::{sys_get_pid, sys_print, sys_service_lookup_exists, sys_service_register, sys_service_set_ready, sys_yield};
 use sel4_sys::{seL4_CPtr, seL4_IPCBuffer};
 
 #[no_mangle]
@@ -21,6 +21,7 @@ pub extern "C" fn _start(
 
     let pid = sys_get_pid(ep_cap);
     let _ = sys_service_register(ep_cap, "serial.v1", ep_cap);
+    let _ = sys_service_set_ready(ep_cap, "serial.v1");
 
     sys_print(ep_cap, "[serial_server] booted\n");
     if sys_service_lookup_exists(ep_cap, "serial.v1") {

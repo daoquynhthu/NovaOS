@@ -5,7 +5,13 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 mod allocator;
-use libnova::fs_ipc::{close_direct as fs_close_direct, link_direct as fs_link_direct, open_direct as fs_open_direct, read_direct as fs_read_direct, rename_direct as fs_rename_direct, symlink_direct as fs_symlink_direct, unlink_direct as fs_unlink_direct, write_direct as fs_write_direct, FS_MAX_RW_LEN};
+use libnova::fs_ipc::{
+    chmod_direct as fs_chmod_direct, chown_direct as fs_chown_direct, close_direct as fs_close_direct,
+    link_direct as fs_link_direct, mkdir_direct as fs_mkdir_direct, open_direct as fs_open_direct,
+    read_direct as fs_read_direct, rename_direct as fs_rename_direct, sync_direct as fs_sync_direct,
+    symlink_direct as fs_symlink_direct, truncate_direct as fs_truncate_direct,
+    unlink_direct as fs_unlink_direct, write_direct as fs_write_direct, FS_MAX_RW_LEN,
+};
 use libnova::syscall::*;
 use libnova::{print, println};
 use sel4_sys::{seL4_CPtr, seL4_IPCBuffer};
@@ -30,6 +36,7 @@ const SHM_CHILD_MAGIC: u64 = 0x1837_26F5_E4D3_C2B1;
 const FS_PROXY_SMOKE_PATH: &str = "/fs_proxy_smoke.txt";
 const FS_SYSCALL_SMOKE_PATH: &str = "/fs_syscall_smoke.txt";
 const FS_CMD_PATH_MAX: usize = 255;
+const FS_CMD_CONTENT_MAX: usize = FS_MAX_RW_LEN;
 
 struct EarlyArgs {
     loop_mode: bool,
@@ -56,8 +63,25 @@ struct EarlyArgs {
     fs_symlink_path: [u8; FS_CMD_PATH_MAX],
     fs_rm_len: usize,
     fs_rm_path: [u8; FS_CMD_PATH_MAX],
+    fs_mkdir_len: usize,
+    fs_mkdir_path: [u8; FS_CMD_PATH_MAX],
     fs_touch_len: usize,
     fs_touch_path: [u8; FS_CMD_PATH_MAX],
+    fs_truncate_len: usize,
+    fs_truncate_path: [u8; FS_CMD_PATH_MAX],
+    fs_truncate_size: u64,
+    fs_chmod_len: usize,
+    fs_chmod_path: [u8; FS_CMD_PATH_MAX],
+    fs_chmod_mode: u16,
+    fs_chown_len: usize,
+    fs_chown_path: [u8; FS_CMD_PATH_MAX],
+    fs_chown_uid: u32,
+    fs_chown_gid: u32,
+    fs_sync: bool,
+    fs_write_path_len: usize,
+    fs_write_path: [u8; FS_CMD_PATH_MAX],
+    fs_write_content_len: usize,
+    fs_write_content: [u8; FS_CMD_CONTENT_MAX],
 }
 
 impl EarlyArgs {
@@ -87,8 +111,25 @@ impl EarlyArgs {
             fs_symlink_path: [0; FS_CMD_PATH_MAX],
             fs_rm_len: 0,
             fs_rm_path: [0; FS_CMD_PATH_MAX],
+            fs_mkdir_len: 0,
+            fs_mkdir_path: [0; FS_CMD_PATH_MAX],
             fs_touch_len: 0,
             fs_touch_path: [0; FS_CMD_PATH_MAX],
+            fs_truncate_len: 0,
+            fs_truncate_path: [0; FS_CMD_PATH_MAX],
+            fs_truncate_size: 0,
+            fs_chmod_len: 0,
+            fs_chmod_path: [0; FS_CMD_PATH_MAX],
+            fs_chmod_mode: 0,
+            fs_chown_len: 0,
+            fs_chown_path: [0; FS_CMD_PATH_MAX],
+            fs_chown_uid: 0,
+            fs_chown_gid: 0,
+            fs_sync: false,
+            fs_write_path_len: 0,
+            fs_write_path: [0; FS_CMD_PATH_MAX],
+            fs_write_content_len: 0,
+            fs_write_content: [0; FS_CMD_CONTENT_MAX],
         }
     }
 
@@ -113,6 +154,14 @@ impl EarlyArgs {
             None
         } else {
             core::str::from_utf8(&self.fs_rm_path[..self.fs_rm_len]).ok()
+        }
+    }
+
+    fn fs_mkdir_path(&self) -> Option<&str> {
+        if self.fs_mkdir_len == 0 {
+            None
+        } else {
+            core::str::from_utf8(&self.fs_mkdir_path[..self.fs_mkdir_len]).ok()
         }
     }
 
@@ -155,6 +204,44 @@ impl EarlyArgs {
             Some((src, dest))
         }
     }
+
+    fn fs_write_args(&self) -> Option<(&str, &str)> {
+        if self.fs_write_path_len == 0 || self.fs_write_content_len == 0 {
+            None
+        } else {
+            let path = core::str::from_utf8(&self.fs_write_path[..self.fs_write_path_len]).ok()?;
+            let content =
+                core::str::from_utf8(&self.fs_write_content[..self.fs_write_content_len]).ok()?;
+            Some((path, content))
+        }
+    }
+
+    fn fs_truncate_args(&self) -> Option<(&str, u64)> {
+        if self.fs_truncate_len == 0 {
+            None
+        } else {
+            let path = core::str::from_utf8(&self.fs_truncate_path[..self.fs_truncate_len]).ok()?;
+            Some((path, self.fs_truncate_size))
+        }
+    }
+
+    fn fs_chmod_args(&self) -> Option<(&str, u16)> {
+        if self.fs_chmod_len == 0 {
+            None
+        } else {
+            let path = core::str::from_utf8(&self.fs_chmod_path[..self.fs_chmod_len]).ok()?;
+            Some((path, self.fs_chmod_mode))
+        }
+    }
+
+    fn fs_chown_args(&self) -> Option<(&str, u32, u32)> {
+        if self.fs_chown_len == 0 {
+            None
+        } else {
+            let path = core::str::from_utf8(&self.fs_chown_path[..self.fs_chown_len]).ok()?;
+            Some((path, self.fs_chown_uid, self.fs_chown_gid))
+        }
+    }
 }
 
 fn copy_str_to_buf(src: &str, dst: &mut [u8]) -> usize {
@@ -191,10 +278,19 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
     let mut expect_fs_link_path = false;
     let mut expect_fs_mv_src_path = false;
     let mut expect_fs_mv_dest_path = false;
+    let mut expect_fs_mkdir_path = false;
     let mut expect_fs_rm_path = false;
     let mut expect_fs_symlink_target = false;
     let mut expect_fs_symlink_path = false;
     let mut expect_fs_touch_path = false;
+    let mut expect_fs_truncate_path = false;
+    let mut expect_fs_truncate_size = false;
+    let mut expect_fs_chmod_mode = false;
+    let mut expect_fs_chmod_path = false;
+    let mut expect_fs_chown_uid_gid = false;
+    let mut expect_fs_chown_path = false;
+    let mut expect_fs_write_path = false;
+    let mut expect_fs_write_content = false;
 
     unsafe {
         for idx in 0..argc {
@@ -236,6 +332,11 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
                 expect_fs_mv_dest_path = false;
                 continue;
             }
+            if expect_fs_mkdir_path {
+                parsed.fs_mkdir_len = copy_str_to_buf(arg, &mut parsed.fs_mkdir_path);
+                expect_fs_mkdir_path = false;
+                continue;
+            }
             if expect_fs_link_target_path {
                 parsed.fs_link_target_len = copy_str_to_buf(arg, &mut parsed.fs_link_target_path);
                 expect_fs_link_target_path = false;
@@ -268,6 +369,60 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
                 expect_fs_touch_path = false;
                 continue;
             }
+            if expect_fs_truncate_path {
+                parsed.fs_truncate_len = copy_str_to_buf(arg, &mut parsed.fs_truncate_path);
+                expect_fs_truncate_path = false;
+                expect_fs_truncate_size = true;
+                continue;
+            }
+            if expect_fs_truncate_size {
+                if let Ok(size) = arg.parse::<u64>() {
+                    parsed.fs_truncate_size = size;
+                }
+                expect_fs_truncate_size = false;
+                continue;
+            }
+            if expect_fs_chmod_mode {
+                if let Ok(mode) = u16::from_str_radix(arg, 8) {
+                    parsed.fs_chmod_mode = mode;
+                }
+                expect_fs_chmod_mode = false;
+                expect_fs_chmod_path = true;
+                continue;
+            }
+            if expect_fs_chmod_path {
+                parsed.fs_chmod_len = copy_str_to_buf(arg, &mut parsed.fs_chmod_path);
+                expect_fs_chmod_path = false;
+                continue;
+            }
+            if expect_fs_chown_uid_gid {
+                let mut split = arg.split(':');
+                if let (Some(uid_s), Some(gid_s), None) = (split.next(), split.next(), split.next()) {
+                    if let (Ok(uid), Ok(gid)) = (uid_s.parse::<u32>(), gid_s.parse::<u32>()) {
+                        parsed.fs_chown_uid = uid;
+                        parsed.fs_chown_gid = gid;
+                    }
+                }
+                expect_fs_chown_uid_gid = false;
+                expect_fs_chown_path = true;
+                continue;
+            }
+            if expect_fs_chown_path {
+                parsed.fs_chown_len = copy_str_to_buf(arg, &mut parsed.fs_chown_path);
+                expect_fs_chown_path = false;
+                continue;
+            }
+            if expect_fs_write_path {
+                parsed.fs_write_path_len = copy_str_to_buf(arg, &mut parsed.fs_write_path);
+                expect_fs_write_path = false;
+                expect_fs_write_content = true;
+                continue;
+            }
+            if expect_fs_write_content {
+                parsed.fs_write_content_len = copy_str_to_buf(arg, &mut parsed.fs_write_content);
+                expect_fs_write_content = false;
+                continue;
+            }
 
             if arg == "loop" {
                 parsed.loop_mode = true;
@@ -293,6 +448,9 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
             if arg == "fs_mv" {
                 expect_fs_mv_src_path = true;
             }
+            if arg == "fs_mkdir" {
+                expect_fs_mkdir_path = true;
+            }
             if arg == "fs_rm" {
                 expect_fs_rm_path = true;
             }
@@ -301,6 +459,21 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
             }
             if arg == "fs_touch" {
                 expect_fs_touch_path = true;
+            }
+            if arg == "fs_truncate" {
+                expect_fs_truncate_path = true;
+            }
+            if arg == "fs_chmod" {
+                expect_fs_chmod_mode = true;
+            }
+            if arg == "fs_chown" {
+                expect_fs_chown_uid_gid = true;
+            }
+            if arg == "fs_sync" {
+                parsed.fs_sync = true;
+            }
+            if arg == "fs_write" {
+                expect_fs_write_path = true;
             }
         }
     }
@@ -532,6 +705,40 @@ fn run_fs_cat(envp: *const *const u8, path: &str) -> isize {
     127
 }
 
+fn run_fs_write_text(envp: *const *const u8, path: &str, content: &str) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("echo: fs service unavailable");
+            return code;
+        }
+    };
+
+    println!("[FS_CMD] write begin {}", path);
+    let fd = fs_open_direct(fs_ep, path, 1);
+    if fd < 0 {
+        println!("echo: {}: open failed ({})", path, fd);
+        return 235;
+    }
+
+    let written = fs_write_direct(fs_ep, fd as usize, content.as_bytes());
+    if written != content.len() as isize {
+        let _ = fs_close_direct(fs_ep, fd as usize);
+        println!("echo: {}: write failed ({})", path, written);
+        return 236;
+    }
+
+    let close_res = fs_close_direct(fs_ep, fd as usize);
+    if close_res != 0 {
+        println!("echo: {}: close failed ({})", path, close_res);
+        return 237;
+    }
+
+    println!("Written to {}", path);
+    println!("[FS_CMD] write ok {}", path);
+    133
+}
+
 fn run_fs_rm(envp: *const *const u8, path: &str) -> isize {
     let fs_ep = match resolve_fs_ep(envp) {
         Ok(ep) => ep,
@@ -544,13 +751,40 @@ fn run_fs_rm(envp: *const *const u8, path: &str) -> isize {
     println!("[FS_CMD] rm begin {}", path);
     let res = fs_unlink_direct(fs_ep, path);
     if res != 0 {
-        println!("rm: cannot remove '{}': {}", path, res);
+        if res == -39 {
+            println!("rm: cannot remove '{}': Directory not empty", path);
+        } else if res == -2 {
+            println!("rm: cannot remove '{}': File not found", path);
+        } else {
+            println!("rm: cannot remove '{}': {}", path, res);
+        }
         return 224;
     }
 
     println!("Removed '{}'", path);
     println!("[FS_CMD] rm ok {}", path);
     128
+}
+
+fn run_fs_mkdir(envp: *const *const u8, path: &str) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("mkdir: fs service unavailable");
+            return code;
+        }
+    };
+
+    println!("[FS_CMD] mkdir begin {}", path);
+    let res = fs_mkdir_direct(fs_ep, path);
+    if res != 0 {
+        println!("mkdir: {}", res);
+        return 238;
+    }
+
+    println!("Created directory {}", path);
+    println!("[FS_CMD] mkdir ok {}", path);
+    134
 }
 
 fn run_fs_cp(envp: *const *const u8, src: &str, dest: &str) -> isize {
@@ -638,6 +872,90 @@ fn run_fs_mv(envp: *const *const u8, src: &str, dest: &str) -> isize {
     println!("Renamed '{}' to '{}'", src, dest);
     println!("[FS_CMD] mv ok {} -> {}", src, dest);
     130
+}
+
+fn run_fs_truncate(envp: *const *const u8, path: &str, size: u64) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("truncate: fs service unavailable");
+            return code;
+        }
+    };
+
+    println!("[FS_CMD] truncate begin {} size={}", path, size);
+    let res = fs_truncate_direct(fs_ep, path, size);
+    if res != 0 {
+        println!("truncate: {}", res);
+        return 239;
+    }
+
+    println!("Truncated '{}' to {} bytes.", path, size);
+    println!("[FS_CMD] truncate ok {} size={}", path, size);
+    135
+}
+
+fn run_fs_chmod(envp: *const *const u8, path: &str, mode: u16) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("chmod: fs service unavailable");
+            return code;
+        }
+    };
+
+    println!("[FS_CMD] chmod begin {} mode={:o}", path, mode);
+    let res = fs_chmod_direct(fs_ep, path, mode);
+    if res != 0 {
+        println!("chmod: {}", res);
+        return 240;
+    }
+
+    println!("Changed mode of '{}' to {:o}", path, mode);
+    println!("[FS_CMD] chmod ok {} mode={:o}", path, mode);
+    136
+}
+
+fn run_fs_chown(envp: *const *const u8, path: &str, uid: u32, gid: u32) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("chown: fs service unavailable");
+            return code;
+        }
+    };
+
+    println!("[FS_CMD] chown begin {} {}:{}", path, uid, gid);
+    let res = fs_chown_direct(fs_ep, path, uid, gid);
+    if res != 0 {
+        println!("chown: {}", res);
+        return 241;
+    }
+
+    println!("Changed ownership of '{}' to {}:{}", path, uid, gid);
+    println!("[FS_CMD] chown ok {} {}:{}", path, uid, gid);
+    137
+}
+
+fn run_fs_sync(envp: *const *const u8) -> isize {
+    let fs_ep = match resolve_fs_ep(envp) {
+        Ok(ep) => ep,
+        Err(code) => {
+            println!("sync: fs service unavailable");
+            return code;
+        }
+    };
+
+    println!("[FS_CMD] sync begin");
+    let res = fs_sync_direct(fs_ep);
+    if res != 0 {
+        println!("sync failed: {}", res);
+        return 242;
+    }
+
+    println!("FileSystem synced.");
+    println!("[FS_CMD] sync ok");
+    138
 }
 
 fn run_fs_link(envp: *const *const u8, target_path: &str, link_path: &str) -> isize {
@@ -1027,14 +1345,20 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
     } else {
         println!("Process {} (Child) Started!", pid);
         println!(
-            "[FS_CMD] parsed touch={} rm={} cp={} mv={} link={} symlink={} cat={} smoke={} syscall_smoke={} loop={} shm={}",
+            "[FS_CMD] parsed touch={} rm={} mkdir={} cp={} mv={} truncate={} chmod={} chown={} link={} symlink={} cat={} write={} sync={} smoke={} syscall_smoke={} loop={} shm={}",
             early_args.fs_touch_path().is_some(),
             early_args.fs_rm_path().is_some(),
+            early_args.fs_mkdir_path().is_some(),
             early_args.fs_cp_paths().is_some(),
             early_args.fs_mv_paths().is_some(),
+            early_args.fs_truncate_args().is_some(),
+            early_args.fs_chmod_args().is_some(),
+            early_args.fs_chown_args().is_some(),
             early_args.fs_link_paths().is_some(),
             early_args.fs_symlink_paths().is_some(),
             early_args.fs_cat_path().is_some(),
+            early_args.fs_write_args().is_some(),
+            early_args.fs_sync,
             early_args.fs_proxy_smoke,
             early_args.fs_syscall_smoke,
             early_args.loop_mode,
@@ -1064,11 +1388,23 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
         } else if let Some(path) = early_args.fs_rm_path() {
             let code = run_fs_rm(envp, path);
             sys_exit(ep_cap, code as usize);
+        } else if let Some(path) = early_args.fs_mkdir_path() {
+            let code = run_fs_mkdir(envp, path);
+            sys_exit(ep_cap, code as usize);
         } else if let Some((src, dest)) = early_args.fs_cp_paths() {
             let code = run_fs_cp(envp, src, dest);
             sys_exit(ep_cap, code as usize);
         } else if let Some((src, dest)) = early_args.fs_mv_paths() {
             let code = run_fs_mv(envp, src, dest);
+            sys_exit(ep_cap, code as usize);
+        } else if let Some((path, size)) = early_args.fs_truncate_args() {
+            let code = run_fs_truncate(envp, path, size);
+            sys_exit(ep_cap, code as usize);
+        } else if let Some((path, mode)) = early_args.fs_chmod_args() {
+            let code = run_fs_chmod(envp, path, mode);
+            sys_exit(ep_cap, code as usize);
+        } else if let Some((path, uid, gid)) = early_args.fs_chown_args() {
+            let code = run_fs_chown(envp, path, uid, gid);
             sys_exit(ep_cap, code as usize);
         } else if let Some((target, link_path)) = early_args.fs_link_paths() {
             let code = run_fs_link(envp, target, link_path);
@@ -1078,6 +1414,12 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
             sys_exit(ep_cap, code as usize);
         } else if let Some(path) = early_args.fs_cat_path() {
             let code = run_fs_cat(envp, path);
+            sys_exit(ep_cap, code as usize);
+        } else if let Some((path, content)) = early_args.fs_write_args() {
+            let code = run_fs_write_text(envp, path, content);
+            sys_exit(ep_cap, code as usize);
+        } else if early_args.fs_sync {
+            let code = run_fs_sync(envp);
             sys_exit(ep_cap, code as usize);
         } else if early_args.fs_proxy_smoke {
             let code = run_fs_proxy_smoke(envp);
