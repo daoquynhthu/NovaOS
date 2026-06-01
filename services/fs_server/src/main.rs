@@ -65,7 +65,7 @@ use drivers::block::BlockDevice;
 use libnova::fs_ipc::{
     fs_err_not_implemented_word, FS_LABEL_CHMOD, FS_LABEL_CHOWN, FS_LABEL_CLOSE, FS_LABEL_DECRYPT,
     FS_LABEL_ENCRYPT, FS_LABEL_LINK, FS_LABEL_LIST, FS_LABEL_MKDIR, FS_LABEL_OPEN, FS_LABEL_PING, FS_LABEL_READ,
-    FS_LABEL_REFRESH, FS_LABEL_RENAME, FS_LABEL_SYNC, FS_LABEL_SYMLINK, FS_LABEL_TRUNCATE,
+    FS_LABEL_REFRESH, FS_LABEL_RENAME, FS_LABEL_STAT, FS_LABEL_SYNC, FS_LABEL_SYMLINK, FS_LABEL_TRUNCATE,
     FS_LABEL_UNLINK, FS_LABEL_WRITE, FS_LABEL_WRITETEST, FS_PROTO_V1, FS_STATUS_READY,
 };
 use libnova::ipc;
@@ -585,6 +585,20 @@ fn local_ls(fs: &Arc<dyn FileSystem>, path: &str) -> i64 {
     }
 }
 
+fn local_stat_kind(fs: &Arc<dyn FileSystem>, path: &str) -> i64 {
+    match fs.resolve_path("/", path) {
+        Ok(inode) => match inode.metadata() {
+            Ok(stat) => match stat.file_type {
+                FileType::Directory => 1,
+                FileType::Symlink => 2,
+                FileType::File => 0,
+            },
+            Err(_) => FS_ERR_IO,
+        },
+        Err(_) => FS_ERR_NOENT,
+    }
+}
+
 fn local_encrypt(fs: &Arc<dyn FileSystem>, path: &str) -> i64 {
     let Ok(inode) = fs.resolve_path("/", path) else {
         return FS_ERR_NOENT;
@@ -823,11 +837,6 @@ pub extern "C" fn _start(
                         continue;
                     }
                 };
-                if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
-                    ipc::set_mr(0, FS_ERR_IO as u64);
-                    ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                    continue;
-                }
                 let res = current_fs().map(|fs| local_unlink(&fs, path_str)).unwrap_or(FS_ERR_IO);
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
@@ -954,6 +963,22 @@ pub extern "C" fn _start(
                     continue;
                 }
                 let res = current_fs().map(|fs| local_ls(&fs, path_str)).unwrap_or(FS_ERR_IO);
+                ipc::set_mr(0, res as u64);
+                ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
+            }
+            FS_LABEL_STAT => {
+                let path_len = ipc::get_mr(0) as usize;
+                let mut path_buf = [0u8; MAX_PATH_LEN];
+                let actual_len = copy_bytes_from_msg(1, path_len, info.length() as usize, &mut path_buf);
+                let path_str = match core::str::from_utf8(&path_buf[..actual_len]) {
+                    Ok(s) if !s.is_empty() => s,
+                    _ => {
+                        ipc::set_mr(0, FS_ERR_INVAL as u64);
+                        ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
+                        continue;
+                    }
+                };
+                let res = current_fs().map(|fs| local_stat_kind(&fs, path_str)).unwrap_or(FS_ERR_IO);
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
@@ -1228,9 +1253,11 @@ pub extern "C" fn _start(
                     continue;
                 }
 
+                println!("[FS_SERVER] writetest begin path={} size_kb={}", path_str, size_kb);
                 let res = current_fs()
                     .map(|fs| local_writetest(&fs, path_str, size_kb))
                     .unwrap_or(FS_ERR_IO);
+                println!("[FS_SERVER] writetest end path={} res={}", path_str, res);
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }

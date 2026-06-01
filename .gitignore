@@ -58,3 +58,5 @@ auditoration1.md
 # build.ps1 and run_qemu.ps1 are kept.
 
 .env
+
+output.txt

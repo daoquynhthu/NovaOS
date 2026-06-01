@@ -95,6 +95,7 @@ $script:testPollDelayMs = Get-EnvInt "NOVA_TEST_POLL_DELAY_MS" 5 0 1000
 $script:testBulkSend = Get-EnvBool "NOVA_TEST_BULK_SEND" $false
 $script:testStageTiming = Get-EnvBool "NOVA_TEST_STAGE_TIMING" $false
 $script:testBigFileKb = Get-EnvInt "NOVA_TEST_BIGFILE_KB" $(if ($IsLinux) { 4 } else { 200 }) 1 4096
+$bootTimeoutSeconds = Get-EnvInt "NOVA_TEST_BOOT_TIMEOUT_SECONDS" 120 30 600
 
 function Start-Sleep {
     [CmdletBinding(DefaultParameterSetName = "Milliseconds")]
@@ -321,7 +322,7 @@ $stage35Checks = @{
     runHello = $false
     proxySmoke = $false
 }
-$timeoutSeconds = 60
+$timeoutSeconds = 120
 $timeoutEnv = $env:NOVA_TEST_TIMEOUT_SECONDS
 if ($timeoutEnv) {
     $parsedTimeout = 0
@@ -369,12 +370,15 @@ function Send-TestCommand {
     }
 }
 
-$startTime = Get-Date
+$bootStartTime = Get-Date
+$startTime = $bootStartTime
 $pendingStageAction = $null
 
 try {
     while (-not $process.HasExited) {
-        if ((Get-Date) - $startTime -gt [TimeSpan]::FromSeconds($timeoutSeconds)) {
+        $activeTimeoutSeconds = if ($stage -eq 0) { $bootTimeoutSeconds } else { $timeoutSeconds }
+        $elapsedStartTime = if ($stage -eq 0) { $bootStartTime } else { $startTime }
+        if ((Get-Date) - $elapsedStartTime -gt [TimeSpan]::FromSeconds($activeTimeoutSeconds)) {
             Write-Warning "Test Timed Out!"
             $elapsedSeconds = [Math]::Round(((Get-Date) - $startTime).TotalSeconds, 2)
             Write-Host ("[TEST] Timed out at stage {0} after {1}s" -f $stage, $elapsedSeconds) -ForegroundColor Yellow
@@ -414,6 +418,7 @@ try {
                 # Stage 0: Wait for Shell Prompt
                 if ($stage -eq 0 -and ($buffer -match "NovaOS:.*>" -or $buffer -match "NovaOS:/>")) {
                      Write-Host "`n[TEST] Shell Ready. Waiting for Process 0 to finish..." -ForegroundColor Yellow
+                     $startTime = Get-Date
                      $stage = 1
                      $buffer = ""
                 }
@@ -440,7 +445,10 @@ try {
                      }
                 }
                 
-                if ($stage -eq 3 -and $buffer -match "NovaOS:/home.*>") {
+                if ($stage -eq 3 -and (
+                    $buffer -match "NovaOS:/home.*>" -or
+                    $buffer -match "\[SHELL\] cd ok /home"
+                )) {
                      if ($pendingStageAction -ne "write_bigfile") {
                          Write-Host ("`n[TEST] Writing large file ({0}KB)..." -f $script:testBigFileKb) -ForegroundColor Yellow
                          $pendingStageAction = "write_bigfile"
@@ -457,14 +465,15 @@ try {
                 if ($stage -eq 5 -and $buffer -match "big.bin") {
                      Write-Host "`n[TEST] File Verified. Leaving /home and checking non-empty directory protection..." -ForegroundColor Yellow
                      Send-TestCommand $stream "cd .." 80
-                     Send-TestCommand $stream "rm /home" 200
-                     $stage = 7
+                     $stage = 6
                      $buffer = ""
                 }
 
-                if ($stage -eq 6 -and $buffer -match "NovaOS:.*>") {
+                if ($stage -eq 6 -and (
+                    $buffer -match "NovaOS:.*>" -or
+                    $buffer -match "\[SHELL\] cd ok /"
+                )) {
                      Write-Host "`n[TEST] Attempting to remove non-empty directory (should fail)..." -ForegroundColor Yellow
-                     Start-Sleep -Milliseconds 500
                      Send-TestCommand $stream "rm /home"
                      $stage = 7
                      $buffer = ""

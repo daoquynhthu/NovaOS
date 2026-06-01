@@ -19,6 +19,7 @@ pub const FS_LABEL_ENCRYPT: seL4_Word = 34;
 pub const FS_LABEL_DECRYPT: seL4_Word = 35;
 pub const FS_LABEL_LIST: seL4_Word = 36;
 pub const FS_LABEL_WRITETEST: seL4_Word = 37;
+pub const FS_LABEL_STAT: seL4_Word = 38;
 pub const FS_LABEL_PING: seL4_Word = 0xF500;
 
 pub const FS_STATUS_READY: seL4_Word = 0x4653_5256;
@@ -344,6 +345,22 @@ pub fn list_direct(fs_ep: seL4_CPtr, path: &str) -> isize {
     write_bytes_to_msg(1, path.as_bytes());
     let path_words = len.div_ceil(8);
     let info = ipc::MessageInfo::new(FS_LABEL_LIST, 0, 0, (1 + path_words) as seL4_Word);
+    match ipc::call(fs_ep, info) {
+        Ok(_) => ipc::get_mr(0) as isize,
+        Err(_) => -1,
+    }
+}
+
+pub fn stat_direct(fs_ep: seL4_CPtr, path: &str) -> isize {
+    let len = path.len();
+    if len == 0 || len > FS_MAX_PATH_LEN {
+        return -1;
+    }
+
+    ipc::set_mr(0, len as seL4_Word);
+    write_bytes_to_msg(1, path.as_bytes());
+    let path_words = len.div_ceil(8);
+    let info = ipc::MessageInfo::new(FS_LABEL_STAT, 0, 0, (1 + path_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,

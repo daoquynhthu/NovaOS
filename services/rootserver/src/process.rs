@@ -442,6 +442,18 @@ impl ProcessManager {
                     sel4_sys::seL4_Send(parent_reply_cap, info);
                 }
             }
+        } else if parent_exists {
+            // Helper-style children are not waited on in the current shell-driven
+            // workflow. Reap them immediately to avoid filling the process table
+            // with zombies during long regression runs.
+            println!(
+                "[Process] Reaping exited child {} (Parent {} not waiting)",
+                pid, ppid
+            );
+            self.remove_process(pid);
+            if let Some(parent) = self.get_process_mut(ppid) {
+                parent.children.retain(|&c| c != pid);
+            }
         } else if !parent_exists {
             // Orphan process (parent died or non-existent) - reap immediately
             println!("[Process] Reaping orphan process {} (Parent {} not found)", pid, ppid);

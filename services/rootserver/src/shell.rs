@@ -1,7 +1,10 @@
 
 use crate::drivers::keyboard::Key;
 use alloc::string::ToString;
-use libnova::fs_ipc::encrypt_direct as fs_encrypt_direct;
+use libnova::fs_ipc::{
+    decrypt_direct as fs_decrypt_direct,
+    encrypt_direct as fs_encrypt_direct,
+};
 use libnova::cap::cap_rights_new;
 use crate::memory::{SlotAllocator, UntypedAllocator, FrameAllocator};
 use crate::tests;
@@ -38,6 +41,7 @@ pub struct Shell {
     cwd: alloc::string::String,
     env_vars: alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>,
     pending_prompt_pid: Option<usize>,
+    pending_cd_path: Option<alloc::string::String>,
 }
 
 impl Shell {
@@ -68,6 +72,7 @@ impl Shell {
             cwd: alloc::string::String::from("/"),
             env_vars,
             pending_prompt_pid: None,
+            pending_cd_path: None,
         }
     }
 
@@ -153,9 +158,20 @@ impl Shell {
         self.pending_prompt_pid.is_some()
     }
 
-    pub fn on_process_exit(&mut self, pid: usize) -> bool {
+    pub fn on_process_exit(&mut self, pid: usize, status: isize) -> bool {
         if self.pending_prompt_pid == Some(pid) {
             self.pending_prompt_pid = None;
+            if let Some(path) = self.pending_cd_path.take() {
+                if status == 0 {
+                    self.cwd = path;
+                    if self.cwd.len() > 1 && self.cwd.ends_with('/') {
+                        self.cwd.pop();
+                    }
+                    println!("[SHELL] cd ok {}", self.cwd);
+                } else {
+                    println!("[SHELL] cd failed {} (status {})", path, status);
+                }
+            }
             self.print_prompt();
             true
         } else {
@@ -1222,31 +1238,8 @@ impl Shell {
                         }
                         e => println!("Failed to encrypt: {}", e),
                     }
-                }
-                let vfs_lock = crate::vfs::VFS.lock();
-                if let Some(fs) = vfs_lock.as_ref() {
-                    match fs.resolve_path("/", &path_str) {
-                        Ok(inode) => {
-                             // Read current flags first
-                             match inode.control(1, 0) {
-                                 Ok(flags) => {
-                                    println!("DEBUG: encrypt command read flags: 0x{:x}", flags);
-                                    // Set Encrypted bit (1)
-                                    match inode.control(2, flags | 1) {
-                                         Ok(_) => {
-                                             println!("File '{}' encrypted.", filename);
-                                             self.mark_fs_service_dirty();
-                                         }
-                                         Err(e) => println!("Failed to encrypt: {}", e),
-                                     }
-                                 },
-                                 Err(e) => println!("Failed to get flags: {}", e),
-                             }
-                        },
-                        Err(e) => println!("encrypt: {}: {}", filename, e),
-                    }
                 } else {
-                    println!("encrypt: VFS not mounted");
+                    println!("encrypt: fs service unavailable");
                 }
             }
         } else if self.word_eq(word_start, word_end, "decrypt") {
@@ -1259,29 +1252,20 @@ impl Shell {
                 if self.spawn_fs_helper("fs_decrypt", &path_str) {
                     return;
                 }
-                let vfs_lock = crate::vfs::VFS.lock();
-                if let Some(fs) = vfs_lock.as_ref() {
-                    match fs.resolve_path("/", &path_str) {
-                        Ok(inode) => {
-                             // Read current flags first
-                             match inode.control(1, 0) {
-                                 Ok(flags) => {
-                                     // Clear Encrypted bit (1)
-                                     match inode.control(2, flags & !1) {
-                                         Ok(_) => {
-                                             println!("File '{}' decrypted.", filename);
-                                             self.mark_fs_service_dirty();
-                                         }
-                                         Err(e) => println!("Failed to decrypt: {}", e),
-                                     }
-                                 },
-                                 Err(e) => println!("Failed to get flags: {}", e),
-                             }
-                        },
-                        Err(e) => println!("decrypt: {}: {}", filename, e),
+                if let Some((_, fs_ep, _)) = crate::services::lookup_latest_ready("fs") {
+                    match fs_decrypt_direct(fs_ep, &path_str) {
+                        0 => {
+                            println!("File '{}' decrypted.", filename);
+                            return;
+                        }
+                        1 => {
+                            println!("File '{}' is not encrypted.", filename);
+                            return;
+                        }
+                        e => println!("Failed to decrypt: {}", e),
                     }
                 } else {
-                    println!("decrypt: VFS not mounted");
+                    println!("decrypt: fs service unavailable");
                 }
             }
         } else if self.word_eq(word_start, word_end, "history") {
@@ -1430,7 +1414,12 @@ impl Shell {
                 let s = &self.buffer[rest_start..end];
                 let s = s.iter().collect::<alloc::string::String>();
                 let path_str = self.resolve_path(&s);
-                
+
+                if self.spawn_fs_helper_args(&["fs_cd", &path_str]) {
+                    self.pending_cd_path = Some(path_str);
+                    return;
+                }
+
                 let fs_lock = crate::fs::DISK_FS.lock();
                 if let Some(fs) = fs_lock.as_ref() {
                     match crate::vfs::resolve_path(fs, &self.cwd, &path_str) {
@@ -1441,6 +1430,7 @@ impl Shell {
                                      if self.cwd.len() > 1 && self.cwd.ends_with('/') {
                                          self.cwd.pop();
                                      }
+                                     println!("[SHELL] cd ok {}", self.cwd);
                                  } else {
                                      println!("cd: {}: Not a directory", path_str);
                                  }
@@ -1664,29 +1654,8 @@ impl Shell {
                     }
                     e => println!("Failed to encrypt: {}", e),
                 }
-            }
-            let fs_lock = crate::fs::DISK_FS.lock();
-            if let Some(fs) = fs_lock.as_ref() {
-                match fs.resolve_path_ex(&self.cwd, &path_str, true) {
-                    Ok(inode) => {
-                         if let Ok(flags) = inode.control(1, 0) {
-                             if (flags & 1) != 0 {
-                                 println!("File '{}' is already encrypted.", path_str);
-                             } else {
-                                 match inode.control(2, flags | 1) {
-                                     Ok(_) => {
-                                         println!("File '{}' encrypted.", path_str);
-                                         self.mark_fs_service_dirty();
-                                     }
-                                     Err(e) => println!("Failed to encrypt: {}", e),
-                                 }
-                             }
-                         } else {
-                             println!("Failed to get file flags.");
-                         }
-                    },
-                    Err(e) => println!("encrypt: {}: {}", path_str, e),
-                }
+            } else {
+                println!("encrypt: fs service unavailable");
             }
         } else if self.word_eq(word_start, word_end, "decrypt") {
             let path_str = if rest_start < end {
@@ -1700,28 +1669,20 @@ impl Shell {
             if self.spawn_fs_helper("fs_decrypt", &path_str) {
                 return;
             }
-            let fs_lock = crate::fs::DISK_FS.lock();
-            if let Some(fs) = fs_lock.as_ref() {
-                match fs.resolve_path_ex(&self.cwd, &path_str, true) {
-                    Ok(inode) => {
-                         if let Ok(flags) = inode.control(1, 0) {
-                             if (flags & 1) == 0 {
-                                 println!("File '{}' is not encrypted.", path_str);
-                             } else {
-                                 match inode.control(2, flags & !1) {
-                                     Ok(_) => {
-                                         println!("File '{}' decrypted.", path_str);
-                                         self.mark_fs_service_dirty();
-                                     }
-                                     Err(e) => println!("Failed to decrypt: {}", e),
-                                 }
-                             }
-                         } else {
-                             println!("Failed to get file flags.");
-                         }
-                    },
-                    Err(e) => println!("decrypt: {}: {}", path_str, e),
+            if let Some((_, fs_ep, _)) = crate::services::lookup_latest_ready("fs") {
+                match fs_decrypt_direct(fs_ep, &path_str) {
+                    0 => {
+                        println!("File '{}' decrypted.", path_str);
+                        return;
+                    }
+                    1 => {
+                        println!("File '{}' is not encrypted.", path_str);
+                        return;
+                    }
+                    e => println!("Failed to decrypt: {}", e),
                 }
+            } else {
+                println!("decrypt: fs service unavailable");
             }
         } else if self.word_eq(word_start, word_end, "ln") {
             let len = end - rest_start;

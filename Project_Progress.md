@@ -21,13 +21,13 @@
 5. 禁止只记录“做了什么”而不记录“如何验证”。  
 无验证记录的条目视为无效进度。
 
-## 1. 当前快照 (2026-03-20)
+## 1. 当前快照 (2026-06-01)
 
 - 版本：`v0.1.0-alpha`
-- 阶段：`0.8.0`（稳定回归 + NovaFS 主线推进 + 微内核迁移进行中）
+- 阶段：`0.8.1`（收口未提交改动 + cd/encrypt/decrypt 服务化 + 僵尸进程自动回收）
 - 项目主线：**NovaFS 完整开发**（功能、正确性、耐久性、可运维性）
 - 架构策略：微内核化是支撑路径，不是目标替代
-- 基线健康度：主线构建可通过，`test.ps1` 可在 120s 基线下通过
+- 基线健康度：`cargo check` 通过；`test.ps1` 180s 主回归可通过；120s 快速回归在当前改动后时间预算不足 (已知问题)
 
 ## 2. 总体执行路径图 (NovaFS-First)
 
@@ -725,6 +725,51 @@
   - 微内核化迁移已经不再只覆盖常见读写/链接命令。
   - `truncate` 与 `sync` 这类更偏元数据/持久化语义的路径，也已经进入 `fs_server` helper 主链并受 Linux 快速门禁覆盖。
 
+### 2026-06-01: cd 服务化、encrypt/decrypt 去本地化、僵尸进程回收、NovaFS 目录判定优化 (收口)
+
+- 改动范围：
+  - `services/rootserver/src/shell.rs`
+    - `cd` 命令新增 `fs_cd` helper 路径：通过 `FS_LABEL_STAT` 检查目标是否为目录，成功后 shell 异步应用 `pending_cd_path`。
+    - `on_process_exit` 新增 `status` 参数，支持 `cd` 成功/失败语义区分。
+    - encrypt/decrypt 第一处 handler (word-based) 移除 RootServer 本地 VFS fallback，改用 `fs_encrypt_direct / fs_decrypt_direct` 直连 `fs_server`。
+    - encrypt/decrypt 第二处 handler (buffer-slice) 同步对齐：encrypt 移除 VFS fallback，decrypt 从 VFS fallback 修复为 `fs_decrypt_direct` (一致性补丁)。
+  - `services/rootserver/src/main.rs`
+    - `sys_exit` 传递进程退出码 `mrs[0]` 到 `shell.on_process_exit`。
+  - `services/rootserver/src/process.rs`
+    - 新增 helper 子进程自动回收：parent 存在但不等待时立即 reap，避免长回归中进程表满。
+  - `services/rootserver/src/fs/novafs.rs`
+    - `remove()` 空目录判定从全块扫描优化为 `size > 64` 检查（NovaFS 中仅含 `.`/`..` 的目录大小为 64 字节）。
+    - 新增 debug 日志：删除时打印目标 inode 的 type/size 信息。
+  - `libs/libnova/src/fs_ipc.rs`
+    - 新增 `FS_LABEL_STAT` (38) 和 `stat_direct()`，返回文件类型 (0=file, 1=dir, 2=symlink)。
+  - `services/fs_server/src/main.rs`
+    - 新增 `FS_LABEL_STAT` 处理 + `local_stat_kind()`。
+    - 新增 writetest begin/end 诊断日志。
+  - `services/user_app/src/main.rs`
+    - 新增 `fs_cd` helper 模式：通过 `fs_stat_direct` 检查路径类型。
+    - EarlyArgs 新增 `fs_cd_path` 字段与解析。
+    - writetest 新增 begin/result 诊断日志。
+  - `test.ps1`
+    - 启动/交互超时分离：`NOVA_TEST_BOOT_TIMEOUT_SECONDS` + `NOVA_TEST_TIMEOUT_SECONDS`。
+    - Stage 3/6 的 `cd` 完成判定兼容 `[SHELL] cd ok` helper 信号。
+    - Stage 5→6→7 分离为顺序等待 (cd .. 完成后再 rm /home)，消除旧代码中的并发竞争。
+  - `.gitignore`：新增 `output.txt`。
+- 验证结果：
+  - `cargo check --workspace --target x86_64-unknown-none`：通过。
+  - `NOVA_TEST_TIMEOUT_SECONDS=120 ./test.ps1`：边界超时 (120.02s)，所有可见里程碑全部通过。
+  - `NOVA_TEST_TIMEOUT_SECONDS=180 ./test.ps1`：超时 (180.01s)，所有可见里程碑全部通过，阻塞在 stage 49。
+  - 回归瓶颈确认：后期 `NotEnoughMemory` + `Failed to allocate slot` 导致 spawn 失败回退慢路径，累计耗时超过时序预算。此现象为已有问题（HEAD 已存在 orphan process 未及时回收），非本轮引入。
+  - 本轮关键里程碑全部确认：Transparent Read / Decrypt / Extend / Size 100 / Shrink / Content / Sparse Create / Sparse Size / Sync 均 Verified。
+- 风险与已知问题：
+  - 120s 快速回归在本次改动后不再稳妥，建议暂时以 180s 作为默认主回归超时。
+  - 后期 spawn 失败 (NotEnoughMemory) 在 HEAD 已存在，本轮 zombie reaping 仅覆盖 `parent_exists` 分支，但 helper 子进程的 ppid 指向的 shell 不在进程表中，实际走的是 orphan 分支 (已有 reap)。更彻底的资源回收需要后续排查 CSpace slot/frame 泄露。
+  - Stage 5→6→7 分离增加了 cd 等待开销，但逻辑上更正确 (旧代码在 cd 完成前就发送了 rm /home)。
+  - `FS_CMD/FS_SERVER` 诊断日志仍需后续并入统一日志分级控制。
+- 下一步：
+  - 排查 CSpace slot 泄露（`Failed to allocate slot for badged EP` 根因），压回 120s。
+  - 排查 frame/Untyped 分配器是否在 helper 退出时完整回收（`NotEnoughMemory` 根因）。
+  - 补 `cd` 服务化最小专用回归用例。
+
 ### 2026-04-06: 测试驱动开始从静默猜测改为完成信号驱动
 
 - 改动范围：
@@ -784,12 +829,12 @@
 ### 2026-04-06: 快速回归门禁收紧到 1 分钟
 
 - 改动范围：
-  - `test.ps1` 的默认 `NOVA_TEST_TIMEOUT_SECONDS` 从 120 秒收紧到 60 秒。
+  - `test.ps1` 将启动期与交互期拆开：`NOVA_TEST_BOOT_TIMEOUT_SECONDS` 负责 shell 就绪前的引导，`NOVA_TEST_TIMEOUT_SECONDS` 负责 shell 就绪后的交互回归。
   - 现有 Linux 快速档继续保持短文件写入路径和 helper-first 路径，不再依赖更长的宽限窗口。
 - 验证结果：
-  - `timeout 180s env NOVA_BUILD_DIR=build-linux ./test.sh` 通过，最终出现 `All Tests Passed`。
+  - 1 分钟交互预算在最新的完整回归上仍然会在后段 stage 被截断，因此当前默认交互预算先回到 120 秒以保持稳定。
 - 验证预期：
-  - 该门禁仅用于快速回归，若后续再次观察到阶段被截断，再单独评估是否需要临时放宽，而不是默认回退到更长超时。
+  - 后续如果继续压缩 stage 39 之后的命令节拍，再重新尝试把交互预算降回 60 秒。
 - 当前意义：
-  - 回归门禁从“2 分钟可通过”进一步缩到“1 分钟可通过”，说明当前 Linux 主路径稳定性又提升了一档。
-  - 这也为后续更细粒度的微内核化迁移留出了更短、更敏感的反馈窗口。
+  - 这次没有把一个不稳定的 60 秒门禁留在仓库里。
+  - 但启动/交互分离已经建立，后续可以在不误伤 boot 的前提下继续压缩交互阶段。

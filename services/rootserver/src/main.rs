@@ -1395,7 +1395,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         println!("[KERNEL] Failed to exit process {}: {:?}", pid, e);
                         get_process_manager().remove_process(pid);
                     }
-                    let helper_prompt_released = shell.on_process_exit(pid);
+                    let helper_prompt_released = shell.on_process_exit(pid, mrs[0] as isize);
                     if helper_prompt_released {
                         if let Err(e) = refresh_local_fs_view(ata.clone()) {
                             println!("[KERNEL] Failed to refresh local FS view after helper exit: {}", e);

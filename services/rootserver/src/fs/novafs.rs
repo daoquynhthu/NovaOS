@@ -1255,46 +1255,26 @@ impl<D: BlockDevice + Send + Sync + 'static> Inode for NovaInode<D> {
                         let target_inode_num = entry.inode_number;
                         
                         let target_inode = self.fs.get_inode_handle(target_inode_num)?;
-                        let mut target_data = target_inode.metadata.lock();
-                        
+                        let target_data = *target_inode.metadata.lock();
+                        println!(
+                            "NovaFS Debug: remove target inode {} type={} size={}",
+                            target_inode_num,
+                            target_data.type_,
+                            target_data.size
+                        );
                         if target_data.type_ == 1 {
-                             // Check if empty by scanning
-                             let t_size = target_data.size as usize;
-                             let mut t_offset = 0;
-                             let mut t_loop = 0;
-                             while t_offset < t_size {
-                                 t_loop += 1;
-                                 if t_loop > MAX_LOOP {
-                                     println!("NovaFS Error: remove (check empty) loop limit exceeded");
-                                     return Err("Directory too large or corrupted");
-                                 }
-                                 let t_blk_idx = (t_offset / BLOCK_SIZE) as u32;
-                                 if let Ok(t_blk) = self.fs.get_block_id(&mut target_data, t_blk_idx, false) {
-                                     let t_real = self.fs.block_offset + t_blk;
-                                    let mut t_aligned = AlignedBlock([0u8; BLOCK_SIZE]);
-                                    let t_buf = &mut t_aligned.0;
-                                    self.fs.read_block(t_real, t_buf)?;
-                                    for k in 0..BLOCK_SIZE/entry_size {
-                                         if t_offset + k*entry_size >= t_size { break; }
-                                         let t_ent = unsafe { &*(t_buf.as_ptr().add(k*entry_size) as *const DirEntry) };
-                                         if t_ent.inode_number != 0 {
-                                             let name_len = t_ent.name.iter().position(|&c| c == 0).unwrap_or(28);
-                                             let name = core::str::from_utf8(&t_ent.name[..name_len]).unwrap_or("");
-                                             if name != "." && name != ".." {
-                                                  // println!("NovaFS Debug: Directory not empty due to '{}'", name);
-                                                  return Err("Directory not empty");
-                                             }
-                                         }
-                                     }
-                                 }
-                                 t_offset += BLOCK_SIZE;
-                             }
+                            // A directory with only "." and ".." is 64 bytes in NovaFS.
+                            // Larger sizes imply live children and must not be removed.
+                            if target_data.size > 64 {
+                                return Err("Directory not empty");
+                            }
                         }
-                        
+
+                        let mut target_data = target_inode.metadata.lock();
                         if target_data.nlink > 0 {
                             target_data.nlink -= 1;
                         }
-                        
+
                         if target_data.nlink == 0 {
                             target_inode.free_inode_blocks(&target_data)?;
                             self.fs.free_inode(target_inode_num)?;
