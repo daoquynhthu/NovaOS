@@ -200,15 +200,15 @@ impl UntypedAllocator {
     }
 
     pub fn print_info(&self, boot_info: &seL4_BootInfo) {
-        println!("[Alloc] Untyped memory info:");
+        log_debug!(libnova::log::DOM_ALLOC, "[Alloc] Untyped memory info:");
         let list_ptr = boot_info.untypedList.as_ptr();
-        println!("[Alloc] UntypedList Addr: {:p}", list_ptr);
+        log_debug!(libnova::log::DOM_ALLOC, "[Alloc] UntypedList Addr: {:p}", list_ptr);
         
         let start = self.untyped_start;
         let end = self.untyped_end;
         // let len = end - start;
         
-        println!("[Alloc] Scanning untyped slots {} to {}", start, end);
+        log_debug!(libnova::log::DOM_ALLOC, "[Alloc] Scanning untyped slots {} to {}", start, end);
         
         // Print all untyped slots, summarizing devices
         /*

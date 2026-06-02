@@ -42,7 +42,7 @@ impl<D: BlockDevice + Send + Sync + 'static> BlockCache<D> {
         
         let is_rotational = device.is_rotational();
         let strategy = create_strategy(is_rotational);
-        println!("[BlockCache] Using Strategy: {}", strategy.name());
+        log_debug!(libnova::log::DOM_DISK, "[BlockCache] Using Strategy: {}", strategy.name());
         
         Self {
             entries,

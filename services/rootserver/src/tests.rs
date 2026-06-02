@@ -108,14 +108,14 @@ pub fn test_disk_driver() {
     pattern[0] = 0xBE;
     pattern[1] = 0xEF;
     
-    println!("[DISK] Writing pattern to Sector 1...");
+    log_debug!(libnova::log::DOM_DISK, "[DISK] Writing pattern to Sector 1...");
     if let Err(e) = driver.write_sectors(1, &pattern) {
         println!("[ERROR] Disk Write Failed: {}", e);
         return;
     }
     
     // Test Read from Sector 1
-    println!("[DISK] Reading back Sector 1...");
+    log_debug!(libnova::log::DOM_DISK, "[DISK] Reading back Sector 1...");
     match driver.read_sectors(1, 1) {
         Ok(data) => {
             if data.len() != 512 {

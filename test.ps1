@@ -96,6 +96,7 @@ $script:testBulkSend = Get-EnvBool "NOVA_TEST_BULK_SEND" $false
 $script:testStageTiming = Get-EnvBool "NOVA_TEST_STAGE_TIMING" $false
 $script:testBigFileKb = Get-EnvInt "NOVA_TEST_BIGFILE_KB" $(if ($IsLinux) { 4 } else { 200 }) 1 4096
 $bootTimeoutSeconds = Get-EnvInt "NOVA_TEST_BOOT_TIMEOUT_SECONDS" 120 30 600
+$env:NOVA_LOG_LEVEL = Get-EnvInt "NOVA_LOG_LEVEL" 1 0 3
 
 function Start-Sleep {
     [CmdletBinding(DefaultParameterSetName = "Milliseconds")]

@@ -555,8 +555,9 @@ impl Process {
         if self.saved_reply_cap == 0 {
             self.saved_reply_cap = slots.alloc().map_err(|_| Error::NotEnoughMemory)?;
         } else {
-             // Try to delete just in case it's occupied (ignore error)
              let _ = root.delete(self.saved_reply_cap);
+             slots.free(self.saved_reply_cap);
+             self.saved_reply_cap = slots.alloc().map_err(|_| Error::NotEnoughMemory)?;
         }
         
         match root.save_caller(self.saved_reply_cap) {
@@ -671,6 +672,10 @@ impl Process {
 
         let mut process = Self::create(allocator, slots, boot_info, asid_pool, name, uid, gid)?;
         process.ppid = ppid;
+        // Set caps early so terminate() always frees the badged EP slot,
+        // even if initialize() fails before configure() is called.
+        process.fault_ep_cap = endpoint_cap;
+        process.syscall_ep_cap = endpoint_cap;
 
         // Wrap initialization in a closure to handle cleanup on failure
         let mut initialize = || -> Result<()> {
@@ -1159,7 +1164,7 @@ impl Process {
         &mut self, 
         cnode: seL4_CPtr, 
         slots: &mut SlotAllocator, 
-        frame_allocator: &mut FrameAllocator
+        _frame_allocator: &mut FrameAllocator
     ) -> Result<()> {
         // Invariant: Cannot terminate an already terminated process
         debug_assert!(self.state != ProcessState::Terminated, "Double termination detected");
@@ -1175,17 +1180,13 @@ impl Process {
             if let Err(e) = self.vspace.unmap_page(frame.cap) {
                 println!("[WARN] Failed to unmap frame cap {} during terminate: {:?}", frame.cap, e);
             }
-            if frame.reclaim_to_frame_allocator {
-                frame_allocator.free(frame.cap);
-            } else {
-                if let Err(e) = root.delete(frame.cap) {
-                    println!(
-                        "[WARN] Failed to delete external frame cap {} during terminate: {:?}",
-                        frame.cap, e
-                    );
-                }
-                slots.free(frame.cap);
+            if let Err(e) = root.delete(frame.cap) {
+                println!(
+                    "[WARN] Failed to delete frame cap {} during terminate: {:?}",
+                    frame.cap, e
+                );
             }
+            slots.free(frame.cap);
         }
 
         // Delete TCB
@@ -1211,6 +1212,13 @@ impl Process {
         if self.fault_ep_cap != 0 {
             root.delete(self.fault_ep_cap)?;
             slots.free(self.fault_ep_cap);
+        }
+
+        // Free saved_reply_cap slot (leak fix)
+        if self.saved_reply_cap != 0 {
+            let _ = root.delete(self.saved_reply_cap);
+            slots.free(self.saved_reply_cap);
+            self.saved_reply_cap = 0;
         }
 
         // Delete Syscall EP

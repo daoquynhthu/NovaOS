@@ -40,7 +40,7 @@ impl<'a> ElfLoader<'a> {
         elf_data: &[u8],
         mapped_frames: &mut alloc::vec::Vec<MappedFrame>,
     ) -> Result<usize, seL4_Error> {
-        println!("[Loader] load_elf called. Data len: {}", elf_data.len());
+        log_debug!(libnova::log::DOM_LOADER, "[Loader] load_elf called. Data len: {}", elf_data.len());
         if elf_data.len() > MAX_ELF_SIZE {
             println!("[Loader] ELF too large: {} bytes", elf_data.len());
             return Err(seL4_Error::seL4_InvalidArgument);
@@ -57,13 +57,13 @@ impl<'a> ElfLoader<'a> {
             }
         };
 
-        println!("[Loader] Parsing ELF header...");
+        log_debug!(libnova::log::DOM_LOADER, "[Loader] Parsing ELF header...");
         let elf = ElfFile::new(elf_data_aligned).map_err(|_| {
             println!("[Loader] Invalid ELF magic");
             seL4_Error::seL4_InvalidArgument
         })?;
 
-        println!("[Loader] ELF loaded. Entry: 0x{:x}", elf.header.pt2.entry_point());
+        log_debug!(libnova::log::DOM_LOADER, "[Loader] ELF loaded. Entry: 0x{:x}", elf.header.pt2.entry_point());
 
         // We need a VSpace wrapper for the current RootServer to map pages for copying
         // Note: We use the existing Root CNode slot for InitThreadVSpace
@@ -78,7 +78,7 @@ impl<'a> ElfLoader<'a> {
                 let offset = ph.offset() as usize;
                 let flags = ph.flags();
 
-                println!("[Loader] Segment: VAddr=0x{:x}, MemSize={}, FileSize={}", vaddr, mem_size, file_size);
+                log_debug!(libnova::log::DOM_LOADER, "[Loader] Segment: VAddr=0x{:x}, MemSize={}, FileSize={}", vaddr, mem_size, file_size);
 
                 // Calculate page range
                 let start_page = vaddr & !(PAGE_SIZE - 1);
@@ -97,7 +97,7 @@ impl<'a> ElfLoader<'a> {
                         return Err(seL4_Error::seL4_NotEnoughMemory);
                     }
                     
-                    println!("[Loader] Allocated frame {} for vaddr {:x}", frame_cap, page_vaddr);
+                    log_trace!(libnova::log::DOM_LOADER, "[Loader] Allocated frame {} for vaddr {:x}", frame_cap, page_vaddr);
 
                     let read = flags.is_read() || flags.is_execute();
                     let write = flags.is_write();
@@ -185,7 +185,7 @@ impl<'a> ElfLoader<'a> {
                         slot_allocator.free(copy_cap);
 
                         // 5. Map to Target VSpace
-                        println!("[Loader] Mapping frame {} to target vaddr {:x} with rights {:?} (R={}, W={}). PML4={}", 
+                        log_trace!(libnova::log::DOM_LOADER, "[Loader] Mapping frame {} to target vaddr {:x} with rights {:?} (R={}, W={}). PML4={}", 
                             frame_cap, page_vaddr, target_rights, read, write, target_vspace.pml4_cap);
 
                         target_vspace.map_page(

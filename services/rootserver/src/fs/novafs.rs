@@ -324,15 +324,16 @@ impl<D: BlockDevice + Send + Sync + 'static> NovaFS<D> {
             core::ptr::read_unaligned(target)
         };
         // println!("NovaFS Debug: Loaded disk inode {} size={}", inode_id, inode.size);
-        if inode.type_ == 1 { // Only log directories to reduce noise
-             println!("NovaFS Debug: Loaded dir inode {} size={} direct=[{},{},{},{}]", 
+        if inode.type_ == 1 {
+             log_debug!(libnova::log::DOM_FS,
+                "NovaFS Debug: Loaded dir inode {} size={} direct=[{},{},{},{}]",
                 inode_id, inode.size, inode.direct[0], inode.direct[1], inode.direct[2], inode.direct[3]);
         }
         Ok(inode)
     }
 
     fn free_inode(&self, inode_id: u32) -> Result<(), &'static str> {
-        println!("NovaFS Debug: Freeing inode {}", inode_id);
+        log_debug!(libnova::log::DOM_FS, "NovaFS Debug: Freeing inode {}", inode_id);
         let bitmap_block = self.block_offset + 1 + (inode_id / (BLOCK_SIZE as u32 * 8));
         let bit_offset = (inode_id % (BLOCK_SIZE as u32 * 8)) as usize;
         
@@ -711,7 +712,7 @@ impl<D: BlockDevice + Send + Sync + 'static> Inode for NovaInode<D> {
             1 => Ok(inode.flags as u64), // Get flags
             2 => { // Set flags
                 inode.flags = arg as u32;
-                println!("NovaFS Debug: Control SetFlags inode {} = 0x{:x}", self.inode_number, inode.flags);
+                log_debug!(libnova::log::DOM_FS, "NovaFS Debug: Control SetFlags inode {} = 0x{:x}", self.inode_number, inode.flags);
                 self.fs.update_disk_inode(self.inode_number, &inode)?;
                 Ok(0)
             },
@@ -776,7 +777,7 @@ impl<D: BlockDevice + Send + Sync + 'static> Inode for NovaInode<D> {
                 Ok(0)
             },
             7 => { // Set Flags (e.g. Encryption)
-                println!("NovaFS Debug: Control SetFlags (Op7) inode {} = 0x{:x}", self.inode_number, inode.flags);
+                log_debug!(libnova::log::DOM_FS, "NovaFS Debug: Control SetFlags (Op7) inode {} = 0x{:x}", self.inode_number, inode.flags);
                 inode.flags = arg as u32;
                 inode.ctime = crate::drivers::rtc::RtcDriver::new().get_unix_timestamp();
                 self.fs.update_disk_inode(self.inode_number, &inode)?;
@@ -837,7 +838,7 @@ impl<D: BlockDevice + Send + Sync + 'static> Inode for NovaInode<D> {
                     let entry_name = core::str::from_utf8(&entry.name[..name_len]).unwrap_or("");
                     // println!("DEBUG: lookup scanning '{}' vs target '{}'", entry_name, name);
                     if entry_name == name {
-                         println!("NovaFS Debug: lookup found '{}' (inode={}) in dir inode {}", name, entry.inode_number, self.inode_number);
+                         log_debug!(libnova::log::DOM_FS, "NovaFS Debug: lookup found '{}' (inode={}) in dir inode {}", name, entry.inode_number, self.inode_number);
                          return Ok(self.fs.get_inode_handle(entry.inode_number)?);
                     }
                 }
@@ -850,7 +851,7 @@ impl<D: BlockDevice + Send + Sync + 'static> Inode for NovaInode<D> {
     }
 
     fn create(&self, name: &str, type_: FileType) -> Result<Arc<dyn Inode>, &'static str> {
-        println!("NovaFS Debug: create '{}' inside inode {}", name, self.inode_number);
+        log_debug!(libnova::log::DOM_FS, "NovaFS Debug: create '{}' inside inode {}", name, self.inode_number);
 
         // Fast-fail before allocating an inode. This prevents damaging rollback paths
         // when directory entries already exist but bitmap state is stale.
@@ -1196,7 +1197,7 @@ impl<D: BlockDevice + Send + Sync + 'static> Inode for NovaInode<D> {
     }
 
     fn remove(&self, name: &str) -> Result<(), &'static str> {
-        println!("NovaFS Debug: remove request for '{}' (len={}) in inode {}", name, name.len(), self.inode_number);
+        log_debug!(libnova::log::DOM_FS, "NovaFS Debug: remove request for '{}' (len={}) in inode {}", name, name.len(), self.inode_number);
         let mut parent_inode = self.metadata.lock();
         if parent_inode.type_ != 1 {
             return Err("Not a directory");
@@ -1256,7 +1257,7 @@ impl<D: BlockDevice + Send + Sync + 'static> Inode for NovaInode<D> {
                         
                         let target_inode = self.fs.get_inode_handle(target_inode_num)?;
                         let target_data = *target_inode.metadata.lock();
-                        println!(
+                        log_debug!(libnova::log::DOM_FS,
                             "NovaFS Debug: remove target inode {} type={} size={}",
                             target_inode_num,
                             target_data.type_,
@@ -1375,7 +1376,7 @@ impl<D: BlockDevice + Send + Sync + 'static> NovaInode<D> {
                          let name_len = slot.name.iter().position(|&c| c == 0).unwrap_or(28);
                          let entry_name = core::str::from_utf8(&slot.name[..name_len]).unwrap_or("");
                          if entry_name == name {
-                             println!("NovaFS Debug: add_dir_entry '{}' exists in inode {} (points to inode {})", name, self.inode_number, slot.inode_number);
+                             log_debug!(libnova::log::DOM_FS, "NovaFS Debug: add_dir_entry '{}' exists in inode {} (points to inode {})", name, self.inode_number, slot.inode_number);
                              return Err("File exists");
                          }
                     } else if !found_free {
@@ -1388,7 +1389,7 @@ impl<D: BlockDevice + Send + Sync + 'static> NovaInode<D> {
         }
 
         // Write entry
-        println!("NovaFS Debug: adding entry '{}' (inode={}) to dir inode {}", name, inode_num, self.inode_number);
+        log_debug!(libnova::log::DOM_FS, "NovaFS Debug: adding entry '{}' (inode={}) to dir inode {}", name, inode_num, self.inode_number);
         let entry = DirEntry {
             inode_number: inode_num,
             name: {
@@ -1442,7 +1443,7 @@ impl<D: BlockDevice + Send + Sync + 'static> NovaInode<D> {
         
         if !found_free {
             parent_inode.size = (target_offset + entry_size) as u32;
-            println!("NovaFS Debug: add_dir_entry updating inode {} size to {}", self.inode_number, parent_inode.size);
+            log_debug!(libnova::log::DOM_FS, "NovaFS Debug: add_dir_entry updating inode {} size to {}", self.inode_number, parent_inode.size);
             if let Err(e) = self.fs.update_disk_inode(self.inode_number, &parent_inode) {
                 println!("NovaFS Error: add_dir_entry update inode failed: {}", e);
                 return Err("Inode update failed");
@@ -1698,7 +1699,7 @@ impl<D: BlockDevice + Send + Sync + 'static> NovaInode<D> {
                     
                     if entry_name == name {
                         // Found it. Zero it out.
-                        println!("NovaFS Debug: remove_entry_internal removing '{}' (inode={}) from dir inode {}", name, entry.inode_number, self.inode_number);
+                        log_debug!(libnova::log::DOM_FS, "NovaFS Debug: remove_entry_internal removing '{}' (inode={}) from dir inode {}", name, entry.inode_number, self.inode_number);
                         entry.inode_number = 0;
                         unsafe { core::ptr::write_unaligned(entry_ptr, entry) };
                         modified = true;

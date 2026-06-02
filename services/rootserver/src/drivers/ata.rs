@@ -138,7 +138,7 @@ impl AtaDriver {
             self.is_ssd = true;
         }
 
-        println!("[ATA] Drive Identified: Model='{}', Sectors={}, Size={}MB, Type={}", 
+        log_debug!(libnova::log::DOM_DISK, "[ATA] Drive Identified: Model='{}', Sectors={}, Size={}MB, Type={}", 
             core::str::from_utf8(&self.model).unwrap_or("Unknown").trim(),
             self.sector_count,
             (self.sector_count * 512) / 1024 / 1024,

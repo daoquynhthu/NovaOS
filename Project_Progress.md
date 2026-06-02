@@ -21,13 +21,13 @@
 5. 禁止只记录“做了什么”而不记录“如何验证”。  
 无验证记录的条目视为无效进度。
 
-## 1. 当前快照 (2026-06-01)
+## 1. 当前快照 (2026-06-02)
 
 - 版本：`v0.1.0-alpha`
-- 阶段：`0.8.1`（收口未提交改动 + cd/encrypt/decrypt 服务化 + 僵尸进程自动回收）
+- 阶段：`0.8.2`（分级日志系统 + 三级 slot 泄露修复 → 120s 门禁恢复通过）
 - 项目主线：**NovaFS 完整开发**（功能、正确性、耐久性、可运维性）
 - 架构策略：微内核化是支撑路径，不是目标替代
-- 基线健康度：`cargo check` 通过；`test.ps1` 180s 主回归可通过；120s 快速回归在当前改动后时间预算不足 (已知问题)
+- 基线健康度：`cargo check` 通过；`NOVA_TEST_TIMEOUT_SECONDS=120 ./test.ps1` 全绿通过，无 NotEnoughMemory
 
 ## 2. 总体执行路径图 (NovaFS-First)
 
@@ -785,6 +785,31 @@
 - 下一步：
   - 跑一次完整 `./test.sh` 验证 prompt 驱动改造是否稳定。
   - 继续收缩剩余固定等待，尽量把下一条命令的发送改成“前一条完成后再发”。
+
+### 2026-06-02: 分级日志系统 + 三处 slot 泄露修复 -> 120s 门禁恢复
+
+- 改动范围：
+  - libs/libnova/src/log.rs (新文件): 全局日志级别 AtomicU32 + 16 个域位掩码。
+  - libs/libnova/src/lib.rs: 导出 log 模块 + log_debug!(level>=2) / log_trace!(level>=3) 宏。
+  - rootserver/fs/novafs.rs: 16 处 NovaFS Debug: 迁移到 log_debug!。
+  - rootserver/elf_loader.rs: 8 处 Loader 帧级日志迁移到 log_debug!/log_trace!。
+  - rootserver/acpi.rs + main.rs: 22 处 ACPI 日志迁移到 log_debug!。
+  - rootserver/apic/ioapic/pci: 11 处 APIC/IOAPIC/PCI 日志迁移。
+  - rootserver/memory/ata/block_cache/tests: 7 处 ALLOC/DISK 日志迁移。
+  - test.ps1: 新增 NOVA_LOG_LEVEL 环境变量支持 (默认 1 关闭 debug/trace)。
+  - Slot 泄露修复 #1: Process::spawn 中 fault_ep_cap 提前设置，确保 spawn 失败时 terminate 释放 badged EP slot。
+  - Slot 泄露修复 #2: save_caller 中释放旧 saved_reply_cap 槽位; terminate 中回收 saved_reply_cap。
+  - Slot 泄露修复 #3: 移除 frame_allocator.free() 回收路径，所有 frame cap 统一 delete + free，防止 free_frames 永久占 slot。
+- 验证结果:
+  - cargo check --workspace: 通过。
+  - NOVA_TEST_TIMEOUT_SECONDS=120 ./test.ps1: 全绿通过, All Tests Passed, 退出码 0。
+  - 无 NotEnoughMemory, 无 Failed to allocate slot, 无超时。
+- 根因结论:
+  - NotEnoughMemory 根源是 SlotAllocator 槽位被 free_frames 列表永久占用。每次进程退出 ~23 个 frame cap 存入 free_frames 对应 slot 永不释放。
+  - 修复: frame cap 统一 delete + free slot, 新 frame 从 Untyped 重新分配。单次测试约 4MB 可接受。
+- 下一步:
+  - 为 FrameAllocator 引入物理页面级回收 (而非 cap 级)。
+  - 继续 shell 剩余命令微内核化。
 
 ### 2026-04-06: metadata 阶段改为 helper 完成信号串行推进，2min 门禁恢复通过
 

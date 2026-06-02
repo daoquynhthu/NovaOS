@@ -2256,6 +2256,7 @@ impl Shell {
             badge as seL4_Word
         ) {
             println!("[RUN] Failed to mint badged endpoint: {:?}", e);
+            slots.free(badged_ep_slot);
             return None;
         }
 

@@ -63,7 +63,7 @@ impl AcpiContext {
 
     #[allow(dead_code)]
     pub fn cleanup(&mut self, _vspace: &mut VSpace, slots: &mut SlotAllocator) {
-        println!("[ACPI] Cleaning up resources...");
+        log_debug!(libnova::log::DOM_ACPI, "[ACPI] Cleaning up resources...");
         let root_cnode = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
         
         for i in 0..MAX_MAPPED_CAPS {
@@ -88,7 +88,7 @@ impl AcpiContext {
                     slots.free(slot);
                 }
                 
-                println!("[ACPI] Cleaned up MappedCap index {}", mc.cap_index);
+                log_debug!(libnova::log::DOM_ACPI, "[ACPI] Cleaned up MappedCap index {}", mc.cap_index);
             }
         }
     }
@@ -334,7 +334,7 @@ pub fn init(boot_info: &seL4_BootInfo) -> Option<AcpiInfo> {
 
 pub fn enable_acpi(fadt: &Fadt) {
     if fadt.smi_cmd == 0 {
-        println!("[ACPI] ACPI already enabled (SMI_CMD=0).");
+        log_debug!(libnova::log::DOM_ACPI, "[ACPI] ACPI already enabled (SMI_CMD=0).");
         return;
     }
     
@@ -346,18 +346,18 @@ pub fn enable_acpi(fadt: &Fadt) {
     
     let val = port_io::inw(pm1a_cnt);
     if (val & 1) != 0 {
-        println!("[ACPI] ACPI already enabled.");
+        log_debug!(libnova::log::DOM_ACPI, "[ACPI] ACPI already enabled.");
         return;
     }
     
-    println!("[ACPI] Enabling ACPI...");
+    log_debug!(libnova::log::DOM_ACPI, "[ACPI] Enabling ACPI...");
     if fadt.acpi_enable != 0 {
         port_io::outb(fadt.smi_cmd as u16, fadt.acpi_enable);
         
         // Wait for enabling
         for _ in 0..100 {
             if (port_io::inw(pm1a_cnt) & 1) != 0 {
-                println!("[ACPI] ACPI Enabled successfully.");
+                log_debug!(libnova::log::DOM_ACPI, "[ACPI] ACPI Enabled successfully.");
                 return;
             }
             // spin
@@ -561,7 +561,7 @@ pub fn map_phys(
                         allocated_slots: Vec::new(),
                     });
                     mapped_idx = Some(i);
-                    println!("[ACPI] Registered new mapped cap: index={}, paddr=0x{:x}, vaddr=0x{:x}, size={}", 
+                    log_debug!(libnova::log::DOM_ACPI, "[ACPI] Registered new mapped cap: index={}, paddr=0x{:x}, vaddr=0x{:x}, size={}", 
                         list_idx, cap_paddr, vaddr_start, size_bytes);
                     break;
                 }
@@ -638,7 +638,7 @@ pub fn walk_madt(madt_ptr: *const Madt) {
     let madt_start = madt_ptr as usize;
     let mut offset = core::mem::size_of::<Madt>();
     
-    println!("[ACPI] Walking MADT (Length: {})", length);
+    log_debug!(libnova::log::DOM_ACPI, "[ACPI] Walking MADT (Length: {})", length);
     
     while offset < length {
         let entry_ptr = (madt_start + offset) as *const MadtEntryHeader;
@@ -656,7 +656,7 @@ pub fn walk_madt(madt_ptr: *const Madt) {
                 let pid = lapic.processor_id;
                 let aid = lapic.apic_id;
                 let flags = lapic.flags;
-                println!("[ACPI] MADT Type 0: Local APIC (CPU ID: {}, APIC ID: {}, Flags: 0x{:x})", 
+                log_debug!(libnova::log::DOM_ACPI, "[ACPI] MADT Type 0: Local APIC (CPU ID: {}, APIC ID: {}, Flags: 0x{:x})", 
                     pid, aid, flags);
             },
             1 => { // IO APIC
@@ -664,7 +664,7 @@ pub fn walk_madt(madt_ptr: *const Madt) {
                 let id = ioapic.io_apic_id;
                 let addr = ioapic.io_apic_address;
                 let gsi_base = ioapic.global_system_interrupt_base;
-                println!("[ACPI] MADT Type 1: IO APIC (ID: {}, Addr: 0x{:x}, GSI Base: {})", 
+                log_debug!(libnova::log::DOM_ACPI, "[ACPI] MADT Type 1: IO APIC (ID: {}, Addr: 0x{:x}, GSI Base: {})", 
                     id, addr, gsi_base);
             },
             2 => { // Interrupt Source Override
@@ -673,11 +673,11 @@ pub fn walk_madt(madt_ptr: *const Madt) {
                 let irq = iso.irq_source;
                 let gsi = iso.gsi;
                 let flags = iso.flags;
-                println!("[ACPI] MADT Type 2: ISO (Bus: {}, Source: {}, GSI: {}, Flags: 0x{:x})", 
+                log_debug!(libnova::log::DOM_ACPI, "[ACPI] MADT Type 2: ISO (Bus: {}, Source: {}, GSI: {}, Flags: 0x{:x})", 
                     bus, irq, gsi, flags);
             },
             t => {
-                println!("[ACPI] MADT Type {}: Skipped (Length: {})", t, record_len);
+                log_debug!(libnova::log::DOM_ACPI, "[ACPI] MADT Type {}: Skipped (Length: {})", t, record_len);
             }
         }
         

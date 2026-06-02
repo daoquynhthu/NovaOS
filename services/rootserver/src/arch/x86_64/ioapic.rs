@@ -129,18 +129,18 @@ pub fn init(
     slots: &mut SlotAllocator,
     context: &mut AcpiContext,
 ) -> Option<IoApic> {
-    println!("[IOAPIC] Initializing IOAPIC at paddr 0x{:x}...", paddr);
+    log_debug!(libnova::log::DOM_APIC, "[IOAPIC] Initializing IOAPIC at paddr 0x{:x}...", paddr);
     
     match crate::arch::acpi::map_phys(boot_info, paddr, 0, allocator, slots, context) {
         Ok(vaddr) => {
-            println!("[IOAPIC] Mapped IOAPIC to vaddr 0x{:x}", vaddr);
+            log_debug!(libnova::log::DOM_APIC, "[IOAPIC] Mapped IOAPIC to vaddr 0x{:x}", vaddr);
             let ioapic = unsafe { IoApic::new(vaddr) };
             
             let id = ioapic.id();
             let ver = ioapic.version();
             let max_entries = ioapic.max_redirection_entry();
             
-            println!("[IOAPIC] ID: {}, Version: 0x{:x}, Max Redirection Entries: {}", id, ver, max_entries);
+            log_debug!(libnova::log::DOM_APIC, "[IOAPIC] ID: {}, Version: 0x{:x}, Max Redirection Entries: {}", id, ver, max_entries);
             Some(ioapic)
         },
         Err(e) => {

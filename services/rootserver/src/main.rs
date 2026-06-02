@@ -467,6 +467,12 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
     allocator::init_heap();
     println!("[KERNEL] Heap Initialized (1MB).");
     
+    // Initialise log level from NOVA_LOG_LEVEL environment hint.
+    // Default is 1 (info). Tests may set this to 0 or 2/3 via env var.
+    // This is a compile-time constant for now; runtime env parsing
+    // will be added when the full env framework is available.
+    libnova::log::set_log_level(1);
+    
     // 1. Get BootInfo
     if boot_info_ptr.is_null() {
         // We can't print safely yet, so just hang or rely on DebugPutChar if we had it separately.
@@ -652,15 +658,15 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     let len = rsdt.header.length;
                     let checksum = rsdt.header.checksum;
                     let oem_id_slice = rsdt.header.oem_id;
-                    println!("[ACPI] RSDT Mapped at {:p}, Signature: {}", rsdt_ptr, sig);
-                    println!("[ACPI] RSDT Length: {}", len);
-                    println!("[ACPI] RSDT Checksum: {}", checksum);
-                    println!("[ACPI] RSDT OEM ID: {:?}", core::str::from_utf8(&oem_id_slice).unwrap_or("Unknown"));
+                    log_debug!(libnova::log::DOM_ACPI, "[ACPI] RSDT Mapped at {:p}, Signature: {}", rsdt_ptr, sig);
+                    log_debug!(libnova::log::DOM_ACPI, "[ACPI] RSDT Length: {}", len);
+                    log_debug!(libnova::log::DOM_ACPI, "[ACPI] RSDT Checksum: {}", checksum);
+                    log_debug!(libnova::log::DOM_ACPI, "[ACPI] RSDT OEM ID: {:?}", core::str::from_utf8(&oem_id_slice).unwrap_or("Unknown"));
                     
                     // Iterate RSDT Entries
                     let header_size = core::mem::size_of::<crate::arch::acpi::AcpiTableHeader>();
                     let entries_count = (len as usize - header_size) / 4;
-                    println!("[ACPI] Scanning {} RSDT entries...", entries_count);
+                    log_debug!(libnova::log::DOM_ACPI, "[ACPI] Scanning {} RSDT entries...", entries_count);
                     
                     let entry_start = (rsdt_ptr as usize + header_size) as *const u32;
                     for i in 0..entries_count {
@@ -673,14 +679,14 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                             Ok(ptr_val) => {
                                 let header = unsafe { &*(ptr_val as *const crate::arch::acpi::AcpiTableHeader) };
                                  if let Ok(sig) = core::str::from_utf8(&header.signature) {
-                                     println!("[ACPI] Table [{}] Signature: {}", i, sig);
+                                     log_debug!(libnova::log::DOM_ACPI, "[ACPI] Table [{}] Signature: {}", i, sig);
                                     if sig == "APIC" {
-                                         println!("[ACPI] Found MADT (APIC) Table!");
+                                         log_debug!(libnova::log::DOM_ACPI, "[ACPI] Found MADT (APIC) Table!");
                                          // Check length and map remaining pages if needed
                                          let length = header.length as usize;
                                          if length > 4096 {
                                              let pages_needed = length.div_ceil(4096);
-                                             println!("[ACPI] MADT size {} bytes, mapping {} extra pages...", length, pages_needed - 1);
+                                             log_debug!(libnova::log::DOM_ACPI, "[ACPI] MADT size {} bytes, mapping {} extra pages...", length, pages_needed - 1);
                                              for p in 1..pages_needed {
                                                  let p_paddr = table_paddr + p * 4096;
                                                  if let Err(e) = crate::arch::acpi::map_phys(boot_info, p_paddr, 0, &mut allocator, &mut slot_allocator, &mut acpi_context) {
@@ -693,8 +699,8 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                          let madt = unsafe { &*(ptr_val as *const crate::arch::acpi::Madt) };
                                          let local_apic = madt.local_apic_address;
                                          let flags = madt.flags;
-                                         println!("[ACPI] Local APIC Address: 0x{:x}", local_apic);
-                                         println!("[ACPI] MADT Flags: 0x{:x}", flags);
+                                         log_debug!(libnova::log::DOM_ACPI, "[ACPI] Local APIC Address: 0x{:x}", local_apic);
+                                         log_debug!(libnova::log::DOM_ACPI, "[ACPI] MADT Flags: 0x{:x}", flags);
                                          
                                          // Parse MADT records
                                          crate::arch::acpi::walk_madt(madt);
@@ -889,7 +895,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                              println!("[KERNEL] No IOAPIC found in MADT.");
                                          }
                                      } else if sig == "FACP" {
-                                        println!("[ACPI] Found FADT Table!");
+                                        log_debug!(libnova::log::DOM_ACPI, "[ACPI] Found FADT Table!");
                                         let fadt = unsafe { &*(ptr_val as *const acpi::Fadt) };
                                         acpi::set_fadt(fadt);
                                         acpi::enable_acpi(fadt);

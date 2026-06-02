@@ -38,7 +38,7 @@ impl LocalApic {
             // Enable bit 8, set vector to 0xFF
             self.write(0xF0, svr | 0x100 | 0xFF);
         }
-        println!("[APIC] Local APIC Enabled (SVR=0x{:x})", unsafe { self.read(0xF0) });
+        log_debug!(libnova::log::DOM_APIC, "[APIC] Local APIC Enabled (SVR=0x{:x})", unsafe { self.read(0xF0) });
     }
 }
 
@@ -49,17 +49,17 @@ pub fn init(
     slots: &mut SlotAllocator,
     context: &mut AcpiContext,
 ) -> Option<LocalApic> {
-    println!("[APIC] Initializing Local APIC at paddr 0x{:x}...", paddr);
+    log_debug!(libnova::log::DOM_APIC, "[APIC] Initializing Local APIC at paddr 0x{:x}...", paddr);
     
     // Map the APIC page
     match crate::arch::acpi::map_phys(boot_info, paddr, 0, allocator, slots, context) {
         Ok(vaddr) => {
-            println!("[APIC] Mapped Local APIC to vaddr 0x{:x}", vaddr);
+            log_debug!(libnova::log::DOM_APIC, "[APIC] Mapped Local APIC to vaddr 0x{:x}", vaddr);
             let mut apic = unsafe { LocalApic::new(vaddr) };
             
             let id = apic.id();
             let version = apic.version();
-            println!("[APIC] ID: 0x{:x}, Version: 0x{:x}", id, version);
+            log_debug!(libnova::log::DOM_APIC, "[APIC] ID: 0x{:x}, Version: 0x{:x}", id, version);
             
             apic.enable();
             Some(apic)
