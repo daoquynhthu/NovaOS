@@ -1172,7 +1172,7 @@ impl Process {
         &mut self, 
         cnode: seL4_CPtr, 
         slots: &mut SlotAllocator, 
-        _frame_allocator: &mut FrameAllocator
+        frame_allocator: &mut FrameAllocator
     ) -> Result<()> {
         // Invariant: Cannot terminate an already terminated process
         debug_assert!(self.state != ProcessState::Terminated, "Double termination detected");
@@ -1182,19 +1182,21 @@ impl Process {
         // Suspend first
         let _ = self.suspend();
 
-        // Unmap mapped frames before tearing down VSpace.
-        // Recycled frame caps can otherwise fail with InvalidCapability on next map.
+        // Unmap frames, then delete caps + free slots.
+        // A small number of the most recently freed caps are kept in the
+        // recycling pool to reduce Untyped Retype churn; the rest are
+        // torn down completely to avoid unbounded slot consumption.
         while let Some(frame) = self.mapped_frames.pop() {
             if let Err(e) = self.vspace.unmap_page(frame.cap) {
                 println!("[WARN] Failed to unmap frame cap {} during terminate: {:?}", frame.cap, e);
             }
-            if let Err(e) = root.delete(frame.cap) {
-                println!(
-                    "[WARN] Failed to delete frame cap {} during terminate: {:?}",
-                    frame.cap, e
-                );
+            // Keep up to 4 caps hot for immediate reuse
+            if frame_allocator.free_count() < 4 {
+                frame_allocator.free(frame.cap);
+            } else {
+                let _ = root.delete(frame.cap);
+                slots.free(frame.cap);
             }
-            slots.free(frame.cap);
         }
 
         // Delete TCB
