@@ -24,7 +24,7 @@
 ## 1. 当前快照 (2026-06-02)
 
 - 版本：`v0.1.0-alpha`
-- 阶段：`0.8.2`（分级日志系统 + 三级 slot 泄露修复 → 120s 门禁恢复通过）
+- 阶段：`0.8.2`（分级日志系统 + 三级 slot 泄露修复 + 有界 frame 回收池 → 120s 门禁稳定通过）
 - 项目主线：**NovaFS 完整开发**（功能、正确性、耐久性、可运维性）
 - 架构策略：微内核化是支撑路径，不是目标替代
 - 基线健康度：`cargo check` 通过；`NOVA_TEST_TIMEOUT_SECONDS=120 ./test.ps1` 全绿通过，无 NotEnoughMemory
@@ -786,7 +786,7 @@
   - 跑一次完整 `./test.sh` 验证 prompt 驱动改造是否稳定。
   - 继续收缩剩余固定等待，尽量把下一条命令的发送改成“前一条完成后再发”。
 
-### 2026-06-02: 分级日志系统 + 三处 slot 泄露修复 -> 120s 门禁恢复
+### 2026-06-02: 分级日志系统 + 三处 slot 泄露修复 + 有界 frame 回收池 -> 120s 门禁稳定通过
 
 - 改动范围：
   - libs/libnova/src/log.rs (新文件): 全局日志级别 AtomicU32 + 16 个域位掩码。
@@ -800,16 +800,21 @@
   - Slot 泄露修复 #1: Process::spawn 中 fault_ep_cap 提前设置，确保 spawn 失败时 terminate 释放 badged EP slot。
   - Slot 泄露修复 #2: save_caller 中释放旧 saved_reply_cap 槽位; terminate 中回收 saved_reply_cap。
   - Slot 泄露修复 #3: 移除 frame_allocator.free() 回收路径，所有 frame cap 统一 delete + free，防止 free_frames 永久占 slot。
+  - **P1 有界 frame 回收池**: terminate() 改回 delete+free frame cap slot，但保留 4 个热 caps 在 pool 中。pool 不再无限增长，同时减少 Untyped Retype 频率。
+  - Process::spawn 中 Self::create 失败时清理已 mint 的 badged EP slot (P0 补漏)。
 - 验证结果:
   - cargo check --workspace: 通过。
   - NOVA_TEST_TIMEOUT_SECONDS=120 ./test.ps1: 全绿通过, All Tests Passed, 退出码 0。
   - 无 NotEnoughMemory, 无 Failed to allocate slot, 无超时。
-- 根因结论:
-  - NotEnoughMemory 根源是 SlotAllocator 槽位被 free_frames 列表永久占用。每次进程退出 ~23 个 frame cap 存入 free_frames 对应 slot 永不释放。
-  - 修复: frame cap 统一 delete + free slot, 新 frame 从 Untyped 重新分配。单次测试约 4MB 可接受。
+- 根因结论 (更新):
+  - NotEnoughMemory 根源是 SlotAllocator 槽位不足。pc99 上 `empty.end - empty.start ≈ 400` 可用槽位。每进程 ~23 个 frame cap 永久入池 × 17 迭代即耗尽槽位。
+  - 修复: 只有 4 个热 frame cap 入池，其余 delete+free。按 ~4KB/page × 400 slots = 1.6MB 页数据被重连恢复但 slot 不涨。
+- 启示:
+  - 纯 cap 级回收在 SlotAllocator 范围有限的 x86 pc99 配置下不可行。需要改用物理地址级回收（记录物理页面地址，alloc 时从对应 Untyped Retype 新 cap）。
+  - 但当前方案（4 热 cap + delete+free其余）已经稳定通过 120s 门禁，Untyped 消耗可控。
 - 下一步:
-  - 为 FrameAllocator 引入物理页面级回收 (而非 cap 级)。
-  - 继续 shell 剩余命令微内核化。
+  - 继续 shell 剩余命令微内核化 (rm 默认路由切到 fs_server)。
+  - 长远考虑：为 FrameAllocator 引入物理地址跟踪 + 按地址 Untyped Retype 回收。
 
 ### 2026-04-06: metadata 阶段改为 helper 完成信号串行推进，2min 门禁恢复通过
 
