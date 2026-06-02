@@ -670,7 +670,15 @@ impl Process {
         let cspace_root = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
         let authority = seL4_RootCNodeCapSlots::seL4_CapInitThreadTCB as seL4_CPtr;
 
-        let mut process = Self::create(allocator, slots, boot_info, asid_pool, name, uid, gid)?;
+        let mut process = match Self::create(allocator, slots, boot_info, asid_pool, name, uid, gid) {
+            Ok(p) => p,
+            Err(e) => {
+                let root = CNode::new(cspace_root, 64);
+                let _ = root.delete(endpoint_cap);
+                slots.free(endpoint_cap);
+                return Err(e);
+            }
+        };
         process.ppid = ppid;
         // Set caps early so terminate() always frees the badged EP slot,
         // even if initialize() fails before configure() is called.
