@@ -179,6 +179,7 @@
 | ELF/Multiboot checker | `scripts/check_mb.py` | 1-114 |
 | .gitignore | `.gitignore` | 1-65 |
 | .gitattributes | `.gitattributes` | 1-32 |
+| CI workflow | `.github/workflows/ci.yml` | 1-83 |
 | .gitmodules (3 submodules) | `.gitmodules` | 1-9 |
 | Submodule pins | seL4 `04fba8577`, tools `fbfc63978`, util_libs `07a7e15b8` | — |
 
@@ -462,7 +463,7 @@ E:\System/
 | fs_server as real data plane authority | In progress (blocked by deadlock) |
 | Shell command full service migration | In progress (basic commands done) |
 | Crash recovery / durability testing | Not automated |
-| CI/CD pipeline | Not started |
+| CI/CD pipeline | Basic GitHub Actions workflow created (`.github/workflows/ci.yml`); fmt/check/clippy on Linux, fmt on Windows |
 | Rust edition 2024 migration | Not done (file-level warnings) |
 | RISC-V port | Not started (config exists in seL4-sys) |
 | std environment | Not applicable (no_std everywhere) |

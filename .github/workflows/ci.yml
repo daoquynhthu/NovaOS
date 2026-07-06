@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-checks-linux:
+    name: Rust checks (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build \
+            python3 python3-ply python3-jinja2 python3-lxml \
+            python3-six python3-future python3-pyelftools \
+            python3-jsonschema python3-yaml python3-psutil \
+            python3-bs4 python3-pexpect
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        # Intentionally no `toolchain`/`components`/`targets` inputs:
+        # dtolnay/rust-toolchain reads rust-toolchain.toml in the repo root,
+        # which pins the channel and declares components/targets.
+
+      - name: Cache cargo and seL4 build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            build
+          key: ${{ runner.os }}-novaos-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml', 'CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-novaos-
+
+      - name: Build seL4 kernel headers
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DKernelSel4Arch=x86_64 \
+            -DKernelPlatform=pc99
+          cmake --build build --target kernel.elf
+
+      - name: Export seL4 build env
+        run: |
+          echo "SEL4_OUT_DIR=$PWD/build/kernel" >> "$GITHUB_ENV"
+          echo "SEL4_KERNEL_DIR=$PWD/kernel/seL4" >> "$GITHUB_ENV"
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo check
+        run: cargo check --workspace --target x86_64-unknown-none
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --target x86_64-unknown-none
+
+  fmt-windows:
+    name: Format check (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        # Reads rust-toolchain.toml; fmt only needs rustfmt which is declared there.
+
+      - name: cargo fmt --check
+        run: cargo fmt --check

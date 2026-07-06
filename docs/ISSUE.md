@@ -53,12 +53,15 @@
 | ISSUE-35 | [P2] `scripts/cmake-common.sh` 在被 source 时全局设置 `set -euo pipefail`，影响调用方 shell 选项 | 🟢 已修复 | 审计 [TASK-2.1]；已从 `cmake-common.sh` 移除该设置，调用方脚本保留 |
 | ISSUE-36 | [P2] PowerShell 脚本与 CMake 的 Rust 构建输出目录不一致 | 🟢 已修复 | 审计 [TASK-3.1]；CMake 不再覆盖 `CARGO_TARGET_DIR`，统一使用 workspace `target/` |
 | ISSUE-37 | [P2] INDEX.md 未随 Phase 1 P1 变更同步更新 | 🟢 已修复 | 审计 [TASK-1]-[TASK-6]；已更新行号、新增 `.gitattributes`、`nova_rust_services` 说明 |
+| ISSUE-40 | [P2] CI 显式覆盖 toolchain components，未安装 rust-toolchain.toml 声明的 llvm-tools | 🟢 已修复 | 审计 [TASK-2.2]；已移除 ci.yml 中的 components/targets 显式传入 |
+| ISSUE-41 | [P2] INDEX.md 已知前线仍标注 CI/CD pipeline 为 Not started，未同步 ci.yml 新增 | 🟢 已修复 | 审计 [TASK-2.1]；已更新 Known Frontiers 与 Build & Config 章节 |
+| ISSUE-42 | [P2] TASK.md 2.2 验证描述与 ci.yml 不符：action 仍显式传入 components/targets | 🟢 已修复 | 审计 [TASK-2.2]；已更新 TASK.md 描述并移除 ci.yml 显式传入 |
 
 ## P3 — 建议
 
 | ID | 问题 | 状态 | 来源 |
 |----|------|------|------|
-| ISSUE-25 | CI/CD 缺失（GitHub Actions） | 🔴 待推进 | 基础设施审计 [PLAN-P6.1] |
+| ISSUE-25 | CI/CD 缺失（GitHub Actions） | 🟢 已修复 | 基础设施审计 [PLAN-P6.1]；`.github/workflows/ci.yml` 已创建 |
 | ISSUE-26 | `.editorconfig` 缺失 | 🔴 待推进 | 基础设施审计 [PLAN-P6.2] |
 | ISSUE-27 | `cargo-deny` / 依赖审计未配置 | 🔴 待推进 | 基础设施审计 [PLAN-P6.3] |
 | ISSUE-28 | 缺少 Docker 构建环境 | 🔴 待推进 | 基础设施审计 [PLAN-P6.4] |
@@ -66,6 +69,8 @@
 | ISSUE-30 | 工作区依赖版本 `linked_list_allocator` 和 `spin` 在多个 Cargo.toml 中独立声明 | 🟢 已修复 | 构建审计 [TASK-4.1] |
 | ISSUE-38 | [P3] CMakeLists.txt 中定义了未使用的 *_SRC 变量 | 🟢 已修复 | 审计 [TASK-3.1]；已移除 `ROOTSERVER_SRC` 等未使用变量 |
 | ISSUE-39 | [P3] Phase 1 P1 二次审计通过，无新增问题 | ⚪ 已关闭 | 二次审计 [TASK-1]-[TASK-6]；ISSUE-36/37/38 已修复，cargo check 通过 |
+| ISSUE-43 | [P3] CI 未配置 cargo/seL4 构建缓存，每次运行全量重建 | 🟢 已修复 | 审计 [TASK-2.3]；已添加 `actions/cache@v4` 缓存 `~/.cargo`、`target`、`build` |
+| ISSUE-44 | [P3] Phase 1 P2 二次审计通过，无新增问题 | ⚪ 已关闭 | 二次审计 [TASK-1]/[TASK-2]；ISSUE-40/41/42/43/25 已修复，cargo check 通过 |
 
 ---
 
@@ -75,6 +80,6 @@
 |--------|------|-----------|-----------|-----------|-----------|
 | P0 | 3 | 1 | 1 | 1 | 0 |
 | P1 | 12 | 4 | 0 | 6 | 2 |
-| P2 | 16 | 7 | 0 | 8 | 1 |
-| P3 | 8 | 4 | 0 | 3 | 1 |
-| **合计** | **39** | **16** | **1** | **18** | **4** |
+| P2 | 19 | 7 | 0 | 11 | 1 |
+| P3 | 10 | 3 | 0 | 5 | 2 |
+| **合计** | **44** | **15** | **1** | **23** | **5** |

@@ -82,3 +82,20 @@
 - 独立子 Agent 审计 + 二次审计通过，无剩余新增问题
 
 **关联**：`ISSUE-7/8/9/10/11/30/36/37/38/39`
+
+## 2026-07-06: Phase 1 P2 — Toolchain components 与 GitHub Actions CI
+
+**完成项**：
+- `rust-toolchain.toml` components 增加 `clippy`、`rustfmt`、`llvm-tools`
+- 验证 `cargo fmt --check` 与 `cargo clippy --workspace --target x86_64-unknown-none` 可运行
+- 创建 `.github/workflows/ci.yml`：
+  - Linux job：安装系统依赖 → 读取 `rust-toolchain.toml` 安装 Rust → 缓存 cargo/seL4 构建 → 构建 seL4 kernel → 运行 fmt/check/clippy
+  - Windows job：读取 `rust-toolchain.toml` → 运行 `cargo fmt --check`
+- 更新 `docs/INDEX.md`：新增 CI workflow 条目，Known Frontiers 中 CI/CD 状态更新
+- 关闭 `ISSUE-25`、`ISSUE-40`、`ISSUE-41`、`ISSUE-42`、`ISSUE-43`、`ISSUE-44`
+
+**验证**：
+- `cargo check --workspace --target x86_64-unknown-none`（配合 `SEL4_OUT_DIR` / `SEL4_KERNEL_DIR`）— 全绿通过
+- 独立子 Agent 审计 + 二次审计通过，无剩余新增问题
+
+**关联**：`ISSUE-25/40/41/42/43/44`
