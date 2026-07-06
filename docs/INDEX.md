@@ -156,26 +156,29 @@
 
 | What | File | Line |
 |---|---|---|
-| Workspace Cargo.toml | `Cargo.toml` | 1-36 |
+| Workspace Cargo.toml | `Cargo.toml` | 1-40 |
 | Workspace members (6 crates) | `Cargo.toml` | 2-9 |
-| Workspace lints | `Cargo.toml` | 21-36 |
+| Workspace dependencies | `Cargo.toml` | 12-15 |
+| Workspace lints | `Cargo.toml` | 25-40 |
 | Cargo target config | `.cargo/config.toml` | 1-5 |
-| Rust toolchain (nightly) | `rust-toolchain.toml` | 1-4 |
+| Rust toolchain (pinned nightly) | `rust-toolchain.toml` | 1-4 |
 | Rustfmt config | `rustfmt.toml` | 1-10 |
-| Root CMakeLists.txt | `CMakeLists.txt` | 1-133 |
+| Root CMakeLists.txt | `CMakeLists.txt` | 1-145 |
 | Kernel config defaults | `CMakeLists.txt` | 42-56 |
 | Trace level system | `CMakeLists.txt` | 58-80 |
-| Build script (Win) | `scripts/build.ps1` | 1-37 |
+| Rust service build targets | `CMakeLists.txt` | 88-136 (`nova_rust_services`) |
+| Build script (Win) | `scripts/build.ps1` | 1-32 |
 | Build script (Linux) | `scripts/build.sh` | 1-12 |
-| Test script (Win) | `scripts/test.ps1` | 1-1095 |
+| Test script (Win) | `scripts/test.ps1` | 1-1086 |
 | Test script (Linux) | `scripts/test.sh` | 1-26 |
 | QEMU launcher (Win) | `scripts/run_qemu.ps1` | 1-46 |
 | QEMU launcher (Linux) | `scripts/run_qemu.sh` | 1-12 |
 | Environment setup (Win) | `scripts/init_env.ps1` | 1-35 |
 | Environment setup (Linux) | `scripts/init_env.sh` | 1-43 |
-| Common CMake config (Linux) | `scripts/cmake-common.sh` | 1-54 |
+| Common CMake config (Linux) | `scripts/cmake-common.sh` | 1-53 |
 | ELF/Multiboot checker | `scripts/check_mb.py` | 1-114 |
 | .gitignore | `.gitignore` | 1-65 |
+| .gitattributes | `.gitattributes` | 1-32 |
 | .gitmodules (3 submodules) | `.gitmodules` | 1-9 |
 | Submodule pins | seL4 `04fba8577`, tools `fbfc63978`, util_libs `07a7e15b8` | — |
 

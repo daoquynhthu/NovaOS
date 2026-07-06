@@ -2,7 +2,6 @@
 $ErrorActionPreference = "Stop"
 
 # Set up environment variables for seL4-sys build
-Set-Location (Split-Path $PSScriptRoot -Parent)
 $root = Split-Path $PSScriptRoot -Parent
 $buildDir = if ($env:NOVA_BUILD_DIR) { $env:NOVA_BUILD_DIR } else { "build" }
 $buildRoot = Join-Path $root $buildDir
@@ -14,16 +13,12 @@ Write-Host "SEL4_KERNEL_DIR: $env:SEL4_KERNEL_DIR"
 
 # Build User App first
 Write-Host "Building User App (Rust)..." -ForegroundColor Cyan
-Set-Location "services/user_app"
-cargo build --target x86_64-unknown-none --release
+cargo build --manifest-path "$root/services/user_app/Cargo.toml" --target x86_64-unknown-none --release
 if ($LASTEXITCODE -ne 0) { Write-Error "User App build failed"; exit 1 }
-Set-Location "../.."
 
 Write-Host "Building RootServer (Rust)..." -ForegroundColor Cyan
-Set-Location "services/rootserver"
-cargo build --target x86_64-unknown-none --release
+cargo build --manifest-path "$root/services/rootserver/Cargo.toml" --target x86_64-unknown-none --release
 if ($LASTEXITCODE -ne 0) { Write-Error "Cargo build failed"; exit 1 }
-Set-Location "../.."
 
 # Verify Kernel exists
 if (-not (Test-Path (Join-Path $buildRoot "kernel/kernel32.elf"))) {

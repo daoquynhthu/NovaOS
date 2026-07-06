@@ -63,3 +63,22 @@
 - 独立子 Agent 审计 + 二次审计通过，无剩余新增问题
 
 **关联**：`ISSUE-20/21/22/31/32/33/34/35`
+
+## 2026-07-06: Phase 1 P1 — 脚本/CMake/Cargo 配置统一
+
+**完成项**：
+- `scripts/build.ps1` / `scripts/test.ps1` 改用 `--manifest-path`，移除 `Set-Location services/*` 反模式
+- `scripts/test.ps1` QEMU 路径改为依赖 PATH，移除 `C:\Program Files\qemu` 硬编码
+- `CMakeLists.txt` 扩展为构建全部四个 Rust 服务，目标重命名为 `nova_rust_services`
+- 统一 CMake 与 PowerShell 的 Rust 构建输出目录为 workspace `target/`，移除 `CARGO_TARGET_DIR` 覆盖
+- 根 `Cargo.toml` 新增 `[workspace.dependencies]`；各 member crate 改用 `workspace = true`
+- 创建 `.gitattributes`，规范 LF 行尾与二进制文件处理
+- `rust-toolchain.toml` 固定为 `nightly-2026-01-14`
+- 更新 `docs/INDEX.md` 行号与新增条目
+- 关闭 `ISSUE-7`、`ISSUE-8`、`ISSUE-9`、`ISSUE-10`、`ISSUE-11`、`ISSUE-30`、`ISSUE-36`、`ISSUE-37`、`ISSUE-38`、`ISSUE-39`
+
+**验证**：
+- `cargo check --workspace --target x86_64-unknown-none`（配合 `SEL4_OUT_DIR` / `SEL4_KERNEL_DIR`）— 全绿通过
+- 独立子 Agent 审计 + 二次审计通过，无剩余新增问题
+
+**关联**：`ISSUE-7/8/9/10/11/30/36/37/38/39`

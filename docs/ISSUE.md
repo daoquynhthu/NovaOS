@@ -23,11 +23,11 @@
 | ISSUE-4 | 工作区 lint `[workspace.lints.clippy]` 需运行 `cargo clippy` 才能生效，`cargo check` 只检查 `[workspace.lints.rust]`；当前无人运行 clippy | 🔴 待修复 | 初步审计 |
 | ISSUE-5 | 全局尾部空白：33+ 个 `.rs` 文件存在 trailing whitespace | 🔴 待修复 | 格式审计 |
 | ISSUE-6 | 5 个文件 CRLF 行尾（`rustfmt.toml` 声明 Unix）：`CMakeLists.txt`, `libs/libnova/src/env.rs`, `services/*/allocator.rs` ×3 | 🔴 待修复 | 格式审计 |
-| ISSUE-7 | `rust-toolchain.toml` 未固定 nightly 日期，夜间变动可能 break build | 🔴 待修复 | 构建审计 |
-| ISSUE-8 | 缺少 `.gitattributes`，行尾无规范控制 | 🔴 待修复 | 构建审计 |
-| ISSUE-9 | `build.ps1` 使用 `Set-Location "services/user_app"` 切目录后再 `Set-Location "../.."` 返回，路径语义隐晦 | 🟡 待重构 | 构建审计 [PLAN-P1.3] |
-| ISSUE-10 | QEMU 路径硬编码 `C:\Program Files\qemu\...`，非标准安装失败 | 🔴 待修复 | 构建审计 [PLAN-P1.4] |
-| ISSUE-11 | CMake 只构建 rootserver Rust 目标，未包含 fs_server/serial_server/user_app | 🔴 待修复 | 构建审计 [PLAN-P1.5] |
+| ISSUE-7 | `rust-toolchain.toml` 未固定 nightly 日期，夜间变动可能 break build | 🟢 已修复 | 构建审计 [TASK-6.1] |
+| ISSUE-8 | 缺少 `.gitattributes`，行尾无规范控制 | 🟢 已修复 | 构建审计 [TASK-5.1] |
+| ISSUE-9 | `build.ps1` 使用 `Set-Location "services/user_app"` 切目录后再 `Set-Location "../.."` 返回，路径语义隐晦 | 🟢 已修复 | 构建审计 [TASK-1.1] |
+| ISSUE-10 | QEMU 路径硬编码 `C:\Program Files\qemu\...`，非标准安装失败 | 🟢 已修复 | 构建审计 [TASK-2.1] |
+| ISSUE-11 | CMake 只构建 rootserver Rust 目标，未包含 fs_server/serial_server/user_app | 🟢 已修复 | 构建审计 [TASK-3.1] |
 | ISSUE-12 | 3 个子模块（`seL4_tools`, `util_libs`）追踪 `heads/master` 未 pin 到发布 tag | 🔴 待修复 | 子模块审计 |
 | ISSUE-13 | `INDEX.md` 需要持续与代码同步（AGENT.md Step 7 要求） | 🟢 已初始创建 | 文档审计 |
 | ISSUE-31 | [P1] `AGENT.md` 被代理修改，违反“仅仓库维护者可更新”与单次变更单一意图约束 | ⚪ 已关闭 | 审计 [TASK-1]/[TASK-2]；经用户明确授权调整 AGENT.md 表述 |
@@ -51,6 +51,8 @@
 | ISSUE-33 | [P2] `INDEX.md` 未随脚本重构更新（行号错误且未收录 `scripts/cmake-common.sh`） | 🟢 已修复 | 审计 [TASK-2.1]-[TASK-2.4]；已更新 Build & Config 与 Documentation 章节 |
 | ISSUE-34 | [P2] `ISSUE-20`/`ISSUE-21` 未在 TASK-1/TASK-2 完成后标记为已修复 | 🟢 已修复 | 审计 [TASK-1]/[TASK-2]；已关闭相关 issue |
 | ISSUE-35 | [P2] `scripts/cmake-common.sh` 在被 source 时全局设置 `set -euo pipefail`，影响调用方 shell 选项 | 🟢 已修复 | 审计 [TASK-2.1]；已从 `cmake-common.sh` 移除该设置，调用方脚本保留 |
+| ISSUE-36 | [P2] PowerShell 脚本与 CMake 的 Rust 构建输出目录不一致 | 🟢 已修复 | 审计 [TASK-3.1]；CMake 不再覆盖 `CARGO_TARGET_DIR`，统一使用 workspace `target/` |
+| ISSUE-37 | [P2] INDEX.md 未随 Phase 1 P1 变更同步更新 | 🟢 已修复 | 审计 [TASK-1]-[TASK-6]；已更新行号、新增 `.gitattributes`、`nova_rust_services` 说明 |
 
 ## P3 — 建议
 
@@ -61,7 +63,9 @@
 | ISSUE-27 | `cargo-deny` / 依赖审计未配置 | 🔴 待推进 | 基础设施审计 [PLAN-P6.3] |
 | ISSUE-28 | 缺少 Docker 构建环境 | 🔴 待推进 | 基础设施审计 [PLAN-P6.4] |
 | ISSUE-29 | `.env.example` 已创建但脚本未支持 `.env` 加载 | 🟢 已创建 | 环境审计 |
-| ISSUE-30 | 工作区依赖版本 `linked_list_allocator` 和 `spin` 在多个 Cargo.toml 中独立声明 | 🔴 待推进 | 构建审计 [PLAN-P1.6] |
+| ISSUE-30 | 工作区依赖版本 `linked_list_allocator` 和 `spin` 在多个 Cargo.toml 中独立声明 | 🟢 已修复 | 构建审计 [TASK-4.1] |
+| ISSUE-38 | [P3] CMakeLists.txt 中定义了未使用的 *_SRC 变量 | 🟢 已修复 | 审计 [TASK-3.1]；已移除 `ROOTSERVER_SRC` 等未使用变量 |
+| ISSUE-39 | [P3] Phase 1 P1 二次审计通过，无新增问题 | ⚪ 已关闭 | 二次审计 [TASK-1]-[TASK-6]；ISSUE-36/37/38 已修复，cargo check 通过 |
 
 ---
 
@@ -70,7 +74,7 @@
 | 优先级 | 总数 | 🔴 待修复 | 🟡 修复中 | 🟢 已修复 | ⚪ 已关闭 |
 |--------|------|-----------|-----------|-----------|-----------|
 | P0 | 3 | 1 | 1 | 1 | 0 |
-| P1 | 11 | 7 | 1 | 1 | 2 |
-| P2 | 14 | 7 | 0 | 6 | 1 |
-| P3 | 6 | 5 | 0 | 1 | 0 |
-| **合计** | **34** | **20** | **2** | **9** | **3** |
+| P1 | 12 | 4 | 0 | 6 | 2 |
+| P2 | 16 | 7 | 0 | 8 | 1 |
+| P3 | 8 | 4 | 0 | 3 | 1 |
+| **合计** | **39** | **16** | **1** | **18** | **4** |

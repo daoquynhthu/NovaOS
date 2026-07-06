@@ -1,0 +1,32 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Rust source files
+*.rs text eol=lf diff=rust
+*.toml text eol=lf
+
+# Shell / build scripts
+*.sh text eol=lf
+*.ps1 text eol=lf
+*.bash text eol=lf
+
+# CMake / C / assembly
+CMakeLists.txt text eol=lf
+*.cmake text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.S text eol=lf
+*.lds text eol=lf
+
+# Markdown / docs
+*.md text eol=lf
+
+# Python
+*.py text eol=lf
+
+# Binary files — do not modify line endings
+*.elf binary
+*.img binary
+*.bin binary
+*.iso binary
+*.pcap binary

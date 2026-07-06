@@ -1,7 +1,6 @@
 $ErrorActionPreference = "Stop"
 
 # Set up environment variables
-Set-Location (Split-Path $PSScriptRoot -Parent)
 $root = Split-Path $PSScriptRoot -Parent
 $buildDir = if ($env:NOVA_BUILD_DIR) { $env:NOVA_BUILD_DIR } else { "build" }
 $buildRoot = Join-Path $root $buildDir
@@ -147,28 +146,20 @@ function Invoke-TestIoSleepMs {
 }
 
 Write-Host "Building User App..." -ForegroundColor Cyan
-Set-Location "services/user_app"
-cargo build --target x86_64-unknown-none --release
+cargo build --manifest-path "$root/services/user_app/Cargo.toml" --target x86_64-unknown-none --release
 if ($LASTEXITCODE -ne 0) { Write-Error "User App build failed"; exit 1 }
-Set-Location "../.."
 
 Write-Host "Building Serial Server..." -ForegroundColor Cyan
-Set-Location "services/serial_server"
-cargo build --target x86_64-unknown-none --release
+cargo build --manifest-path "$root/services/serial_server/Cargo.toml" --target x86_64-unknown-none --release
 if ($LASTEXITCODE -ne 0) { Write-Error "Serial Server build failed"; exit 1 }
-Set-Location "../.."
 
 Write-Host "Building FS Server..." -ForegroundColor Cyan
-Set-Location "services/fs_server"
-cargo build --target x86_64-unknown-none --release
+cargo build --manifest-path "$root/services/fs_server/Cargo.toml" --target x86_64-unknown-none --release
 if ($LASTEXITCODE -ne 0) { Write-Error "FS Server build failed"; exit 1 }
-Set-Location "../.."
 
 Write-Host "Building RootServer..." -ForegroundColor Cyan
-Set-Location "services/rootserver"
-cargo build --target x86_64-unknown-none --release
+cargo build --manifest-path "$root/services/rootserver/Cargo.toml" --target x86_64-unknown-none --release
 if ($LASTEXITCODE -ne 0) { Write-Error "RootServer build failed"; exit 1 }
-Set-Location "../.."
 
 $executable = Join-Path $root "target/x86_64-unknown-none/release/rootserver"
 $kernelElf = Join-Path $buildRoot "kernel/kernel32.elf"
@@ -177,11 +168,11 @@ if (-not (Test-Path $kernelElf)) {
     exit 1
 }
 
-# QEMU Path
+# QEMU Path — rely on PATH; fail fast if not installed.
 $qemu = "qemu-system-x86_64"
 if (-not (Get-Command $qemu -ErrorAction SilentlyContinue)) {
-    $commonPaths = @("C:\Program Files\qemu\qemu-system-x86_64.exe", "C:\Program Files (x86)\qemu\qemu-system-x86_64.exe")
-    foreach ($path in $commonPaths) { if (Test-Path $path) { $qemu = $path; break } }
+    Write-Error "qemu-system-x86_64 not found in PATH. Please install QEMU and add it to PATH."
+    exit 1
 }
 
 # Disk Image

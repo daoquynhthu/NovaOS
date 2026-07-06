@@ -10,4 +10,4 @@ workspace = true
 
 [dependencies]
 sel4-sys = { path = "../seL4-sys" }
-spin = "0.9.8"
+spin = { workspace = true }

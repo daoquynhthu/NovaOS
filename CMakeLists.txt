@@ -86,27 +86,33 @@ set(PLATFORM ${KernelPlatform} CACHE STRING "Platform")
 add_subdirectory(${KERNEL_PATH} kernel)
 
 # 3. Rust 构建集成
-# 确保 Cargo 输出目录在 CMake 构建目录下
-set(CARGO_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/cargo")
-set(ENV{CARGO_TARGET_DIR} "${CARGO_TARGET_DIR}")
-
 # [关键] 导出 seL4 构建产物目录给 Rust build.rs
 # seL4 的构建系统将头文件生成在 ${CMAKE_CURRENT_BINARY_DIR}/kernel
 set(SEL4_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/kernel")
 set(ENV{SEL4_OUT_DIR} "${SEL4_OUT_DIR}")
 
-# RootServer 路径
-set(ROOTSERVER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/services/rootserver")
-set(ROOTSERVER_BIN "${CARGO_TARGET_DIR}/${KernelSel4Arch}-unknown-none/release/rootserver")
+# Rust service paths (cargo workspace default target dir)
+set(RUST_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/target")
+set(ROOTSERVER_BIN "${RUST_TARGET_DIR}/${KernelSel4Arch}-unknown-none/release/rootserver")
+set(FS_SERVER_BIN "${RUST_TARGET_DIR}/${KernelSel4Arch}-unknown-none/release/fs_server")
+set(SERIAL_SERVER_BIN "${RUST_TARGET_DIR}/${KernelSel4Arch}-unknown-none/release/serial_server")
+set(USER_APP_BIN "${RUST_TARGET_DIR}/${KernelSel4Arch}-unknown-none/release/user_app")
 
-# 自定义命令构建 Rust RootServer
-add_custom_command(
-    OUTPUT ${ROOTSERVER_BIN}
-    COMMAND ${CMAKE_COMMAND} -E env "SEL4_OUT_DIR=${SEL4_OUT_DIR}" "SEL4_KERNEL_DIR=${KERNEL_PATH}" "CARGO_TARGET_DIR=${CARGO_TARGET_DIR}" cargo build --release --manifest-path ${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml -p rootserver --target ${KernelSel4Arch}-unknown-none
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/kernel/libsel4/include/sel4/invocation.h
-    COMMENT "Compiling NovaOS RootServer (Rust)..."
-)
+# Helper to define a Rust service build command
+function(nova_add_rust_service target_name package_name output_bin)
+    add_custom_command(
+        OUTPUT ${output_bin}
+        COMMAND ${CMAKE_COMMAND} -E env "SEL4_OUT_DIR=${SEL4_OUT_DIR}" "SEL4_KERNEL_DIR=${KERNEL_PATH}" cargo build --release --manifest-path ${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml -p ${package_name} --target ${KernelSel4Arch}-unknown-none
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/kernel/libsel4/include/sel4/invocation.h
+        COMMENT "Compiling NovaOS ${target_name} (Rust)..."
+    )
+endfunction()
+
+nova_add_rust_service("RootServer" rootserver ${ROOTSERVER_BIN})
+nova_add_rust_service("FS Server" fs_server ${FS_SERVER_BIN})
+nova_add_rust_service("Serial Server" serial_server ${SERIAL_SERVER_BIN})
+nova_add_rust_service("User App" user_app ${USER_APP_BIN})
 
 # Convert kernel.elf to 32-bit ELF for QEMU compatibility
 add_custom_command(
@@ -116,11 +122,17 @@ add_custom_command(
     COMMENT "Converting kernel.elf to 32-bit for QEMU..."
 )
 
-add_custom_target(nova_rootserver ALL DEPENDS ${ROOTSERVER_BIN} ${CMAKE_CURRENT_BINARY_DIR}/kernel/kernel32.elf)
-add_dependencies(nova_rootserver sel4)
+add_custom_target(nova_rust_services ALL DEPENDS
+    ${ROOTSERVER_BIN}
+    ${FS_SERVER_BIN}
+    ${SERIAL_SERVER_BIN}
+    ${USER_APP_BIN}
+    ${CMAKE_CURRENT_BINARY_DIR}/kernel/kernel32.elf
+)
+add_dependencies(nova_rust_services sel4)
 # Ensure kernel is built
 if(TARGET kernel.elf)
-    add_dependencies(nova_rootserver kernel.elf)
+    add_dependencies(nova_rust_services kernel.elf)
 endif()
 
 # 4. 生成可引导镜像
@@ -129,5 +141,5 @@ endif()
 message(STATUS "NovaOS Configuration:")
 message(STATUS "  Arch: ${KernelSel4Arch}")
 message(STATUS "  Platform: ${KernelPlatform}")
-message(STATUS "  RootServer: ${ROOTSERVER_BIN}")
+message(STATUS "  Rust services: rootserver, fs_server, serial_server, user_app")
 message(STATUS "  Trace Level: ${NOVA_BOOT_TRACE_LEVEL} (boot=${NOVA_BOOT_TRACE_BOOT_LEVEL}, apic=${NOVA_BOOT_TRACE_APIC_LEVEL}, trap=${NOVA_BOOT_TRACE_TRAP_LEVEL}, restore=${NOVA_BOOT_TRACE_RESTORE_LEVEL}, sched=${NOVA_BOOT_TRACE_SCHED_LEVEL})")
