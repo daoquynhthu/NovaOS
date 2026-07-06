@@ -2,6 +2,13 @@
 name = "fs_server"
 version = "0.1.0"
 edition = "2021"
+authors = ["NovaOS Team"]
+description = "NovaOS file system service"
+
+# Inherit workspace lints but allow dead_code (shared code via include!() from rootserver
+# contains items only used by rootserver). TODO(Phase2): Remove when shared code extracted.
+[lints]
+workspace = true
 
 [dependencies]
 libnova = { path = "../../libs/libnova" }

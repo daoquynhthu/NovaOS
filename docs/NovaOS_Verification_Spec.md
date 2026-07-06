@@ -1,3 +1,4 @@
+[//]: # (ARCH-ID: ARCH-VERIFICATION-SPEC-001 | 验证规范)
 # NovaOS 形式化验证规格说明书 (Verification Spec)
 
 本文档定义了 NovaOS 关键组件的形式化验证目标、不变量 (Invariants) 和安全属性。

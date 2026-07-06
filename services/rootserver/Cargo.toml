@@ -22,6 +22,9 @@ cc = "1.0"
 default = []
 test_build = []
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "rootserver"
 path = "src/main.rs"

@@ -1,8 +1,8 @@
 $ErrorActionPreference = "Stop"
 
 # Set up environment variables
-Set-Location $PSScriptRoot
-$root = $PSScriptRoot
+Set-Location (Split-Path $PSScriptRoot -Parent)
+$root = Split-Path $PSScriptRoot -Parent
 $buildDir = if ($env:NOVA_BUILD_DIR) { $env:NOVA_BUILD_DIR } else { "build" }
 $buildRoot = Join-Path $root $buildDir
 $env:SEL4_OUT_DIR = Join-Path $buildRoot "kernel"

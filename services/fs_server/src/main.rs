@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![allow(dead_code)] // TEMP: shared code via include!() from rootserver; remove when extracted
 
 extern crate alloc;
 #[macro_use]

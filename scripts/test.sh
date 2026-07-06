@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${NOVA_BUILD_DIR:-build-linux}"
 
 if [ -f "$HOME/.cargo/env" ]; then
@@ -17,12 +17,26 @@ export NOVA_BUILD_DIR="$BUILD_DIR"
 : "${NOVA_BOOT_TRACE_TRAP_LEVEL:=0}"
 : "${NOVA_BOOT_TRACE_RESTORE_LEVEL:=0}"
 : "${NOVA_BOOT_TRACE_SCHED_LEVEL:=0}"
+: "${NOVA_TEST_SLEEP_SCALE:=0.35}"
+: "${NOVA_TEST_CHAR_DELAY_MS:=1}"
+: "${NOVA_TEST_DEFAULT_POST_DELAY_MS:=150}"
+: "${NOVA_TEST_RM_POST_DELAY_MS:=450}"
+: "${NOVA_TEST_POLL_DELAY_MS:=5}"
+: "${NOVA_TEST_BULK_SEND:=0}"
+: "${NOVA_TEST_BIGFILE_KB:=4}"
 export NOVA_BOOT_TRACE_LEVEL
 export NOVA_BOOT_TRACE_BOOT_LEVEL
 export NOVA_BOOT_TRACE_APIC_LEVEL
 export NOVA_BOOT_TRACE_TRAP_LEVEL
 export NOVA_BOOT_TRACE_RESTORE_LEVEL
 export NOVA_BOOT_TRACE_SCHED_LEVEL
+export NOVA_TEST_SLEEP_SCALE
+export NOVA_TEST_CHAR_DELAY_MS
+export NOVA_TEST_DEFAULT_POST_DELAY_MS
+export NOVA_TEST_RM_POST_DELAY_MS
+export NOVA_TEST_POLL_DELAY_MS
+export NOVA_TEST_BULK_SEND
+export NOVA_TEST_BIGFILE_KB
 
 TRACE_CMAKE_ARGS=()
 for trace_var in \
@@ -50,4 +64,4 @@ cmake -S "$ROOT_DIR" -B "$ROOT_DIR/$BUILD_DIR" -G Ninja \
     -DKernelColourPrinting=ON \
     "${TRACE_CMAKE_ARGS[@]}"
 cmake --build "$ROOT_DIR/$BUILD_DIR"
-exec pwsh -NoLogo -NoProfile -File "$ROOT_DIR/build.ps1"
+exec pwsh -NoLogo -NoProfile -File "$ROOT_DIR/scripts/test.ps1"

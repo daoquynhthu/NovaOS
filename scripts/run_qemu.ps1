@@ -1,4 +1,4 @@
-$root = $PSScriptRoot
+$root = Split-Path $PSScriptRoot -Parent
 $buildDir = if ($env:NOVA_BUILD_DIR) { $env:NOVA_BUILD_DIR } else { "build" }
 $kernelElf = Join-Path (Join-Path $root $buildDir) "kernel/kernel32.elf"
 $rootserver = Join-Path $root "target/x86_64-unknown-none/release/rootserver"

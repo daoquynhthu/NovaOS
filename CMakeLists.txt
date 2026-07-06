@@ -2,8 +2,14 @@ cmake_minimum_required(VERSION 3.18)
 
 project(NovaOS C ASM)
 
-# Use lld linker from Rust toolchain if available
-add_link_options("-fuse-ld=lld")
+# Use lld linker from Rust toolchain if available on Linux.
+# Windows (MinGW): GCC+lld has ELF flag compatibility issues, so skip.
+if(CMAKE_HOST_SYSTEM_NAME MATCHES "Linux")
+    find_program(LLD_LLD ld.lld)
+    if(LLD_LLD)
+        add_link_options("-fuse-ld=lld")
+    endif()
+endif()
 
 if(NOT DEFINED CMAKE_BUILD_TYPE AND NOT DEFINED CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)

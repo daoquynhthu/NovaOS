@@ -1,3 +1,4 @@
+[//]: # (ARCH-ID: ARCH-SYSCALL-DESIGN-001 | Syscall 接口设计)
 # NovaOS 原生系统调用接口设计 (Syscall Design)
 
 ## 1. 核心哲学：权能即一切 (Capabilities are Everything)

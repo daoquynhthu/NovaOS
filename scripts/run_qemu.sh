@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${NOVA_BUILD_DIR:-build-linux}"
 
 export PATH="$HOME/.local/bin:$PATH"
@@ -45,4 +45,4 @@ cmake -S "$ROOT_DIR" -B "$ROOT_DIR/$BUILD_DIR" -G Ninja \
     -DKernelColourPrinting=ON \
     "${TRACE_CMAKE_ARGS[@]}"
 cmake --build "$ROOT_DIR/$BUILD_DIR"
-exec pwsh -NoLogo -NoProfile -File "$ROOT_DIR/run_qemu.ps1"
+exec pwsh -NoLogo -NoProfile -File "$ROOT_DIR/scripts/run_qemu.ps1"

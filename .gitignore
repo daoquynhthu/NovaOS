@@ -51,6 +51,9 @@ kernel/*.yaml
 kernel/*.lds_pp
 kernel/circular_includes_valid
 
+# Committed test artifacts (should not have been committed)
+test_output.txt
+
 #artifacts
 auditoration1.md
 

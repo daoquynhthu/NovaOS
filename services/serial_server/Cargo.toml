@@ -2,6 +2,11 @@
 name = "serial_server"
 version = "0.1.0"
 edition = "2021"
+authors = ["NovaOS Team"]
+description = "NovaOS serial port service"
+
+[lints]
+workspace = true
 
 [dependencies]
 libnova = { path = "../../libs/libnova" }

@@ -1,3 +1,4 @@
+[//]: # (ARCH-ID: ARCH-MEMORY-ERROR-SPEC-001 | 内存错误规范)
 # NovaOS 内存模型与错误传播规范
 
 ## 1. 内存模型 (Memory Model)

@@ -13,6 +13,9 @@ cmake = "0.1"
 [dependencies]
 cty = "0.2"
 
+[lints]
+workspace = true
+
 [features]
 default = ["x86_64"]
 x86_64 = []

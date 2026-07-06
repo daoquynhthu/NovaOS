@@ -2,7 +2,7 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    let _target = env::var("TARGET").unwrap();
+    let _target = env::var("TARGET").expect("TARGET must be set");
     
     // 1. 获取从 CMake 传递过来的 seL4 内核构建目录
     // CMakeLists.txt 中需要通过 set(ENV{SEL4_OUT_DIR} ...) 传递此变量
@@ -67,7 +67,7 @@ fn main() {
     let bindings = builder.generate().expect("Unable to generate bindings");
 
     // 5. 写入输出文件
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let out_path = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR must be set"));
     bindings
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings!");
