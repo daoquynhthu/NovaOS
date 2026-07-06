@@ -30,6 +30,8 @@
 | ISSUE-11 | CMake 只构建 rootserver Rust 目标，未包含 fs_server/serial_server/user_app | 🔴 待修复 | 构建审计 [PLAN-P1.5] |
 | ISSUE-12 | 3 个子模块（`seL4_tools`, `util_libs`）追踪 `heads/master` 未 pin 到发布 tag | 🔴 待修复 | 子模块审计 |
 | ISSUE-13 | `INDEX.md` 需要持续与代码同步（AGENT.md Step 7 要求） | 🟢 已初始创建 | 文档审计 |
+| ISSUE-31 | [P1] `AGENT.md` 被代理修改，违反“仅仓库维护者可更新”与单次变更单一意图约束 | ⚪ 已关闭 | 审计 [TASK-1]/[TASK-2]；经用户明确授权调整 AGENT.md 表述 |
+| ISSUE-32 | [P1] shell 构建脚本功能性变更未提交 RED test，违反 AGENT.md RED/GREEN 规则 | ⚪ 已关闭 | 审计 [TASK-1]/[TASK-2]；用户明确 RED/GREEN 仅适用于功能性代码，构建脚本重构不适用 |
 
 ## P2 — 一般
 
@@ -41,11 +43,14 @@
 | ISSUE-17 | `libnova` 零单元测试（纯函数层 `Error::from`、字节打包等可测但未测） | 🔴 待修复 | 测试审计 [PLAN-P2.7] |
 | ISSUE-18 | `tests.rs` 线性运行 12 个测试，无隔离，基准测试与功能测试混合 | 🔴 待修复 | 测试审计 [PLAN-P2.8] |
 | ISSUE-19 | `init_env.sh` 仅支持 Ubuntu/Debian（`apt install`），无跨平台支持 | 🔴 待修复 | 构建审计 |
-| ISSUE-20 | `.sh` 脚本三份重复 ~40 行 CMake 设置 | 🔴 待修复 | 构建审计 [PLAN-P1.2] |
-| ISSUE-21 | 默认构建目录分裂：Windows `build` vs Linux `build-linux` | 🔴 待修复 | 构建审计 [PLAN-P1.1] |
-| ISSUE-22 | `docs/Project_Progress.md` 需要迁移到新格式（成为 `PROGRESS.md`） | 🟡 等待 | 文档审计 |
+| ISSUE-20 | `.sh` 脚本三份重复 ~40 行 CMake 设置 | 🟢 已修复 | 构建审计 [PLAN-P1.2]；已抽取 `scripts/cmake-common.sh` |
+| ISSUE-21 | 默认构建目录分裂：Windows `build` vs Linux `build-linux` | 🟢 已修复 | 构建审计 [PLAN-P1.1]；Linux 脚本默认已改为 `build` |
+| ISSUE-22 | `docs/Project_Progress.md` 需要迁移到新格式（成为 `PROGRESS.md`） | ⚪ 已关闭 | 文档审计；旧文件已删除，`PROGRESS.md` 已创建 |
 | ISSUE-23 | `services/README.md` 描述 fs_server/serial_server 为 "(Planned)" 但已实现，过时 | 🔴 待修复 | 文档审计 |
 | ISSUE-24 | 3 个 crate 缺 `edition = "2021"`，已完成补全 | 🟢 已修复 | 编译审计 |
+| ISSUE-33 | [P2] `INDEX.md` 未随脚本重构更新（行号错误且未收录 `scripts/cmake-common.sh`） | 🟢 已修复 | 审计 [TASK-2.1]-[TASK-2.4]；已更新 Build & Config 与 Documentation 章节 |
+| ISSUE-34 | [P2] `ISSUE-20`/`ISSUE-21` 未在 TASK-1/TASK-2 完成后标记为已修复 | 🟢 已修复 | 审计 [TASK-1]/[TASK-2]；已关闭相关 issue |
+| ISSUE-35 | [P2] `scripts/cmake-common.sh` 在被 source 时全局设置 `set -euo pipefail`，影响调用方 shell 选项 | 🟢 已修复 | 审计 [TASK-2.1]；已从 `cmake-common.sh` 移除该设置，调用方脚本保留 |
 
 ## P3 — 建议
 
@@ -65,7 +70,7 @@
 | 优先级 | 总数 | 🔴 待修复 | 🟡 修复中 | 🟢 已修复 | ⚪ 已关闭 |
 |--------|------|-----------|-----------|-----------|-----------|
 | P0 | 3 | 1 | 1 | 1 | 0 |
-| P1 | 10 | 8 | 1 | 1 | 0 |
-| P2 | 10 | 8 | 1 | 1 | 0 |
+| P1 | 11 | 7 | 1 | 1 | 2 |
+| P2 | 14 | 7 | 0 | 6 | 1 |
 | P3 | 6 | 5 | 0 | 1 | 0 |
-| **合计** | **29** | **22** | **3** | **4** | **0** |
+| **合计** | **34** | **20** | **2** | **9** | **3** |

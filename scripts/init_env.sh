@@ -38,6 +38,6 @@ fi
 
 printf 'NovaOS Linux environment ready in %s\n' "$ROOT_DIR"
 printf 'Next steps:\n'
-printf '  cmake -S . -B build-linux -G Ninja -DKernelSel4Arch=x86_64 -DKernelPlatform=pc99\n'
-printf '  cmake --build build-linux\n'
-printf '  NOVA_BUILD_DIR=build-linux ./test.sh\n'
+printf '  cmake -S . -B build -G Ninja -DKernelSel4Arch=x86_64 -DKernelPlatform=pc99\n'
+printf '  cmake --build build\n'
+printf '  NOVA_BUILD_DIR=build ./test.sh\n'

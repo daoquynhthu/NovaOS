@@ -166,13 +166,14 @@
 | Kernel config defaults | `CMakeLists.txt` | 42-56 |
 | Trace level system | `CMakeLists.txt` | 58-80 |
 | Build script (Win) | `scripts/build.ps1` | 1-37 |
-| Build script (Linux) | `scripts/build.sh` | 1-53 |
+| Build script (Linux) | `scripts/build.sh` | 1-12 |
 | Test script (Win) | `scripts/test.ps1` | 1-1095 |
-| Test script (Linux) | `scripts/test.sh` | 1-67 |
+| Test script (Linux) | `scripts/test.sh` | 1-26 |
 | QEMU launcher (Win) | `scripts/run_qemu.ps1` | 1-46 |
-| QEMU launcher (Linux) | `scripts/run_qemu.sh` | 1-48 |
+| QEMU launcher (Linux) | `scripts/run_qemu.sh` | 1-12 |
 | Environment setup (Win) | `scripts/init_env.ps1` | 1-35 |
 | Environment setup (Linux) | `scripts/init_env.sh` | 1-43 |
+| Common CMake config (Linux) | `scripts/cmake-common.sh` | 1-54 |
 | ELF/Multiboot checker | `scripts/check_mb.py` | 1-114 |
 | .gitignore | `.gitignore` | 1-65 |
 | .gitmodules (3 submodules) | `.gitmodules` | 1-9 |
@@ -182,8 +183,11 @@
 
 | File | Content |
 |---|---|
-| `docs/Project_Progress.md` | Progress log (single source of truth for project status) |
-| `docs/HANDOVER.md` | Architecture handover doc (NovaFS-centric) |
+| `docs/PROGRESS.md` | Progress log (single source of truth for project status) |
+| `docs/PLAN.md` | Roadmap with 7 phases |
+| `docs/TASK.md` | Current execution plan |
+| `docs/ISSUE.md` | Known issues archive |
+| `docs/INDEX.md` | Code index and architecture reality (this file) |
 | `docs/NovaOS_Proposal.md` | Design proposal / vision |
 | `docs/NovaOS_Syscall_Design.md` | Syscall design notes |
 | `docs/NovaOS_Verification_Spec.md` | Verification spec |

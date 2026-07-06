@@ -1,48 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${NOVA_BUILD_DIR:-build-linux}"
-
-export PATH="$HOME/.local/bin:$PATH"
-export NOVA_BUILD_DIR="$BUILD_DIR"
-: "${NOVA_BOOT_TRACE_LEVEL:=0}"
-: "${NOVA_BOOT_TRACE_BOOT_LEVEL:=0}"
-: "${NOVA_BOOT_TRACE_APIC_LEVEL:=0}"
-: "${NOVA_BOOT_TRACE_TRAP_LEVEL:=0}"
-: "${NOVA_BOOT_TRACE_RESTORE_LEVEL:=0}"
-: "${NOVA_BOOT_TRACE_SCHED_LEVEL:=0}"
-export NOVA_BOOT_TRACE_LEVEL
-export NOVA_BOOT_TRACE_BOOT_LEVEL
-export NOVA_BOOT_TRACE_APIC_LEVEL
-export NOVA_BOOT_TRACE_TRAP_LEVEL
-export NOVA_BOOT_TRACE_RESTORE_LEVEL
-export NOVA_BOOT_TRACE_SCHED_LEVEL
-
-TRACE_CMAKE_ARGS=()
-for trace_var in \
-    NOVA_BOOT_TRACE_LEVEL \
-    NOVA_BOOT_TRACE_BOOT_LEVEL \
-    NOVA_BOOT_TRACE_APIC_LEVEL \
-    NOVA_BOOT_TRACE_TRAP_LEVEL \
-    NOVA_BOOT_TRACE_RESTORE_LEVEL \
-    NOVA_BOOT_TRACE_SCHED_LEVEL; do
-    trace_value="${!trace_var-}"
-    if [ -n "$trace_value" ]; then
-        TRACE_CMAKE_ARGS+=("-D${trace_var}=${trace_value}")
-    fi
-done
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/cmake-common.sh"
 
 cd "$ROOT_DIR"
-cmake -S "$ROOT_DIR" -B "$ROOT_DIR/$BUILD_DIR" -G Ninja \
-    -DCMAKE_BUILD_TYPE=Debug \
-    -DKernelSel4Arch=x86_64 \
-    -DKernelPlatform=pc99 \
-    -DKernelVerificationBuild=OFF \
-    -DKernelDebugBuild=ON \
-    -DKernelPrinting=ON \
-    -DKernelIRQReporting=ON \
-    -DKernelColourPrinting=ON \
-    "${TRACE_CMAKE_ARGS[@]}"
+nova_configure_cmake
 cmake --build "$ROOT_DIR/$BUILD_DIR"
 exec pwsh -NoLogo -NoProfile -File "$ROOT_DIR/scripts/run_qemu.ps1"

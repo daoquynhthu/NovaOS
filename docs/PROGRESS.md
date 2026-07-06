@@ -45,3 +45,21 @@
 
 **验证**：PLAN.md / ISSUE.md / TASK.md 内部引用一致，无死链  
 **关联**：安全审计 13 项发现待后续按新 Phase 5 归档
+
+## 2026-07-06: Phase 1 P0 — 构建目录统一与 CMake 公共脚本
+
+**完成项**：
+- 调整 `docs/AGENT.md`：明确 RED/GREEN 仅适用于功能性代码；审计改为在 TASK.md 全部完成后执行
+- 将 `scripts/build.sh`、`scripts/test.sh`、`scripts/run_qemu.sh` 默认构建目录从 `build-linux` 改为 `build`
+- 更新 `scripts/init_env.sh` 提示文本使用 `build`
+- 创建 `scripts/cmake-common.sh`，抽取三份 `.sh` 脚本重复的 CMake 配置与 trace 参数构建逻辑
+- `build.sh` / `test.sh` / `run_qemu.sh` 改为 source `cmake-common.sh`
+- 更新 `docs/INDEX.md`：新增 `scripts/cmake-common.sh` 条目，修正 Documentation 章节（删除已移除文件的引用）
+- 关闭 `ISSUE-20`、`ISSUE-21`、`ISSUE-22`、`ISSUE-31`、`ISSUE-32`、`ISSUE-33`、`ISSUE-34`、`ISSUE-35`
+
+**验证**：
+- `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+- `bash -n scripts/cmake-common.sh && bash -n scripts/build.sh && bash -n scripts/test.sh && bash -n scripts/run_qemu.sh` — 无输出（语法通过）
+- 独立子 Agent 审计 + 二次审计通过，无剩余新增问题
+
+**关联**：`ISSUE-20/21/22/31/32/33/34/35`

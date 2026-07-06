@@ -34,23 +34,27 @@ AGENT.md (行为宪法，最高约束)
 
 ```
 Step 1: 阅读 PLAN.md → 确认当前阶段
-Step 2: 草拟 TASK.md → 拆分子任务，每个子任务先写 RED test（预期失败）
-Step 3: 开始实现 → 使 RED test 变为 GREEN
-Step 4: 启动独立子Agent 审计 diff → 产出写入 ISSUE.md
+Step 2: 草拟 TASK.md → 拆分子任务；功能性代码子任务先写 RED test（预期失败）
+Step 3: 开始实现 → 使 RED test 变为 GREEN（仅功能性代码）
+Step 4: TASK.md 全部完成后 → 启动独立子Agent 审计 diff → 产出写入 ISSUE.md
 Step 5: 修复 ISSUE.md 中所有项
 Step 6: 再次审计（回到 Step 4），直到零 ISSUE
-Step 7: 更新 INDEX.md 相应条目 + 新增 PROGRESS.md 项 + 标记 TASK.md 完成
-Step 8: TASK.md 全部完成 → 启动高规格并行审计 → 通过后清空 TASK.md
+Step 7: 更新 INDEX.md 相应条目 + 新增 PROGRESS.md 项 + 清空 TASK.md
+Step 8: 进入 PLAN 下一阶段
 ```
 
 ## 3. RED/GREEN 测试规则
+
+**适用范围**：
+RED/GREEN 机制**仅适用于功能性代码变更**（新增/修改行为、新增测试、修复 bug 等）。
+不适用于：纯文档调整、路线规划、Issue 归档、格式清理、文件移动等无运行时语义变化的变更。
 
 **定义**：
 - RED：测试预期失败（功能未实现时编译不应通过，或运行不应通过）
 - GREEN：实现代码完成后测试应通过
 
 **执行规则**：
-1. 每个子任务必须先有 RED test，提交到仓库中，确认其确实失败
+1. 功能性子任务必须先有 RED test，提交到仓库中，确认其确实失败
 2. 然后开始编写实现代码
 3. 实现完成后运行同一个测试，确认变 GREEN
 4. RED→GREEN 是原子操作：不允许提交"只有 RED 没有 GREEN"的代码
@@ -76,16 +80,17 @@ Step 8: TASK.md 全部完成 → 启动高规格并行审计 → 通过后清空
 
 ## 5. 审计规范
 
-**普通审计**（Step 4，每个子任务后）：
-- 由独立子 Agent 执行
+**普通审计**（Step 4，TASK.md 全部完成后）：
+- 由独立子 Agent 执行，审计当前 TASK.md 涉及的全部 diff
 - 检查：语义正确性、测试覆盖、文档一致性、负向约束遵守
 - 产出：ISSUE.md 条目
+- 修复所有 ISSUE 后再次审计，直到零 ISSUE，方可清空 TASK.md
 
-**高规格并行审计**（Step 8，TASK 全部完成后）：
+**高规格并行审计**（重要里程碑或 PLAN 阶段结束时）：
 - 启动多个独立子 Agent 并行审计
 - 检查范围扩大：架构一致性、安全性、性能退化、回归覆盖盲区
 - 每个审计 Agent 独立产出 ISSUE 列表，汇总去重
-- 所有 ISSUE 必须修复并通过再审计，才能清空 TASK.md
+- 所有 ISSUE 必须修复并通过再审计，才能进入下一阶段
 
 ## 6. 文档维护规则
 
