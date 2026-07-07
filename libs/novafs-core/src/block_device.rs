@@ -31,6 +31,17 @@ impl MockBlockDevice {
         dev.rotational = rotational;
         dev
     }
+
+    pub fn snapshot(&self) -> alloc::vec::Vec<[u8; 512]> {
+        self.blocks.lock().clone()
+    }
+
+    pub fn from_snapshot(blocks: alloc::vec::Vec<[u8; 512]>) -> Self {
+        Self {
+            blocks: spin::Mutex::new(blocks),
+            rotational: false,
+        }
+    }
 }
 
 #[cfg(any(test, feature = "std"))]

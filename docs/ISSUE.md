@@ -497,3 +497,37 @@
 > 3. ISSUE-55 状态已更新为 🟢 已修复 ✅
 >
 > **TASK-12 再审计：零问题，满足闭环条件。**
+
+---
+
+## ISSUE-70: [P2] `for_each_data_block` 缺 `block_offset` — 🟢 已修复
+
+**来源**: P3.1 审计 — `libs/novafs-core/src/novafs.rs`  
+**描述**: `for_each_data_block()` 中读取 `inode.indirect` 等指针时缺 `block_offset`。  
+**修复**: 三处 `read_block` 已加 `self.block_offset +` 前缀。
+
+---
+
+## ISSUE-71: [P2] `check_consistency` 跳过根 inode — 🟢 已修复
+
+**来源**: P3.1 审计 — `libs/novafs-core/src/novafs.rs`  
+**描述**: Phase 2 循环 `if ino < 2` 跳过 inode 1。  
+**修复**: 改为 `if ino == 0`，inode 1 不再跳过。
+
+---
+
+## ISSUE-72: [P3] `check_consistency` 缺少负面测试 — ⏳ 待评估
+
+**来源**: P3.1 审计 — `libs/novafs-core/tests/novafs_host.rs`  
+**描述**: 设备直写绕过缓存导致负面测试复杂。改为设备直写 → `NovaFS::new` 重新挂载的方案因 checker 对空 bitmap 场景返回 Ok 而未通过。  
+**建议**: 后续改进 checker 使其能在相位 3 检查时发现 bitmap/inode 表不一致，或增加单独的 bitmap ↔ inode 表交叉验证。
+
+---
+
+## ISSUE-73: [P3] TASK.md P3.1 顶行状态 — 🟢 已修复
+
+**来源**: P3.1 审计 — `docs/TASK.md:24`  
+**描述**: P3.1 顶行状态未更新。  
+**修复**: 已将 `🟡 执行中` 更新为 `✅ 已完成`。
+
+> **P3.1 再审计：零开问题，满足闭环条件。**

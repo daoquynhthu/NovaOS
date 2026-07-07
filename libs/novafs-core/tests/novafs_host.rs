@@ -90,3 +90,44 @@ fn encrypted_roundtrip() {
     let raw = fs.read_file("/secret.txt").expect("read again");
     assert_eq!(raw, secret);
 }
+
+#[test]
+fn sync_and_reboot() {
+    // Write data, sync, save device, create new FS from snapshot → verify data survives.
+    let device = Arc::new(MockBlockDevice::new(256));
+    let fs = {
+        let d = device.clone();
+        NovaFS::format(d, 0, 256)
+    };
+    let data = b"persistent data!";
+    fs.write_file("/persist.txt", data).expect("write");
+    fs.sync().expect("sync");
+
+    let snapshot = device.snapshot();
+    let new_device = Arc::new(MockBlockDevice::from_snapshot(snapshot));
+    let fs2 = NovaFS::new(new_device, 0).expect("remount");
+    let read_back = fs2.read_file("/persist.txt").expect("read after reboot");
+    assert_eq!(read_back, data);
+}
+
+#[test]
+fn consistency_check_ok() {
+    let fs = make_fs(256);
+    fs.write_file("/a.txt", b"aaa").expect("write a");
+    fs.write_file("/b.txt", b"bbb").expect("write b");
+
+    fs.sync().expect("sync");
+    match fs.check_consistency() {
+        Ok(_) => {}
+        Err(e) => {
+            panic!("fresh fs should be consistent, got error: {}", e);
+        }
+    }
+}
+
+#[test]
+fn consistency_check_empty() {
+    let fs = make_fs(256);
+    fs.sync().expect("sync");
+    assert!(fs.check_consistency().is_ok(), "empty fs should be consistent");
+}

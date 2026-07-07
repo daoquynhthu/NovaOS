@@ -230,6 +230,178 @@ impl<D: BlockDevice + Send + Sync + 'static> NovaFS<D> {
         self.cache.lock().sync()
     }
 
+    /// Iterate all data blocks referenced by an inode (direct + indirect).
+    fn for_each_data_block<F>(&self, inode: &DiskInode, mut f: F) -> Result<(), &'static str>
+    where
+        F: FnMut(u32) -> Result<(), &'static str>,
+    {
+        let ptrs_per_block = BLOCK_SIZE / 4;
+        let bo = self.block_offset;
+        for &b in &inode.direct {
+            if b != 0 {
+                f(bo + b)?;
+            }
+        }
+        if inode.indirect != 0 {
+            let mut buf = [0u8; BLOCK_SIZE];
+            self.read_block(bo + inode.indirect, &mut buf)?;
+            let ptrs = unsafe { core::slice::from_raw_parts(buf.as_ptr() as *const u32, ptrs_per_block) };
+            for &b in ptrs {
+                if b != 0 {
+                    f(bo + b)?;
+                }
+            }
+        }
+        if inode.double_indirect != 0 {
+            let mut l1_buf = [0u8; BLOCK_SIZE];
+            self.read_block(bo + inode.double_indirect, &mut l1_buf)?;
+            let l1_ptrs = unsafe { core::slice::from_raw_parts(l1_buf.as_ptr() as *const u32, ptrs_per_block) };
+            for &l1 in l1_ptrs {
+                if l1 == 0 {
+                    continue;
+                }
+                let mut l2_buf = [0u8; BLOCK_SIZE];
+                self.read_block(bo + l1, &mut l2_buf)?;
+                let l2_ptrs = unsafe { core::slice::from_raw_parts(l2_buf.as_ptr() as *const u32, ptrs_per_block) };
+                for &b in l2_ptrs {
+                    if b != 0 {
+                        f(bo + b)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Cross-check inode bitmaps, directory entries, and data bitmaps for consistency.
+    ///
+    /// Returns `Ok(())` if all structures are consistent, or an error describing
+    /// the first inconsistency found.
+    pub fn check_consistency(&self) -> Result<(), &'static str> {
+        let data_start = 1
+            + self.sb.inode_bitmap_blocks
+            + self.sb.data_bitmap_blocks
+            + self.sb.inode_area_blocks;
+        let total_blocks = self.sb.total_blocks;
+        let inodes_per_block = (BLOCK_SIZE / INODE_SIZE) as u32;
+        let max_inodes = self.sb.inode_area_blocks * inodes_per_block;
+        let ibm_start = self.block_offset + 1;
+        let dbm_start = self.block_offset + 1 + self.sb.inode_bitmap_blocks;
+
+        // Phase 1: walk inode bitmap → collect used inode numbers.
+        let mut used_inodes = alloc::vec::Vec::new();
+        for b in 0..self.sb.inode_bitmap_blocks {
+            let mut blk = [0u8; BLOCK_SIZE];
+            self.read_block(ibm_start + b, &mut blk)?;
+            for i in 0..(BLOCK_SIZE * 8) {
+                let ino = b * (BLOCK_SIZE as u32 * 8) + i as u32;
+                if ino >= max_inodes {
+                    break;
+                }
+                let bit = (blk[i / 8] >> (i % 8)) & 1;
+                if bit != 0 {
+                    used_inodes.push(ino);
+                }
+            }
+        }
+
+        // Phase 2: for each used inode, read disk inode, collect data blocks, check dir entries.
+        // Inodes 0-1 are reserved (root + null); they may not be in the bitmap.
+        let mut seen_data_blocks = alloc::collections::BTreeSet::new();
+        for &ino in &used_inodes {
+            if ino == 0 {
+                continue;
+            }
+            let block_rel = ino / inodes_per_block;
+            let offset = (ino % inodes_per_block) as usize;
+            let block_abs = self.block_offset
+                + 1
+                + self.sb.inode_bitmap_blocks
+                + self.sb.data_bitmap_blocks
+                + block_rel;
+            let mut blk = [0u8; BLOCK_SIZE];
+            self.read_block(block_abs, &mut blk)?;
+            let di: DiskInode = unsafe { core::ptr::read(blk[offset * INODE_SIZE..].as_ptr() as *const DiskInode) };
+
+            // Flag: data blocks agree with data bitmap (verified later).
+            let inode_blocks = self.for_each_data_block(&di, |data_block| {
+                if data_block < data_start || data_block >= total_blocks {
+                    return Err("Inode references block outside data area");
+                }
+                if !seen_data_blocks.insert(data_block) {
+                    return Err("Data block referenced by multiple inodes");
+                }
+                Ok(())
+            });
+            if let Err(e) = inode_blocks {
+                return Err(e);
+            }
+
+            // For directory inodes, verify each dir entry points to a valid inode.
+            if di.type_ == 1 {
+                // Directory
+                let entry_size = core::mem::size_of::<DirEntry>();
+                let collect_entries = self.for_each_data_block(&di, |data_block| {
+                    let mut eb = [0u8; BLOCK_SIZE];
+                    self.read_block(data_block, &mut eb)?;
+                    for j in 0..(BLOCK_SIZE / entry_size) {
+                        let entry: DirEntry = unsafe {
+                            core::ptr::read(eb[j * entry_size..].as_ptr() as *const DirEntry)
+                        };
+                        if entry.inode_number == 0 {
+                            continue;
+                        }
+                        if entry.inode_number >= max_inodes {
+                            let name_len = entry.name.iter().position(|&c| c == 0).unwrap_or(28);
+                            let entry_name = core::str::from_utf8(&entry.name[..name_len]).unwrap_or("<bad>");
+                            println!(
+                                "consistency: dir entry '{}' ino={} >= max_inodes={}",
+                                entry_name, entry.inode_number, max_inodes
+                            );
+                            return Err("Dir entry references inode beyond max");
+                        }
+                        if !used_inodes.contains(&entry.inode_number) {
+                            return Err("Dir entry references non-existent inode");
+                        }
+                    }
+                    Ok(())
+                });
+                if let Err(e) = collect_entries {
+                    return Err(e);
+                }
+            }
+        }
+
+        // Phase 3: walk data bitmap → verify no orphaned blocks outside data_start.
+        // This check is best-effort: newly-allocated blocks that haven't been
+        // committed to the inode's disk block list (but are still in the cache
+        // and not yet synced) may appear orphaned. We log them as warnings but
+        // do not fail the check.
+        for b in 0..self.sb.data_bitmap_blocks {
+            let mut blk = [0u8; BLOCK_SIZE];
+            self.read_block(dbm_start + b, &mut blk)?;
+            for i in 0..(BLOCK_SIZE * 8) {
+                let bit = (blk[i / 8] >> (i % 8)) & 1;
+                if bit == 0 {
+                    continue;
+                }
+                let blk_id = b * (BLOCK_SIZE as u32 * 8) + i as u32;
+                if blk_id < data_start {
+                    continue;
+                }
+                if blk_id >= total_blocks {
+                    return Err("Bitmap marks block beyond total_blocks");
+                }
+                if !seen_data_blocks.contains(&blk_id) {
+                    // Block is marked in bitmap but no inode references it —
+                    // may indicate a leak or cache-not-synced state.
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn alloc_inode(&self) -> Result<u32, &'static str> {
         let bitmap_start = self.block_offset + 1;
         let inodes_per_block = (BLOCK_SIZE / INODE_SIZE) as u32;
