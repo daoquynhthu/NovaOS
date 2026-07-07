@@ -2,7 +2,7 @@
 
 > **Purpose**: Quick code navigation (front) + layered architecture description for AI agent context (back).  
 > **Truth source**: Code only. If docs disagree with code, code wins.  
-> **Generated**: 2026-07-06
+> **Generated**: 2026-07-07
 
 ---
 
@@ -32,8 +32,9 @@
 | Module | File | Key contents |
 |---|---|---|
 | `ipc` — raw seL4 IPC | `ipc.rs` | `MessageInfo`, `call()`, `send()`, `recv()`, `reply()`, `reply_recv()`, `set_mr()`, `get_mr()` |
-| `syscall` — syscall stubs | `syscall.rs` | `sys_open` (329), `sys_read` (363), `sys_write` (387), `sys_close` (320), `sys_spawn` (206), `sys_yield` (60), `sys_exit` (65), `Error` enum (6) |
-| `fs_ipc` — FS protocol | `fs_ipc.rs` | `FS_LABEL_OPEN=20` (4), `FS_LABEL_*` constants (4-23), `open_direct()` (64), `read_direct()` (105), `write_direct()` (89), `close_direct()` (81), all FS helpers (64-385) |
+| `ipc::pack` — bounded message packing | `ipc/pack.rs` | `BoundError`, `MessageWriter`, `MessageReader`; replaces duplicate packing loops in `syscall.rs` and `fs_ipc.rs` |
+| `syscall` — syscall stubs | `syscall.rs` | `sys_open` (260), `sys_read` (279), `sys_write` (310), `sys_close` (251), `sys_spawn` (180), `sys_yield` (62), `sys_exit` (67), `Error` enum (6) |
+| `fs_ipc` — FS protocol | `fs_ipc.rs` | `FS_LABEL_OPEN=20` (4), `FS_LABEL_*` constants (4-23), `open_direct()` (50), `read_direct()` (95), `write_direct()` (77), `close_direct()` (69), all FS helpers (50-400) |
 | `cap` — CNode ops | `cap.rs` | `CNode` (27), `cap_rights_new()` (16), `copy()`, `mint()`, `move_()`, `delete()`, `revoke()` |
 | `console` — print macros | `console.rs` | `print!` (80), `println!` (84), `DebugConsole` (14), `UserConsole` (51) |
 | `log` — leveled logging | `log.rs` | domain-gated `log_debug!`, `log_trace!` |
@@ -50,6 +51,13 @@
 | Entry point (`rust_main`) | `main.rs` | 464 |
 | Main event loop (recv→dispatch→reply) | `main.rs` | 1274-1360 |
 | Syscall dispatch `match label` | `main.rs` | 1366-3319 |
+| Syscall handlers module | `handlers/` | — |
+| Handler input validation | `libnova/src/validate.rs` | — |
+| Core handlers (`yield`, `get_pid`, `sleep`, `wait`, `kill`, `exit`, `spawn`, `fork`) | `handlers/core.rs` | — |
+| Memory handlers (`brk`, `shm_alloc`, `shm_map`, `mmap_shared`, `munmap_shared`) | `handlers/core.rs` | — |
+| FS handlers (`open`/`read`/`write`/`close`/`mkdir`/`rmdir`/`unlink`/`rename`/`link`/`symlink`/`readlink`/`chmod`/`chown`/`block_*`) | `handlers/fs.rs` | — |
+| Metadata handlers (`getuid`/`setuid`/`getgid`/`setgid`) | `handlers/metadata.rs` | — |
+| Service handlers (`register`/`lookup`/`set_ready`/`epoch`/`get_time`/`get_unix_time`/`shutdown`) | `handlers/service.rs` | — |
 | OOM admission control | `main.rs` | 67-94 |
 | `FS_SYNC_FORWARD_ENABLED` (false) | `main.rs` | 65 |
 | `FS_READ_PREFER_SERVER` (true) | `main.rs` | 61 |
@@ -75,33 +83,41 @@
 | Memory — `MAX_CSPACE_SLOTS=4096` | `memory.rs` | 9 |
 | Shared Memory — `SharedMemoryManager` | `shared_memory.rs` | — |
 | ELF loader | `elf_loader.rs` | — |
-| **NovaFS** — constants | `fs/novafs.rs` | 11-15 |
-| NovaFS — `SuperBlock` | `fs/novafs.rs` | 18 |
-| NovaFS — `DiskInode` | `fs/novafs.rs` | 32 |
-| NovaFS — `DirEntry` | `fs/novafs.rs` | 51 |
-| NovaFS — `NovaFS<D>` struct | `fs/novafs.rs` | 59 |
-| NovaFS — `mount()` / `new()` | `fs/novafs.rs` | 67 |
-| NovaFS — `format()` | `fs/novafs.rs` | 90 |
-| NovaFS — block I/O (indirect resolution) | `fs/novafs.rs` | 399 |
-| NovaFS — `Inode::read_at()` | `fs/novafs.rs` | 589 |
-| NovaFS — `Inode::write_at()` | `fs/novafs.rs` | 641 |
-| NovaFS — `Inode::control()` (truncate, chmod, chown) | `fs/novafs.rs` | 709 |
-| NovaFS — directory ops (`lookup`, `create`, `list`, `link`, `rename`, `remove`) | `fs/novafs.rs` | 794-1337 |
-| Block cache | `fs/block_cache.rs` | — |
-| Block allocation strategy | `fs/strategy.rs` | — |
-| **Drivers** — `BlockDevice` trait | `drivers/block.rs` | 1-4 |
 | Drivers — ATA PIO | `drivers/ata.rs` | — |
 | Drivers — keyboard | `drivers/keyboard.rs` | — |
 | Drivers — serial | `drivers/serial.rs` | — |
 | Drivers — timer (PIT/HPET) | `drivers/timer.rs` | — |
-| Drivers — RTC | `drivers/rtc.rs` | — |
+| RTC wall-clock stub | `rtc.rs` | — |
 | **Arch** — x86_64 port I/O | `arch/x86_64/port_io.rs` | — |
 | Arch — APIC | `arch/x86_64/apic.rs` | — |
 | Arch — IOAPIC | `arch/x86_64/ioapic.rs` | — |
 | Arch — ACPI | `arch/x86_64/acpi.rs` | — |
 | Arch — PCI config | `arch/x86_64/pci.rs` | — |
-| **Crypto** — ChaCha20 | `crypto.rs` | 3-104 |
 | Tests | `tests.rs` | — |
+
+#### NovaFS Core (`libs/novafs-core/src/`)
+
+| What | File | Line |
+|---|---|---|
+| `BlockDevice` trait | `block_device.rs` | 1-4 |
+| `MockBlockDevice` (host tests) | `block_device.rs` | 8-75 |
+| Block cache | `block_cache.rs` | — |
+| Block allocation strategy | `strategy.rs` | — |
+| ChaCha20 crypto | `crypto.rs` | — |
+| NovaFS constants | `novafs.rs` | 11-15 |
+| NovaFS `SuperBlock` | `novafs.rs` | 18 |
+| NovaFS `DiskInode` | `novafs.rs` | 32 |
+| NovaFS `DirEntry` | `novafs.rs` | 51 |
+| NovaFS `NovaFS<D>` struct | `novafs.rs` | 59 |
+| NovaFS `mount()` / `new()` | `novafs.rs` | 67 |
+| NovaFS `format()` | `novafs.rs` | 90 |
+| NovaFS block I/O (indirect resolution) | `novafs.rs` | 399 |
+| NovaFS `Inode::read_at()` | `novafs.rs` | 589 |
+| NovaFS `Inode::write_at()` | `novafs.rs` | 641 |
+| NovaFS `Inode::control()` (truncate, chmod, chown) | `novafs.rs` | 709 |
+| NovaFS directory ops | `novafs.rs` | 794-1337 |
+| VFS traits | `vfs.rs` | — |
+| Host-native tests | `tests/novafs_host.rs` | — |
 
 #### 4b. fs_server (`services/fs_server/src/`)
 
@@ -111,8 +127,7 @@
 | Main service loop | `main.rs` | 719-1323 |
 | `FdEntry` struct | `main.rs` | 98-102 |
 | `DISK_FS` / `FS_STATE` / `LOCAL_FS_EPOCH` statics | `main.rs` | 84-86 |
-| Shared code via `include!()` | `main.rs` | 10-60 |
-| — from rootserver: `crypto.rs`, `vfs.rs`, `block.rs`, `block_cache.rs`, `novafs.rs`, `strategy.rs` | | |
+| NovaFS dependency | `Cargo.toml` | `novafs-core` crate |
 | Handler: `local_open` → `open_inode` | `main.rs` | 273-294 |
 | FS protocol dispatch | `main.rs` | 724-1321 |
 
@@ -157,7 +172,7 @@
 | What | File | Line |
 |---|---|---|
 | Workspace Cargo.toml | `Cargo.toml` | 1-40 |
-| Workspace members (6 crates) | `Cargo.toml` | 2-9 |
+| Workspace members (7 crates) | `Cargo.toml` | 2-10 |
 | Workspace dependencies | `Cargo.toml` | 12-15 |
 | Workspace lints | `Cargo.toml` | 25-40 |
 | Cargo target config | `.cargo/config.toml` | 1-5 |
@@ -236,7 +251,7 @@ Host (Windows 10 + WSL2 Ubuntu 24.04 or native Linux)
 
 ### Layer 3: Core Library (libnova)
 
-`libnova` is a `no_std` Rust library providing all user-space abstractions:
+`libnova` is a `no_std` Rust library providing all user-space abstractions. It has an optional `std` feature for host-native unit tests:
 
 ```
 libnova/
@@ -248,6 +263,8 @@ libnova/
 ├── log.rs        — Domain-gated logging (log_debug!, log_trace!)
 ├── tcb.rs        — TCB configuration
 └── env.rs        — Argument iterator
+
+`std` feature: enables host-native `cargo test` (provides `__sel4_ipc_buffer` stub in `sel4-sys`).
 ```
 
 **Key architectural note**: Syscall numbers are magic numbers scattered in code:
@@ -262,13 +279,25 @@ libnova/
 The initial user-mode process. RootServer is the **syscall dispatch center** + **NovaFS data plane** + **Shell** + **Process manager** + **Memory manager** + **Service registry**.
 
 **Syscall dispatch** (`main.rs:1366-3319`):
-- Single 1953-line `match label { 1..=50 => { ... } }` block
-- Labels 1-13: core (print, exit, brk, yield, wait, spawn, get_pid, sleep, shm)
+- ~~Single 1953-line `match label` block~~ — split into `services/rootserver/src/handlers/`
+- `handlers/core.rs`: process lifecycle + memory handlers extracted
+- `handlers/fs.rs`: FS handlers extracted (`open`, `read`, `write`, `close`, `chmod`, `chown`, `symlink`, `readlink`, `mkdir`, `rmdir`, `unlink`, `rename`, `link`, `block_*`)
+- `handlers/metadata.rs`: uid/gid handlers extracted
+- `handlers/service.rs`: service registry + time + shutdown handlers extracted
+- Input validation helpers live in `libnova::validate` and are host-tested
+- `handlers/core.rs`, `handlers/fs.rs`, `handlers/metadata.rs`, `handlers/service.rs` now call `validate_message_length` / `validate_mr_index` / `validate_cap_index` at handler entry
 - Labels 20-23: FS (open, read, write, close)
-- Labels 24-29: metadata (chmod, chown, symlink, readlink, get/set uid/gid)
-- Labels 30-33: services (register, lookup, set_ready)
-- Labels 34-46: more FS, mmap, block I/O, time, epoch, shutdown
-- Label 5: VM fault handler
+- Labels 24-27: FS (chmod, chown, symlink, readlink)
+- Labels 28-29: metadata (getuid, setuid)
+- Labels 30-31: services (register, lookup)
+- Labels 32-33: metadata (getgid, setgid)
+- Labels 34-37: FS (mkdir, rmdir, unlink, rename)
+- Labels 38-39: memory (mmap_shared, munmap_shared)
+- Labels 40-43: FS/block (link, block_read, block_write, block_info)
+- Labels 44-46: services/time (get_unix_time, set_ready, fs_view_epoch)
+- Label 50: system (shutdown)
+- Label 5: VM fault handler (still inline in `main.rs`)
+- Label 13: `sys_send` IPC (still inline in `main.rs`)
 
 **Architecture constraint — FS forwarding deadlock** (`main.rs:65`):
 ```rust
@@ -285,8 +314,7 @@ RootServer cannot synchronously `Call` fs_server and have fs_server `Call` back 
 File system service. **Current state**: syscall-backed persistent proxy, NOT the real data plane owner.
 
 **Architecture reality**:
-- Shares NovaFS code via `include!("../../rootserver/src/fs/novafs.rs")` — compile-time copy, not a library dependency
-- Same for `vfs.rs`, `block_cache.rs`, `strategy.rs`, `crypto.rs`, `block.rs`
+- Depends on `libs/novafs-core/` as a normal crate dependency (no `include!()`)
 - Has its own `FdEntry` table (32 entries) mirrored from RootServer
 - `ENSURE_LOCAL_FS_FRESH` pattern: before handling FS requests, checks if RootServer's `FS_VIEW_EPOCH` has changed; if so, re-mounts NovaFS from block device (lazy epoch-based refresh)
 - **Not yet the persistence authority** — RootServer's local NovaFS is still the real data plane
@@ -327,6 +355,8 @@ User-mode multi-mode binary, launched as `/bin/hello`:
 - All helpers communicate with `fs_server` directly via `FS_LABEL_*` IPC calls (not via RootServer syscall)
 
 ### Layer 5: File System (NovaFS)
+
+NovaFS implementation now lives in `libs/novafs-core/` and is consumed by both RootServer and fs_server.
 
 | Property | Value |
 |---|---|
@@ -388,7 +418,7 @@ User-mode multi-mode binary, launched as `/bin/hello`:
 
 1. **`FS_SYNC_FORWARD_ENABLED=false`**: RootServer cannot synchronously forward FS calls to fs_server because fs_server calls back into RootServer's syscall endpoint (same-thread deadlock). Architecturally unsolved.
 
-2. **`include!()` code sharing**: `fs_server` includes rootserver source files at compile time (`include!("../../rootserver/src/...")`). This creates tight coupling — changes to rootserver can silently break fs_server. The `dead_code` lint had to be relaxed for fs_server because of unused rootserver code.
+2. ~~`include!()` code sharing~~ **RESOLVED**: `fs_server` now depends on `libs/novafs-core/` as a normal crate. The `dead_code` lint exemption has been removed.
 
 3. **No network stack**: All IPC is within a single host. No network drivers, sockets, or inter-host communication.
 
@@ -408,7 +438,7 @@ User-mode multi-mode binary, launched as `/bin/hello`:
 [RootServer as FS authority] ──migrating──▶ [fs_server as FS authority]
          │                                           │
          │  Owns NovaFS + block device               │  Persistent proxy only
-         │  Shell commands partially delegated        │  Real NovaFS via include!()
+         │  Shell commands partially delegated        │  Real NovaFS via novafs-core crate
          │   via /bin/hello helpers                   │  Epoch-based lazy refresh
          │                                           │  Not yet direct block device owner
          └───────────────────────────────────────────┘
@@ -437,6 +467,7 @@ E:\System/
 ├── kernel/seL4/         — submodule (ELF kernel)
 ├── libs/
 │   ├── libnova/         — Core user-space library
+│   ├── novafs-core/     — NovaFS on-disk format, block cache, VFS traits
 │   ├── seL4-sys/        — seL4 FFI bindings
 │   └── util_libs/       — submodule (seL4 utility libs)
 ├── services/
@@ -464,6 +495,7 @@ E:\System/
 | Shell command full service migration | In progress (basic commands done) |
 | Crash recovery / durability testing | Not automated |
 | CI/CD pipeline | Basic GitHub Actions workflow created (`.github/workflows/ci.yml`); fmt/check/clippy on Linux, fmt on Windows |
+| Host-native unit tests | `libnova` and `novafs-core` now compile/test on host via `std` feature; run with `--features std --target <host-triple>` |
 | Rust edition 2024 migration | Not done (file-level warnings) |
 | RISC-V port | Not started (config exists in seL4-sys) |
-| std environment | Not applicable (no_std everywhere) |
+| std environment | Not applicable for kernel/user-space; `std` feature exists only for host testing |

@@ -2,12 +2,11 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
+pub mod ata;
 pub mod keyboard;
+pub mod rtc;
 pub mod serial;
 pub mod timer;
-pub mod rtc;
-pub mod ata;
-pub mod block;
 
 #[derive(Debug, Clone)]
 pub enum DriverEvent {
@@ -41,7 +40,11 @@ impl DriverManager {
         for driver in self.drivers.values_mut() {
             println!("[Kernel] Initializing driver: {}", driver.name());
             if let Err(e) = driver.init() {
-                 println!("[Kernel] Failed to initialize driver {}: {}", driver.name(), e);
+                println!(
+                    "[Kernel] Failed to initialize driver {}: {}",
+                    driver.name(),
+                    e
+                );
             }
         }
     }
@@ -56,7 +59,7 @@ impl DriverManager {
         }
         events
     }
-    
+
     #[allow(dead_code)]
     pub fn get_driver_by_badge(&mut self, badge: u64) -> Option<&mut Box<dyn Driver>> {
         self.drivers.get_mut(&badge)

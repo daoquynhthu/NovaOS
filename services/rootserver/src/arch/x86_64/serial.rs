@@ -1,4 +1,4 @@
-use crate::arch::port_io::{outb, inb};
+use crate::arch::port_io::{inb, outb};
 
 const COM1: u16 = 0x3F8;
 
@@ -12,14 +12,14 @@ impl SerialPort {
     }
 
     pub fn init(&self) {
-        outb(self.port + 1, 0x00);    // Disable all interrupts
-        outb(self.port + 3, 0x80);    // Enable DLAB (set baud rate divisor)
-        outb(self.port, 0x03);    // Set divisor to 3 (lo byte) 38400 baud
-        outb(self.port + 1, 0x00);    //                  (hi byte)
-        outb(self.port + 3, 0x03);    // 8 bits, no parity, one stop bit
-        outb(self.port + 2, 0x07);    // Enable FIFO, clear them, with 1-byte threshold
-        outb(self.port + 4, 0x0B);    // IRQs enabled, RTS/DSR set
-        outb(self.port + 1, 0x01);    // Enable RX Interrupt
+        outb(self.port + 1, 0x00); // Disable all interrupts
+        outb(self.port + 3, 0x80); // Enable DLAB (set baud rate divisor)
+        outb(self.port, 0x03); // Set divisor to 3 (lo byte) 38400 baud
+        outb(self.port + 1, 0x00); //                  (hi byte)
+        outb(self.port + 3, 0x03); // 8 bits, no parity, one stop bit
+        outb(self.port + 2, 0x07); // Enable FIFO, clear them, with 1-byte threshold
+        outb(self.port + 4, 0x0B); // IRQs enabled, RTS/DSR set
+        outb(self.port + 1, 0x01); // Enable RX Interrupt
     }
 
     #[allow(dead_code)]

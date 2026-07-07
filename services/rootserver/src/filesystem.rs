@@ -1,6 +1,3 @@
-
-
-
 pub struct File {
     pub name: &'static str,
     pub data: &'static [u8],
@@ -32,7 +29,6 @@ pub fn get_file(name: &str) -> Option<&'static [u8]> {
 
 #[allow(dead_code)]
 pub fn list_files() {
-
     println!("Available files:");
     for file in FILES {
         println!("  - {} ({} bytes)", file.name, file.data.len());

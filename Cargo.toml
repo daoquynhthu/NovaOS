@@ -6,6 +6,7 @@ members = [
     "services/user_app",
     "services/serial_server",
     "services/fs_server",
+    "libs/novafs-core",
 ]
 resolver = "2"
 

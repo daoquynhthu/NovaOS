@@ -1,9 +1,9 @@
-use sel4_sys::*;
-use xmas_elf::{ElfFile, program};
-use crate::memory::{SlotAllocator, ObjectAllocator, FrameAllocator};
-use crate::vspace::VSpace;
+use crate::memory::{FrameAllocator, ObjectAllocator, SlotAllocator};
 use crate::process::MappedFrame;
+use crate::vspace::VSpace;
 use libnova::cap::{cap_rights_new, CNode};
+use sel4_sys::*;
+use xmas_elf::{program, ElfFile};
 
 // Temporary constant until we confirm sel4_sys export
 #[allow(dead_code, non_upper_case_globals)]
@@ -11,7 +11,8 @@ const seL4_X86_4K: seL4_Word = 8;
 
 const PAGE_SIZE: usize = 4096;
 // Address where we map pages temporarily to copy data
-// Must be a valid user-space address that doesn't conflict with the loaded ELF or Heap
+// Must be a valid user-space address that doesn't conflict with the loaded ELF
+// or Heap
 pub const COPY_WINDOW_ADDR: usize = 0x1000_0000;
 // Service binaries now include more shared filesystem logic. Keep a bounded
 // static loader buffer, but allow moderately larger userland ELFs.
@@ -40,22 +41,27 @@ impl<'a> ElfLoader<'a> {
         elf_data: &[u8],
         mapped_frames: &mut alloc::vec::Vec<MappedFrame>,
     ) -> Result<usize, seL4_Error> {
-        log_debug!(libnova::log::DOM_LOADER, "[Loader] load_elf called. Data len: {}", elf_data.len());
+        log_debug!(
+            libnova::log::DOM_LOADER,
+            "[Loader] load_elf called. Data len: {}",
+            elf_data.len()
+        );
         if elf_data.len() > MAX_ELF_SIZE {
             println!("[Loader] ELF too large: {} bytes", elf_data.len());
             return Err(seL4_Error::seL4_InvalidArgument);
         }
 
-        let elf_data_aligned: &[u8] = if (elf_data.as_ptr() as usize).is_multiple_of(core::mem::align_of::<u64>()) {
-            elf_data
-        } else {
-            // Use static buffer to avoid stack overflow
-            // SAFE: RootServer is single-threaded and we only load one ELF at a time
-            unsafe {
-                ELF_BUF.0[..elf_data.len()].copy_from_slice(elf_data);
-                &ELF_BUF.0[..elf_data.len()]
-            }
-        };
+        let elf_data_aligned: &[u8] =
+            if (elf_data.as_ptr() as usize).is_multiple_of(core::mem::align_of::<u64>()) {
+                elf_data
+            } else {
+                // Use static buffer to avoid stack overflow
+                // SAFE: RootServer is single-threaded and we only load one ELF at a time
+                unsafe {
+                    ELF_BUF.0[..elf_data.len()].copy_from_slice(elf_data);
+                    &ELF_BUF.0[..elf_data.len()]
+                }
+            };
 
         log_debug!(libnova::log::DOM_LOADER, "[Loader] Parsing ELF header...");
         let elf = ElfFile::new(elf_data_aligned).map_err(|_| {
@@ -63,7 +69,11 @@ impl<'a> ElfLoader<'a> {
             seL4_Error::seL4_InvalidArgument
         })?;
 
-        log_debug!(libnova::log::DOM_LOADER, "[Loader] ELF loaded. Entry: 0x{:x}", elf.header.pt2.entry_point());
+        log_debug!(
+            libnova::log::DOM_LOADER,
+            "[Loader] ELF loaded. Entry: 0x{:x}",
+            elf.header.pt2.entry_point()
+        );
 
         // We need a VSpace wrapper for the current RootServer to map pages for copying
         // Note: We use the existing Root CNode slot for InitThreadVSpace
@@ -78,7 +88,13 @@ impl<'a> ElfLoader<'a> {
                 let offset = ph.offset() as usize;
                 let flags = ph.flags();
 
-                log_debug!(libnova::log::DOM_LOADER, "[Loader] Segment: VAddr=0x{:x}, MemSize={}, FileSize={}", vaddr, mem_size, file_size);
+                log_debug!(
+                    libnova::log::DOM_LOADER,
+                    "[Loader] Segment: VAddr=0x{:x}, MemSize={}, FileSize={}",
+                    vaddr,
+                    mem_size,
+                    file_size
+                );
 
                 // Calculate page range
                 let start_page = vaddr & !(PAGE_SIZE - 1);
@@ -86,54 +102,64 @@ impl<'a> ElfLoader<'a> {
 
                 for page_vaddr in (start_page..end_page).step_by(PAGE_SIZE) {
                     // 1. Allocate Frame using FrameAllocator
-                    let (frame_cap, _recycled) = frame_allocator.alloc(
-                        allocator,
-                        self.boot_info,
-                        slot_allocator
-                    )?;
-                    
+                    let (frame_cap, _recycled) =
+                        frame_allocator.alloc(allocator, self.boot_info, slot_allocator)?;
+
                     if frame_cap == 0 {
                         println!("[Loader] FrameAllocator returned 0!");
                         return Err(seL4_Error::seL4_NotEnoughMemory);
                     }
-                    
-                    log_trace!(libnova::log::DOM_LOADER, "[Loader] Allocated frame {} for vaddr {:x}", frame_cap, page_vaddr);
+
+                    log_trace!(
+                        libnova::log::DOM_LOADER,
+                        "[Loader] Allocated frame {} for vaddr {:x}",
+                        frame_cap,
+                        page_vaddr
+                    );
 
                     let read = flags.is_read() || flags.is_execute();
                     let write = flags.is_write();
                     let target_rights = cap_rights_new(false, false, read, write);
-                    let default_attr = sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
+                    let default_attr =
+                        sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
 
                     let res = (|| -> Result<(), seL4_Error> {
                         // 2. Map to RootServer for copying
                         // We use Read/Write for RootServer to write data
                         let rw_rights = cap_rights_new(false, false, true, true);
-                        let default_attr = sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
-                        
-                        // We map to a unique address based on frame cap to avoid potential TLB/remapping issues
-                        // COPY_WINDOW_ADDR + (frame_cap * PAGE_SIZE)
+                        let default_attr =
+                            sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
+
+                        // We map to a unique address based on frame cap to avoid potential
+                        // TLB/remapping issues COPY_WINDOW_ADDR +
+                        // (frame_cap * PAGE_SIZE)
                         let copy_window = COPY_WINDOW_ADDR + (frame_cap as usize * PAGE_SIZE);
 
                         // FIX: Use a copy of the capability for mapping to RootServer
-                        // This avoids "InvalidCapability" errors when mapping the same frame cap multiple times
-                        let copy_cap = slot_allocator.alloc().map_err(|_| seL4_Error::seL4_NotEnoughMemory)?;
-                        let root_cnode_cap = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+                        // This avoids "InvalidCapability" errors when mapping the same frame cap
+                        // multiple times
+                        let copy_cap = slot_allocator
+                            .alloc()
+                            .map_err(|_| seL4_Error::seL4_NotEnoughMemory)?;
+                        let root_cnode_cap =
+                            seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
                         let root_cnode = CNode::new(root_cnode_cap, 64); // Depth 64 (ignored by copy wrapper usually)
-                        
-                        root_cnode.copy(copy_cap, &root_cnode, frame_cap, rw_rights)
+
+                        root_cnode
+                            .copy(copy_cap, &root_cnode, frame_cap, rw_rights)
                             .map_err(|_| {
                                 slot_allocator.free(copy_cap);
-                                seL4_Error::seL4_IllegalOperation 
+                                seL4_Error::seL4_IllegalOperation
                             })?;
 
                         let map_res = root_vspace.map_page(
-                            allocator, 
-                            slot_allocator, 
-                            self.boot_info, 
-                            copy_cap, 
-                            copy_window, 
-                            rw_rights, 
-                            default_attr
+                            allocator,
+                            slot_allocator,
+                            self.boot_info,
+                            copy_cap,
+                            copy_window,
+                            rw_rights,
+                            default_attr,
                         );
 
                         if let Err(e) = map_res {
@@ -144,9 +170,11 @@ impl<'a> ElfLoader<'a> {
 
                         // 3. Copy Data
                         let dest_ptr = copy_window as *mut u8;
-                        
+
                         // Zero the page first (handle BSS implicitly)
-                        unsafe { dest_ptr.write_bytes(0, PAGE_SIZE); }
+                        unsafe {
+                            dest_ptr.write_bytes(0, PAGE_SIZE);
+                        }
 
                         // Determine how much data to copy from file
                         let segment_end_vaddr = vaddr + file_size;
@@ -161,25 +189,26 @@ impl<'a> ElfLoader<'a> {
                             let src_offset = offset + (copy_start_vaddr - vaddr); // Offset within ELF file
 
                             if src_offset + copy_len <= elf_data_aligned.len() {
-                                 unsafe {
-                                     core::ptr::copy_nonoverlapping(
-                                         elf_data_aligned.as_ptr().add(src_offset),
-                                         dest_ptr.add(dest_offset),
-                                         copy_len
-                                     );
-                                 }
+                                unsafe {
+                                    core::ptr::copy_nonoverlapping(
+                                        elf_data_aligned.as_ptr().add(src_offset),
+                                        dest_ptr.add(dest_offset),
+                                        copy_len,
+                                    );
+                                }
                             } else {
-                                 println!("[Loader] Error: Segment out of bounds of ELF file");
-                                 // cleanup
-                                 root_vspace.unmap_page(copy_cap)?;
-                                 root_cnode.delete(copy_cap).ok();
-                                 slot_allocator.free(copy_cap);
-                                 return Err(seL4_Error::seL4_InvalidArgument);
+                                println!("[Loader] Error: Segment out of bounds of ELF file");
+                                // cleanup
+                                root_vspace.unmap_page(copy_cap)?;
+                                root_cnode.delete(copy_cap).ok();
+                                slot_allocator.free(copy_cap);
+                                return Err(seL4_Error::seL4_InvalidArgument);
                             }
                         }
 
                         // 4. Unmap from RootServer
-                        // IMPORTANT: We must unmap so we can reuse COPY_WINDOW_ADDR (actually we use unique addrs now but good practice)
+                        // IMPORTANT: We must unmap so we can reuse COPY_WINDOW_ADDR (actually we
+                        // use unique addrs now but good practice)
                         root_vspace.unmap_page(copy_cap)?;
                         root_cnode.delete(copy_cap).ok();
                         slot_allocator.free(copy_cap);
@@ -195,22 +224,23 @@ impl<'a> ElfLoader<'a> {
                             frame_cap,
                             page_vaddr,
                             target_rights,
-                            default_attr
+                            default_attr,
                         )?;
-                        
+
                         Ok(())
                     })();
 
                     if let Err(e) = res {
-                         // Cleanup frame_cap on failure using FrameAllocator
-                         // NOTE: We don't delete the cap here because FrameAllocator might want to reuse the slot?
-                         // Actually, FrameAllocator::free pushes it to free_list.
-                         // But if we allocated it via FrameAllocator::alloc -> it might have called allocator.allocate.
-                         // If we just return it, it's fine.
-                         frame_allocator.free(frame_cap);
-                         return Err(e);
+                        // Cleanup frame_cap on failure using FrameAllocator
+                        // NOTE: We don't delete the cap here because FrameAllocator might want to
+                        // reuse the slot? Actually, FrameAllocator::free
+                        // pushes it to free_list. But if we allocated it
+                        // via FrameAllocator::alloc -> it might have called allocator.allocate.
+                        // If we just return it, it's fine.
+                        frame_allocator.free(frame_cap);
+                        return Err(e);
                     }
-                    
+
                     // Track the allocated frame
                     mapped_frames.push(MappedFrame {
                         cap: frame_cap,

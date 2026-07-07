@@ -1,6 +1,6 @@
 use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use spin::Mutex;
 
 // Global VFS instance
@@ -30,7 +30,9 @@ pub struct FileStat {
 
 impl FileStat {
     pub fn check_access(&self, uid: u32, gid: u32, access_mask: u16) -> bool {
-        if uid == 0 { return true; } // Root always has access
+        if uid == 0 {
+            return true;
+        } // Root always has access
 
         let effective_mode = if self.uid == uid {
             (self.mode >> 6) & 0x7
@@ -39,7 +41,7 @@ impl FileStat {
         } else {
             self.mode & 0x7
         };
-        
+
         (effective_mode & access_mask) == access_mask
     }
 }
@@ -54,7 +56,12 @@ pub trait FileSystem: Send + Sync {
         self.resolve_path_ex(cwd, path, true)
     }
 
-    fn resolve_path_ex(&self, cwd: &str, path: &str, follow_last: bool) -> Result<Arc<dyn Inode>, &'static str> {
+    fn resolve_path_ex(
+        &self,
+        cwd: &str,
+        path: &str,
+        follow_last: bool,
+    ) -> Result<Arc<dyn Inode>, &'static str> {
         let mut symlink_depth = 0;
         const MAX_SYMLINKS: u32 = 8;
 
@@ -63,21 +70,25 @@ pub trait FileSystem: Send + Sync {
             String::from(path)
         } else {
             let mut s = String::from(cwd);
-            if !s.ends_with('/') { s.push('/'); }
+            if !s.ends_with('/') {
+                s.push('/');
+            }
             s.push_str(path);
             s
         };
-        
+
         let mut components: Vec<String> = Vec::new();
         for part in full_path.split('/') {
-            if part.is_empty() || part == "." { continue; }
+            if part.is_empty() || part == "." {
+                continue;
+            }
             if part == ".." {
                 components.pop();
             } else {
                 components.push(String::from(part));
             }
         }
-        
+
         if full_path.starts_with('/') {
             current = self.root_inode();
         }
@@ -86,33 +97,39 @@ pub trait FileSystem: Send + Sync {
         while i < components.len() {
             let part = &components[i];
             let next_inode = current.lookup(part)?;
-            
+
             let metadata = next_inode.metadata()?;
             if metadata.file_type == FileType::Symlink {
                 // Check if we should follow
                 if i == components.len() - 1 && !follow_last {
-                     current = next_inode;
-                     i += 1;
-                     continue;
+                    current = next_inode;
+                    i += 1;
+                    continue;
                 }
 
                 if symlink_depth >= MAX_SYMLINKS {
                     return Err("Too many symbolic links");
                 }
                 symlink_depth += 1;
-                
+
                 let mut content = alloc::vec![0u8; metadata.size];
                 next_inode.read_at(0, &mut content)?;
                 let target = String::from_utf8(content).map_err(|_| "Invalid symlink content")?;
-                
+
                 if target.starts_with('/') {
                     // Absolute
                     current = self.root_inode();
                     let remaining = components.split_off(i + 1);
                     components.clear();
                     for p in target.split('/') {
-                        if p.is_empty() || p == "." { continue; }
-                        if p == ".." { components.pop(); } else { components.push(String::from(p)); }
+                        if p.is_empty() || p == "." {
+                            continue;
+                        }
+                        if p == ".." {
+                            components.pop();
+                        } else {
+                            components.push(String::from(p));
+                        }
                     }
                     components.extend(remaining);
                     i = 0;
@@ -120,11 +137,13 @@ pub trait FileSystem: Send + Sync {
                     // Relative
                     let remaining = components.split_off(i + 1);
                     // Remove the symlink itself (at i)
-                    components.pop(); 
-                    
+                    components.pop();
+
                     for p in target.split('/') {
-                         if p.is_empty() || p == "." { continue; }
-                         components.push(String::from(p));
+                        if p.is_empty() || p == "." {
+                            continue;
+                        }
+                        components.push(String::from(p));
                     }
                     components.extend(remaining);
                     // i stays same
@@ -150,10 +169,14 @@ pub trait FileSystem: Send + Sync {
     }
 
     fn create_file(&self, path: &str) -> Result<Arc<dyn Inode>, &'static str> {
-         if let Some(idx) = path.rfind('/') {
+        if let Some(idx) = path.rfind('/') {
             let (parent_path, name) = path.split_at(idx);
             let name = &name[1..];
-            let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
+            let parent_path = if parent_path.is_empty() {
+                "/"
+            } else {
+                parent_path
+            };
             let parent = self.resolve_path("/", parent_path)?;
             parent.create(name, FileType::File)
         } else {
@@ -184,14 +207,18 @@ pub trait FileSystem: Send + Sync {
                 if let Some(idx) = path.rfind('/') {
                     let (parent_path, name) = path.split_at(idx);
                     let name = &name[1..];
-                    let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
+                    let parent_path = if parent_path.is_empty() {
+                        "/"
+                    } else {
+                        parent_path
+                    };
                     let parent = self.resolve_path("/", parent_path)?;
                     let inode = parent.lookup(name)?;
-                    
+
                     // Try to truncate to 0 (Op 3)
                     // If not supported, we just overwrite (which might leave trailing garbage)
                     let _ = inode.control(3, 0);
-                    
+
                     inode.write_at(0, data)
                 } else {
                     let root = self.root_inode();
@@ -199,7 +226,7 @@ pub trait FileSystem: Send + Sync {
                     let _ = inode.control(3, 0);
                     inode.write_at(0, data)
                 }
-            },
+            }
             Err(e) => Err(e),
         }
     }
@@ -211,7 +238,7 @@ pub trait Inode: Send + Sync {
     fn write_at(&self, offset: usize, buf: &[u8]) -> Result<usize, &'static str>;
     fn metadata(&self) -> Result<FileStat, &'static str>;
     fn sync(&self) -> Result<(), &'static str>;
-    
+
     // Directory Operations
     fn lookup(&self, name: &str) -> Result<Arc<dyn Inode>, &'static str>;
     fn create(&self, name: &str, type_: FileType) -> Result<Arc<dyn Inode>, &'static str>;
@@ -220,7 +247,12 @@ pub trait Inode: Send + Sync {
     fn link(&self, _name: &str, _other: &dyn Inode) -> Result<(), &'static str> {
         Err("Not supported")
     }
-    fn rename(&self, _old_name: &str, _new_parent: &Arc<dyn Inode>, _new_name: &str) -> Result<(), &'static str> {
+    fn rename(
+        &self,
+        _old_name: &str,
+        _new_parent: &Arc<dyn Inode>,
+        _new_name: &str,
+    ) -> Result<(), &'static str> {
         Err("Not supported")
     }
     fn control(&self, _op: u32, _arg: u64) -> Result<u64, &'static str> {
@@ -229,7 +261,11 @@ pub trait Inode: Send + Sync {
 }
 
 /// Helper to resolve path (Delegates to FileSystem trait)
-pub fn resolve_path(fs: &Arc<dyn FileSystem>, cwd: &str, path: &str) -> Result<Arc<dyn Inode>, &'static str> {
+pub fn resolve_path(
+    fs: &Arc<dyn FileSystem>,
+    cwd: &str,
+    path: &str,
+) -> Result<Arc<dyn Inode>, &'static str> {
     fs.resolve_path(cwd, path)
 }
 

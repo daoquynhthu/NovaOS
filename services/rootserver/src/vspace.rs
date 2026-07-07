@@ -1,8 +1,7 @@
-use sel4_sys::{
-    seL4_BootInfo, seL4_CPtr, seL4_CapRights, seL4_Error, seL4_Word,
-    seL4_X86_VMAttributes,
-};
 use crate::memory::{ObjectAllocator, SlotAllocator};
+use sel4_sys::{
+    seL4_BootInfo, seL4_CPtr, seL4_CapRights, seL4_Error, seL4_Word, seL4_X86_VMAttributes,
+};
 
 // x86_64 mapping constants
 // const SEL4_MAPPING_LOOKUP_LEVEL: usize = 2; // Unused
@@ -84,7 +83,7 @@ fn to_sel4_error(e: libnova::syscall::Error) -> seL4_Error {
 
 impl VSpace {
     pub fn new(pml4_cap: seL4_CPtr) -> Self {
-        VSpace { 
+        VSpace {
             pml4_cap,
             paging_caps: [None; MAX_PAGING_CAPS],
             paging_cap_count: 0,
@@ -103,10 +102,11 @@ impl VSpace {
         // Assign ASID
         // seL4_X86_ASIDPool_Assign takes 1 capability (PML4) and 0 data words.
         // MessageInfo::new(label, caps_unwrapped, extra_caps, length)
-        let info = libnova::ipc::MessageInfo::new(ARCH_INVOCATION_LABEL_X86_ASID_POOL_ASSIGN, 0, 1, 0);
+        let info =
+            libnova::ipc::MessageInfo::new(ARCH_INVOCATION_LABEL_X86_ASID_POOL_ASSIGN, 0, 1, 0);
         libnova::ipc::set_cap(0, pml4_cap);
         libnova::ipc::call(asid_pool, info)?;
-        
+
         Ok(VSpace::new(pml4_cap))
     }
 
@@ -123,7 +123,7 @@ impl VSpace {
         if level == 4 {
             return Ok(self.pml4_cap);
         }
-        
+
         let mask = match level {
             3 => !((1 << 39) - 1), // PDPT (covers 512GB)
             2 => !((1 << 30) - 1), // PD (covers 1GB)
@@ -159,16 +159,37 @@ impl VSpace {
         if self.get_cap(vaddr, 2).is_err() {
             // Level 3: PDPT
             if self.get_cap(vaddr, 3).is_err() {
-                 // Map PDPT (Level 3) into PML4 (Level 4)
-                 self.map_paging_structure(allocator, slots, boot_info, vaddr, SE_L4_X86_PDPT_OBJECT, ARCH_INVOCATION_LABEL_X86_PDPT_MAP)?;
+                // Map PDPT (Level 3) into PML4 (Level 4)
+                self.map_paging_structure(
+                    allocator,
+                    slots,
+                    boot_info,
+                    vaddr,
+                    SE_L4_X86_PDPT_OBJECT,
+                    ARCH_INVOCATION_LABEL_X86_PDPT_MAP,
+                )?;
             }
             // Map PD (Level 2) into PDPT (Level 3)
-            self.map_paging_structure(allocator, slots, boot_info, vaddr, SE_L4_X86_PAGE_DIRECTORY_OBJECT, ARCH_INVOCATION_LABEL_X86_PAGE_DIRECTORY_MAP)?;
+            self.map_paging_structure(
+                allocator,
+                slots,
+                boot_info,
+                vaddr,
+                SE_L4_X86_PAGE_DIRECTORY_OBJECT,
+                ARCH_INVOCATION_LABEL_X86_PAGE_DIRECTORY_MAP,
+            )?;
         }
-        
+
         // Map PT (Level 1) into PD (Level 2)
-        self.map_paging_structure(allocator, slots, boot_info, vaddr, SE_L4_X86_PAGE_TABLE_OBJECT, ARCH_INVOCATION_LABEL_X86_PAGE_TABLE_MAP)?;
-        
+        self.map_paging_structure(
+            allocator,
+            slots,
+            boot_info,
+            vaddr,
+            SE_L4_X86_PAGE_TABLE_OBJECT,
+            ARCH_INVOCATION_LABEL_X86_PAGE_TABLE_MAP,
+        )?;
+
         Ok(())
     }
 
@@ -186,30 +207,36 @@ impl VSpace {
         attr: seL4_X86_VMAttributes,
     ) -> Result<(), seL4_Error> {
         debug_assert!(vaddr % 4096 == 0, "Virtual address must be page aligned");
-        
+
         self.ensure_pt_exists(allocator, slots, boot_info, vaddr)?;
 
         let info = libnova::ipc::MessageInfo::new(ARCH_INVOCATION_LABEL_X86_PAGE_MAP, 0, 1, 3);
         libnova::ipc::set_mr(0, vaddr as seL4_Word);
         libnova::ipc::set_mr(1, rights.words[0]); // Access inner word
         libnova::ipc::set_mr(2, attr as seL4_Word);
-        // On x86_64, map operations take the PML4 as the target cap, not the immediate parent
+        // On x86_64, map operations take the PML4 as the target cap, not the immediate
+        // parent
         libnova::ipc::set_cap(0, self.pml4_cap);
-        
-        // println!("[VSpace] map_page: cap={} vaddr={:x} pml4={} rights={:?}", frame_cap, vaddr, self.pml4_cap, rights);
+
+        // println!("[VSpace] map_page: cap={} vaddr={:x} pml4={} rights={:?}",
+        // frame_cap, vaddr, self.pml4_cap, rights);
 
         let dest_info = libnova::ipc::call(frame_cap, info);
         dest_info.map(|_| ()).map_err(|e| {
-             println!("[VSpace] Page Map Failed! Error={:?} frame_cap={}, pml4={}, vaddr={:x}", 
-                  e, frame_cap, self.pml4_cap, vaddr);
-             e
+            println!(
+                "[VSpace] Page Map Failed! Error={:?} frame_cap={}, pml4={}, vaddr={:x}",
+                e, frame_cap, self.pml4_cap, vaddr
+            );
+            e
         })
     }
 
     /// Unmap a page
     pub fn unmap_page(&mut self, frame_cap: seL4_CPtr) -> Result<(), seL4_Error> {
         let info = libnova::ipc::MessageInfo::new(ARCH_INVOCATION_LABEL_X86_PAGE_UNMAP, 0, 0, 0);
-        libnova::ipc::call(frame_cap, info).map(|_| ()).map_err(|e| e)
+        libnova::ipc::call(frame_cap, info)
+            .map(|_| ())
+            .map_err(|e| e)
     }
 
     fn map_paging_structure<A: ObjectAllocator>(
@@ -242,17 +269,24 @@ impl VSpace {
             // - Args: [vaddr, attr]
             let info = libnova::ipc::MessageInfo::new(map_label, 0, 1, 2);
             libnova::ipc::set_mr(0, vaddr as seL4_Word);
-            libnova::ipc::set_mr(1, seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes as seL4_Word);
+            libnova::ipc::set_mr(
+                1,
+                seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes as seL4_Word,
+            );
             libnova::ipc::set_cap(0, parent_cap);
 
             let dest_info = libnova::ipc::call(cap, info);
             if let Err(e) = dest_info {
                 if e != seL4_Error::seL4_DeleteFirst {
-                    println!("[VSpace] Map Paging Structure Failed: {:?} for cap {} at {:x}", e, cap, vaddr);
+                    println!(
+                        "[VSpace] Map Paging Structure Failed: {:?} for cap {} at {:x}",
+                        e, cap, vaddr
+                    );
                     return Err(e);
                 }
-                // If DeleteFirst, we ignore the error (structure already exists)
-                // We still track it in paging_caps so we don't try to map it again in this VSpace instance.
+                // If DeleteFirst, we ignore the error (structure already
+                // exists) We still track it in paging_caps so
+                // we don't try to map it again in this VSpace instance.
             }
         }
 
@@ -263,7 +297,8 @@ impl VSpace {
             level,
         });
         self.paging_cap_count += 1;
-        // println!("[VSpace] Mapped paging structure (type={}, level={}) at 0x{:x}, cap={}", type_, level, vaddr, cap);
+        // println!("[VSpace] Mapped paging structure (type={}, level={}) at 0x{:x},
+        // cap={}", type_, level, vaddr, cap);
         Ok(())
     }
 }

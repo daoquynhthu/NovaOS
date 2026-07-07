@@ -1,7 +1,7 @@
-use core::fmt;
-use spin::Mutex;
 use crate::syscall::sys_print;
+use core::fmt;
 use sel4_sys::seL4_CPtr;
+use spin::Mutex;
 
 static CONSOLE_EP: Mutex<Option<seL4_CPtr>> = Mutex::new(None);
 
@@ -15,23 +15,23 @@ impl DebugConsole {
     fn write_byte(&self, c: u8) {
         #[cfg(target_arch = "x86_64")]
         unsafe {
-             // seL4_SysDebugPutChar = -9
-             const SEL4_SYS_DEBUG_PUT_CHAR: isize = -9;
-             let sys_num: usize = SEL4_SYS_DEBUG_PUT_CHAR as usize;
-             let dest: usize = c as usize;
-             let info: usize = 0;
-             
-             core::arch::asm!(
-                "mov r12, rsp",
-                "syscall",
-                "mov rsp, r12",
-                in("rdx") sys_num,
-                in("rdi") dest,
-                in("rsi") info,
-                out("rcx") _,
-                out("r11") _,
-                out("r12") _,
-             );
+            // seL4_SysDebugPutChar = -9
+            const SEL4_SYS_DEBUG_PUT_CHAR: isize = -9;
+            let sys_num: usize = SEL4_SYS_DEBUG_PUT_CHAR as usize;
+            let dest: usize = c as usize;
+            let info: usize = 0;
+
+            core::arch::asm!(
+               "mov r12, rsp",
+               "syscall",
+               "mov rsp, r12",
+               in("rdx") sys_num,
+               in("rdi") dest,
+               in("rsi") info,
+               out("rcx") _,
+               out("r11") _,
+               out("r12") _,
+            );
         }
     }
 }
@@ -61,12 +61,12 @@ impl fmt::Write for UserConsole {
 
 pub fn print_impl(args: fmt::Arguments) {
     use fmt::Write;
-    
+
     // Check if we have a registered user console endpoint
     // Note: We avoid holding the lock during the write to prevent deadlocks,
     // but we need the EP.
     let ep_opt = *CONSOLE_EP.lock();
-    
+
     if let Some(ep) = ep_opt {
         let mut console = UserConsole { ep };
         let _ = console.write_fmt(args);

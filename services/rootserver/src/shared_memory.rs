@@ -1,7 +1,7 @@
-use sel4_sys::{seL4_CPtr, seL4_Error, seL4_Word};
-use libnova::cap::{cap_rights_new, CNode};
-use crate::memory::{ObjectAllocator, SlotAllocator, MemoryRegion, MAX_REGION_PAGES};
+use crate::memory::{MemoryRegion, ObjectAllocator, SlotAllocator, MAX_REGION_PAGES};
 use crate::process::Process;
+use libnova::cap::{cap_rights_new, CNode};
+use sel4_sys::{seL4_CPtr, seL4_Error, seL4_Word};
 
 const MAX_SHARED_REGIONS: usize = 32;
 const MAX_SHARED_MAPPINGS: usize = 128;

@@ -4,7 +4,7 @@ pub trait IOStrategy: Send + Sync {
     /// Reorder a list of block IDs for optimal access.
     /// Returns a new vector with sorted/scheduled block IDs.
     fn schedule(&self, requests: &[u32]) -> Vec<u32>;
-    
+
     fn name(&self) -> &'static str;
 }
 

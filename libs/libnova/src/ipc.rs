@@ -6,7 +6,12 @@ pub struct MessageInfo {
 }
 
 impl MessageInfo {
-    pub fn new(label: seL4_Word, caps_unwrapped: seL4_Word, extra_caps: seL4_Word, length: seL4_Word) -> Self {
+    pub fn new(
+        label: seL4_Word,
+        caps_unwrapped: seL4_Word,
+        extra_caps: seL4_Word,
+        length: seL4_Word,
+    ) -> Self {
         MessageInfo {
             inner: seL4_MessageInfo_new(label, caps_unwrapped, extra_caps, length),
         }
@@ -18,6 +23,10 @@ impl MessageInfo {
 
     pub fn length(&self) -> seL4_Word {
         seL4_MessageInfo_get_length(self.inner)
+    }
+
+    pub fn extra_caps(&self) -> seL4_Word {
+        seL4_MessageInfo_get_extraCaps(self.inner)
     }
 }
 
@@ -53,11 +62,15 @@ pub fn recv(src: seL4_CPtr) -> (seL4_Word, MessageInfo) {
     }
 }
 
-pub fn reply_recv(src: seL4_CPtr, info: MessageInfo) -> Result<(seL4_Word, MessageInfo), seL4_Error> {
+pub fn reply_recv(
+    src: seL4_CPtr,
+    info: MessageInfo,
+) -> Result<(seL4_Word, MessageInfo), seL4_Error> {
     unsafe {
         let mut sender: seL4_Word = 0;
         let result = seL4_ReplyRecv(src, info.inner, &mut sender);
-        // Do not check label for error, as the received message may have a non-zero label (e.g. syscall)
+        // Do not check label for error, as the received message may have a non-zero
+        // label (e.g. syscall)
         Ok((sender, MessageInfo { inner: result }))
     }
 }
@@ -77,9 +90,7 @@ pub fn set_mr(i: usize, value: seL4_Word) {
 }
 
 pub fn get_mr(i: usize) -> seL4_Word {
-    unsafe {
-        seL4_GetMR(i)
-    }
+    unsafe { seL4_GetMR(i) }
 }
 
 pub fn set_cap(i: usize, cap: seL4_CPtr) {
@@ -98,3 +109,5 @@ pub fn set_cap_receive_path(root: seL4_CPtr, cap: seL4_CPtr, depth: seL4_Word) {
         }
     }
 }
+
+pub mod pack;

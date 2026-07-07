@@ -20,3 +20,4 @@ workspace = true
 default = ["x86_64"]
 x86_64 = []
 riscv64 = []
+std = []

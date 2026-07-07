@@ -1,6 +1,6 @@
-use crate::arch::serial::SerialPort;
 use super::{Driver, DriverEvent};
 use crate::arch::ioapic;
+use crate::arch::serial::SerialPort;
 
 pub struct SerialDriver {
     port: SerialPort,
@@ -33,16 +33,16 @@ impl Driver for SerialDriver {
 
     fn handle_irq(&mut self, _irq: u8) -> alloc::vec::Vec<DriverEvent> {
         let mut events = alloc::vec::Vec::new();
-        
+
         // Read all available bytes
         while let Some(byte) = self.port.receive() {
             events.push(DriverEvent::SerialInput(byte));
         }
-        
+
         if let Err(_) = ioapic::ack_irq(self.irq_cap) {
-             // Log?
+            // Log?
         }
-        
+
         events
     }
 }

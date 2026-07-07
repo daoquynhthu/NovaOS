@@ -1,0 +1,18 @@
+[package]
+name = "novafs-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["NovaOS Team"]
+description = "NovaFS core library: on-disk format, block cache, and VFS traits"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+std = ["libnova/std"]
+
+[dependencies]
+libnova = { path = "../libnova", default-features = false }
+spin = { workspace = true }
+linked_list_allocator = { workspace = true }

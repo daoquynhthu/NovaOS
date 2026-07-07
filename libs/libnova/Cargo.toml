@@ -8,6 +8,10 @@ description = "Core library for NovaOS native system calls and abstractions"
 [lints]
 workspace = true
 
+[features]
+default = []
+std = ["sel4-sys/std"]
+
 [dependencies]
-sel4-sys = { path = "../seL4-sys" }
+sel4-sys = { path = "../seL4-sys", default-features = false }
 spin = { workspace = true }

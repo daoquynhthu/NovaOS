@@ -1,5 +1,5 @@
-use sel4_sys::*;
 use crate::syscall::{check_msg_err, Result};
+use sel4_sys::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tcb {
@@ -24,7 +24,8 @@ impl Tcb {
                 invocation_label_TCBConfigure as seL4_Word,
                 0, // 0 unwrapped caps
                 3, // 3 extra caps: CSpace, VSpace, Buffer
-                4, // 4 arguments: FaultEP (MR0), CSpaceData (MR1), VSpaceData (MR2), BufferAddr (MR3)
+                4, /* 4 arguments: FaultEP (MR0), CSpaceData (MR1), VSpaceData (MR2), BufferAddr
+                    * (MR3) */
             );
 
             // MR0: Fault Endpoint
@@ -68,10 +69,7 @@ impl Tcb {
 
     pub fn resume(&self) -> Result<()> {
         unsafe {
-            let info = seL4_MessageInfo_new(
-                invocation_label_TCBResume as seL4_Word,
-                0, 0, 0
-            );
+            let info = seL4_MessageInfo_new(invocation_label_TCBResume as seL4_Word, 0, 0, 0);
             let resp = seL4_Call(self.cptr, info);
             check_msg_err(resp)
         }
@@ -79,10 +77,7 @@ impl Tcb {
 
     pub fn suspend(&self) -> Result<()> {
         unsafe {
-            let info = seL4_MessageInfo_new(
-                invocation_label_TCBSuspend as seL4_Word,
-                0, 0, 0
-            );
+            let info = seL4_MessageInfo_new(invocation_label_TCBSuspend as seL4_Word, 0, 0, 0);
             let resp = seL4_Call(self.cptr, info);
             check_msg_err(resp)
         }
@@ -98,12 +93,12 @@ impl Tcb {
         unsafe {
             // Context structure (x86_64)
             // 0: rip, 1: rsp, 2: rflags, ..., 8: rdi
-            
+
             let mut regs = [0u64; 20];
             regs[0] = rip.try_into().unwrap();
             regs[1] = rsp.try_into().unwrap();
             regs[2] = rflags.try_into().unwrap();
-            regs[8] = rdi.try_into().unwrap(); 
+            regs[8] = rdi.try_into().unwrap();
 
             let num_regs = 20;
 

@@ -1,4 +1,4 @@
-use crate::arch::port_io::{outl, inl};
+use crate::arch::port_io::{inl, outl};
 use alloc::vec::Vec;
 
 const CONFIG_ADDRESS: u16 = 0xCF8;
@@ -72,16 +72,34 @@ pub fn pci_write_16(bus: u8, device: u8, function: u8, offset: u8, value: u16) {
 
 impl PciDevice {
     pub fn read_bar(&self, index: u8) -> u32 {
-         // BARs are at 0x10, 0x14, 0x18, 0x1C, 0x20, 0x24
-         // index 0..5
-         if index > 5 { return 0; }
-         pci_read_32(self.address.bus, self.address.device, self.address.function, 0x10 + (index * 4))
+        // BARs are at 0x10, 0x14, 0x18, 0x1C, 0x20, 0x24
+        // index 0..5
+        if index > 5 {
+            return 0;
+        }
+        pci_read_32(
+            self.address.bus,
+            self.address.device,
+            self.address.function,
+            0x10 + (index * 4),
+        )
     }
-    
+
     #[allow(dead_code)]
     pub fn enable_bus_mastering(&self) {
-        let command = pci_read_16(self.address.bus, self.address.device, self.address.function, 0x04);
-        pci_write_16(self.address.bus, self.address.device, self.address.function, 0x04, command | 0x04);
+        let command = pci_read_16(
+            self.address.bus,
+            self.address.device,
+            self.address.function,
+            0x04,
+        );
+        pci_write_16(
+            self.address.bus,
+            self.address.device,
+            self.address.function,
+            0x04,
+            command | 0x04,
+        );
     }
 }
 
@@ -94,11 +112,11 @@ pub fn scan_bus() -> Vec<PciDevice> {
                 devices.push(dev.clone());
                 // Handle multi-function
                 if dev.header_type & 0x80 != 0 {
-                     for function in 1..8 {
-                         if let Some(fdev) = check_function(bus, device, function) {
-                             devices.push(fdev);
-                         }
-                     }
+                    for function in 1..8 {
+                        if let Some(fdev) = check_function(bus, device, function) {
+                            devices.push(fdev);
+                        }
+                    }
                 }
             }
         }
@@ -124,7 +142,11 @@ fn check_function(bus: u8, device: u8, function: u8) -> Option<PciDevice> {
     let header_type = pci_read_8(bus, device, function, 0x0E);
 
     Some(PciDevice {
-        address: PciAddress { bus, device, function },
+        address: PciAddress {
+            bus,
+            device,
+            function,
+        },
         vendor_id,
         device_id,
         class_id,
@@ -138,12 +160,16 @@ fn check_function(bus: u8, device: u8, function: u8) -> Option<PciDevice> {
 pub fn init() {
     log_debug!(libnova::log::DOM_PCI, "[PCI] Scanning PCI Bus...");
     let devices = scan_bus();
-    log_debug!(libnova::log::DOM_PCI, "[PCI] Found {} devices.", devices.len());
+    log_debug!(
+        libnova::log::DOM_PCI,
+        "[PCI] Found {} devices.",
+        devices.len()
+    );
     for dev in devices {
         log_debug!(libnova::log::DOM_PCI, "[PCI] {:02x}:{:02x}.{:x} Vendor={:04x} Device={:04x} Class={:02x} Subclass={:02x} ProgIF={:02x} Rev={:02x}",
             dev.address.bus, dev.address.device, dev.address.function,
             dev.vendor_id, dev.device_id, dev.class_id, dev.subclass_id, dev.prog_if, dev.revision_id);
-            
+
         // Print BARs
         for i in 0..6 {
             let bar = dev.read_bar(i);

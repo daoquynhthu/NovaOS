@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
+use crate::block_device::BlockDevice;
+use crate::strategy::{create_strategy, IOStrategy};
 use alloc::sync::Arc;
-use crate::drivers::block::BlockDevice;
-use crate::fs::strategy::{IOStrategy, create_strategy};
+use alloc::vec::Vec;
 
 const CACHE_SIZE: usize = 32; // 32 * 512B = 16KB
 const BLOCK_SIZE: usize = 512;
@@ -39,11 +39,15 @@ impl<D: BlockDevice + Send + Sync + 'static> BlockCache<D> {
         for _ in 0..CACHE_SIZE {
             entries.push(CacheEntry::new());
         }
-        
+
         let is_rotational = device.is_rotational();
         let strategy = create_strategy(is_rotational);
-        log_debug!(libnova::log::DOM_DISK, "[BlockCache] Using Strategy: {}", strategy.name());
-        
+        log_debug!(
+            libnova::log::DOM_DISK,
+            "[BlockCache] Using Strategy: {}",
+            strategy.name()
+        );
+
         Self {
             entries,
             device,
@@ -54,7 +58,7 @@ impl<D: BlockDevice + Send + Sync + 'static> BlockCache<D> {
 
     pub fn read_block(&mut self, block_id: u32, buf: &mut [u8]) -> Result<(), &'static str> {
         self.tick += 1;
-        
+
         // 1. Search in cache
         if let Some(idx) = self.find_index(block_id) {
             self.entries[idx].last_used = self.tick;
@@ -64,20 +68,22 @@ impl<D: BlockDevice + Send + Sync + 'static> BlockCache<D> {
 
         // 2. Cache Miss
         let idx = self.find_victim();
-        
+
         // Write back if dirty
         if self.entries[idx].valid && self.entries[idx].dirty {
-            self.device.write_block(self.entries[idx].block_id, &self.entries[idx].data)?;
+            self.device
+                .write_block(self.entries[idx].block_id, &self.entries[idx].data)?;
             self.entries[idx].dirty = false;
         }
 
         // Load new block
-        self.device.read_block(block_id, &mut self.entries[idx].data)?;
+        self.device
+            .read_block(block_id, &mut self.entries[idx].data)?;
         self.entries[idx].block_id = block_id;
         self.entries[idx].valid = true;
         self.entries[idx].dirty = false;
         self.entries[idx].last_used = self.tick;
-        
+
         buf.copy_from_slice(&self.entries[idx].data);
         Ok(())
     }
@@ -95,18 +101,20 @@ impl<D: BlockDevice + Send + Sync + 'static> BlockCache<D> {
 
         // 2. Cache Miss - Find victim
         let idx = self.find_victim();
-        
+
         if self.entries[idx].valid && self.entries[idx].dirty {
-            self.device.write_block(self.entries[idx].block_id, &self.entries[idx].data)?;
+            self.device
+                .write_block(self.entries[idx].block_id, &self.entries[idx].data)?;
         }
-        
-        // We overwrite the data completely, so no need to read from disk (assuming full block write)
+
+        // We overwrite the data completely, so no need to read from disk (assuming full
+        // block write)
         self.entries[idx].block_id = block_id;
         self.entries[idx].data.copy_from_slice(buf);
         self.entries[idx].valid = true;
         self.entries[idx].dirty = true;
         self.entries[idx].last_used = self.tick;
-        
+
         Ok(())
     }
 
@@ -117,24 +125,23 @@ impl<D: BlockDevice + Send + Sync + 'static> BlockCache<D> {
                 dirty_blocks.push(entry.block_id);
             }
         }
-        
+
         if dirty_blocks.is_empty() {
             return Ok(());
         }
 
         let scheduled_blocks = self.strategy.schedule(&dirty_blocks);
-        
+
         for block_id in scheduled_blocks {
-             if let Some(idx) = self.find_index(block_id) {
-                 if self.entries[idx].valid && self.entries[idx].dirty {
-                     self.device.write_block(block_id, &self.entries[idx].data)?;
-                     self.entries[idx].dirty = false;
-                 }
-             }
+            if let Some(idx) = self.find_index(block_id) {
+                if self.entries[idx].valid && self.entries[idx].dirty {
+                    self.device.write_block(block_id, &self.entries[idx].data)?;
+                    self.entries[idx].dirty = false;
+                }
+            }
         }
         Ok(())
     }
-
 
     fn find_index(&self, block_id: u32) -> Option<usize> {
         for (i, entry) in self.entries.iter().enumerate() {
@@ -149,7 +156,7 @@ impl<D: BlockDevice + Send + Sync + 'static> BlockCache<D> {
         // Find entry with smallest last_used
         let mut min_tick = u64::MAX;
         let mut victim_idx = 0;
-        
+
         // First pass: look for invalid entries
         for (i, entry) in self.entries.iter().enumerate() {
             if !entry.valid {

@@ -15,22 +15,22 @@ static LOG_LEVEL: AtomicU32 = AtomicU32::new(1);
 // ── Domain bitflags ─────────────────────────────────────────────────
 // For fine-grained control, set DOMAIN_MASK to filter specific domains.
 // Default: all domains enabled (0xFFFF_FFFF).
-pub const DOM_FS: u32       = 1 << 0;  // NovaFS internal debug
-pub const DOM_LOADER: u32   = 1 << 1;  // ELF loader frame-by-frame map
-pub const DOM_ACPI: u32     = 1 << 2;  // ACPI table parsing
-pub const DOM_PROCESS: u32  = 1 << 3;  // Process lifecycle detail
-pub const DOM_MEM: u32      = 1 << 4;  // Memory allocation/stats
-pub const DOM_VSPACE: u32   = 1 << 5;  // Virtual address space
-pub const DOM_WORKER: u32   = 1 << 6;  // Worker thread events
-pub const DOM_ALLOC: u32    = 1 << 7;  // Allocator internal detail
-pub const DOM_SECURITY: u32 = 1 << 8;  // Security checks
-pub const DOM_SHELL: u32    = 1 << 9;  // Shell debug
-pub const DOM_STRESS: u32   = 1 << 10; // Stress test detail
-pub const DOM_BENCH: u32    = 1 << 11; // Benchmarks
-pub const DOM_APIC: u32     = 1 << 12; // APIC/IOAPIC config
-pub const DOM_PCI: u32      = 1 << 13; // PCI enumeration
-pub const DOM_DISK: u32     = 1 << 14; // Disk/ATA I/O
-pub const DOM_IPC: u32      = 1 << 15; // IPC tracing
+pub const DOM_FS: u32 = 1 << 0; // NovaFS internal debug
+pub const DOM_LOADER: u32 = 1 << 1; // ELF loader frame-by-frame map
+pub const DOM_ACPI: u32 = 1 << 2; // ACPI table parsing
+pub const DOM_PROCESS: u32 = 1 << 3; // Process lifecycle detail
+pub const DOM_MEM: u32 = 1 << 4; // Memory allocation/stats
+pub const DOM_VSPACE: u32 = 1 << 5; // Virtual address space
+pub const DOM_WORKER: u32 = 1 << 6; // Worker thread events
+pub const DOM_ALLOC: u32 = 1 << 7; // Allocator internal detail
+pub const DOM_SECURITY: u32 = 1 << 8; // Security checks
+pub const DOM_SHELL: u32 = 1 << 9; // Shell debug
+pub const DOM_STRESS: u32 = 1 << 10; // Stress test detail
+pub const DOM_BENCH: u32 = 1 << 11; // Benchmarks
+pub const DOM_APIC: u32 = 1 << 12; // APIC/IOAPIC config
+pub const DOM_PCI: u32 = 1 << 13; // PCI enumeration
+pub const DOM_DISK: u32 = 1 << 14; // Disk/ATA I/O
+pub const DOM_IPC: u32 = 1 << 15; // IPC tracing
 
 // Domain mask (enables/disables specific domains)
 static DOMAIN_MASK: AtomicU32 = AtomicU32::new(0xFFFF_FFFF);

@@ -1,4 +1,4 @@
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 //! libnova: NovaOS 核心抽象库
 //! 提供基于权能的系统调用封装和异步 IPC 接口
@@ -6,14 +6,15 @@
 
 extern crate alloc;
 
-pub mod syscall;
 pub mod cap;
-pub mod ipc;
-pub mod tcb;
 pub mod console;
 pub mod env;
 pub mod fs_ipc;
+pub mod ipc;
 pub mod log;
+pub mod syscall;
+pub mod tcb;
+pub mod validate;
 
 pub const PROT_READ: usize = 0x1;
 pub const PROT_WRITE: usize = 0x2;

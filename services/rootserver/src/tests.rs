@@ -1,16 +1,15 @@
 #![allow(dead_code, unused_imports)]
-use sel4_sys::{
-    seL4_BootInfo, seL4_CPtr, seL4_Word, seL4_PageBits, seL4_Error, seL4_CapRights,
-    api_object_seL4_TCBObject, seL4_TCBBits,
-    api_object_seL4_EndpointObject, seL4_EndpointBits,
-};
+use crate::ipc::Endpoint;
+use crate::memory::{FrameAllocator, ObjectAllocator, SlotAllocator, UntypedAllocator};
+use crate::process::Process;
+use crate::vspace::VSpace;
+use libnova::cap::{cap_rights_new, CNode};
 use sel4_sys::seL4_RootCNodeCapSlots;
 use sel4_sys::seL4_X86_VMAttributes;
-use crate::memory::{UntypedAllocator, SlotAllocator, ObjectAllocator, FrameAllocator};
-use crate::vspace::VSpace;
-use crate::process::Process;
-use crate::ipc::Endpoint;
-use libnova::cap::{cap_rights_new, CNode};
+use sel4_sys::{
+    api_object_seL4_EndpointObject, api_object_seL4_TCBObject, seL4_BootInfo, seL4_CPtr,
+    seL4_CapRights, seL4_EndpointBits, seL4_Error, seL4_PageBits, seL4_TCBBits, seL4_Word,
+};
 
 // Temporary constant until we confirm sel4_sys export
 #[allow(non_upper_case_globals)]
@@ -45,26 +44,38 @@ fn test_rootserver_mapping(
     let frame_cap = match frame_allocator.alloc(allocator, boot_info, slot_allocator) {
         Ok((c, _)) => c,
         Err(e) => {
-             println!("[FAIL] Failed to allocate frame: {:?}", e);
-             return;
+            println!("[FAIL] Failed to allocate frame: {:?}", e);
+            return;
         }
     };
-    
+
     // On x86_64, InitThreadVSpace is the PML4
     let root_pml4 = seL4_RootCNodeCapSlots::seL4_CapInitThreadVSpace as seL4_CPtr;
     let mut root_vspace = VSpace::new(root_pml4);
-    
+
     let vaddr = 0x1000_0000;
     let rights = cap_rights_new(false, false, true, true);
     let attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
-    
-    println!("[INFO] Mapping frame {} to vaddr 0x{:x} in PML4 {}...", frame_cap, vaddr, root_pml4);
-    
+
+    println!(
+        "[INFO] Mapping frame {} to vaddr 0x{:x} in PML4 {}...",
+        frame_cap, vaddr, root_pml4
+    );
+
     // Test Shared Mapping: Map to a new VSpace first
     let asid_pool = seL4_RootCNodeCapSlots::seL4_CapInitThreadASIDPool as seL4_CPtr;
-    let mut temp_vspace = VSpace::new_from_scratch(allocator, slot_allocator, boot_info, asid_pool).unwrap();
+    let mut temp_vspace =
+        VSpace::new_from_scratch(allocator, slot_allocator, boot_info, asid_pool).unwrap();
     println!("[INFO] Mapping frame {} to Temp VSpace first...", frame_cap);
-    match temp_vspace.map_page(allocator, slot_allocator, boot_info, frame_cap, 0x1000, rights, attr) {
+    match temp_vspace.map_page(
+        allocator,
+        slot_allocator,
+        boot_info,
+        frame_cap,
+        0x1000,
+        rights,
+        attr,
+    ) {
         Ok(_) => println!("[PASS] Mapped to Temp VSpace."),
         Err(e) => println!("[FAIL] Failed to map to Temp VSpace: {:?}", e),
     }
@@ -72,23 +83,31 @@ fn test_rootserver_mapping(
     // Try copying the cap for the second mapping
     let copied_cap = slot_allocator.alloc().unwrap();
     let cnode_cap = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-    let root_cnode = CNode::new(cnode_cap, 64); // 64-bit root cnode size? No, depth. 
-    // Root CNode size is usually 12 bits? 
-    // Wait, CNode::new takes depth? Or size_bits?
-    // Let's check libnova::cap::CNode
-    // Assuming new(cnode, depth)
-    // Root CNode depth is likely 12 (4096 slots).
-    
+    let root_cnode = CNode::new(cnode_cap, 64); // 64-bit root cnode size? No, depth.
+                                                // Root CNode size is usually 12 bits?
+                                                // Wait, CNode::new takes depth? Or size_bits?
+                                                // Let's check libnova::cap::CNode
+                                                // Assuming new(cnode, depth)
+                                                // Root CNode depth is likely 12 (4096 slots).
+
     // Copy frame_cap to copied_cap
     let err = root_cnode.copy(copied_cap, &root_cnode, frame_cap, rights);
     if let Err(e) = err {
-         println!("[FAIL] Failed to copy cap: {:?}", e);
+        println!("[FAIL] Failed to copy cap: {:?}", e);
     } else {
-         println!("[INFO] Copied frame cap to {}", copied_cap);
-         match root_vspace.map_page(allocator, slot_allocator, boot_info, copied_cap, vaddr, rights, attr) {
+        println!("[INFO] Copied frame cap to {}", copied_cap);
+        match root_vspace.map_page(
+            allocator,
+            slot_allocator,
+            boot_info,
+            copied_cap,
+            vaddr,
+            rights,
+            attr,
+        ) {
             Ok(_) => {
                 println!("[PASS] Mapped copied frame to RootServer at 0x{:x}", vaddr);
-            },
+            }
             Err(e) => println!("[FAIL] Failed to map copied frame to RootServer: {:?}", e),
         }
     }
@@ -97,9 +116,9 @@ fn test_rootserver_mapping(
 pub fn test_disk_driver() {
     println!("[INFO] Testing Disk Driver (ATA PIO)...");
     use crate::drivers::ata::AtaDriver;
-    
+
     let driver = AtaDriver::new(0x1F0);
-    
+
     // Test Write to Sector 1
     let mut pattern = [0u8; 512];
     for i in 0..512 {
@@ -107,13 +126,16 @@ pub fn test_disk_driver() {
     }
     pattern[0] = 0xBE;
     pattern[1] = 0xEF;
-    
-    log_debug!(libnova::log::DOM_DISK, "[DISK] Writing pattern to Sector 1...");
+
+    log_debug!(
+        libnova::log::DOM_DISK,
+        "[DISK] Writing pattern to Sector 1..."
+    );
     if let Err(e) = driver.write_sectors(1, &pattern) {
         println!("[ERROR] Disk Write Failed: {}", e);
         return;
     }
-    
+
     // Test Read from Sector 1
     log_debug!(libnova::log::DOM_DISK, "[DISK] Reading back Sector 1...");
     match driver.read_sectors(1, 1) {
@@ -122,13 +144,16 @@ pub fn test_disk_driver() {
                 println!("[ERROR] Read length mismatch: {}", data.len());
                 return;
             }
-            
+
             if data[0] == 0xBE && data[1] == 0xEF && data[511] == (511 % 255) as u8 {
                 println!("[PASS] Disk Read/Write Verified!");
             } else {
-                println!("[ERROR] Disk Content Mismatch! [0]={:x}, [1]={:x}, [511]={:x}", data[0], data[1], data[511]);
+                println!(
+                    "[ERROR] Disk Content Mismatch! [0]={:x}, [1]={:x}, [511]={:x}",
+                    data[0], data[1], data[511]
+                );
             }
-        },
+        }
         Err(e) => println!("[ERROR] Disk Read Failed: {}", e),
     }
 }
@@ -156,11 +181,28 @@ fn test_user_hello_program(
         }
     };
 
-    println!("[INFO] Spawning process with Syscall Endpoint Cap: {}", syscall_ep_cap);
+    println!(
+        "[INFO] Spawning process with Syscall Endpoint Cap: {}",
+        syscall_ep_cap
+    );
 
     let elf_data = crate::filesystem::get_file("hello").expect("hello binary not found");
     let args = ["hello", "test_arg"];
-    let mut process = match Process::spawn(allocator, slot_allocator, frame_allocator, boot_info, "hello", elf_data, &args, &[], 100, syscall_ep_cap, 0, 0, 0) {
+    let mut process = match Process::spawn(
+        allocator,
+        slot_allocator,
+        frame_allocator,
+        boot_info,
+        "hello",
+        elf_data,
+        &args,
+        &[],
+        100,
+        syscall_ep_cap,
+        0,
+        0,
+        0,
+    ) {
         Ok(p) => p,
         Err(e) => {
             println!("[ERROR] Failed to spawn hello program: {:?}", e);
@@ -178,7 +220,8 @@ fn test_user_hello_program(
         let label = info.label();
 
         match label {
-            1 => { // sys_write (debug_print)
+            1 => {
+                // sys_write (debug_print)
                 // MR0..MR3 contain string chunks (8 bytes each)
                 let mut bytes = [0u8; 32];
                 unsafe {
@@ -189,57 +232,60 @@ fn test_user_hello_program(
                     *p.add(3) = mrs[3];
                 }
                 for &b in bytes.iter() {
-                    if b == 0 { break; }
+                    if b == 0 {
+                        break;
+                    }
                     print!("{}", b as char);
                 }
 
                 // Reply with success (0) and wait for next
-                let (new_info, new_badge, new_mrs) = syscall_ep.reply_recv_with_mrs(
-                    libnova::ipc::MessageInfo::new(0, 0, 0, 1),
-                    [0, 0, 0, 0]
-                );
+                let (new_info, new_badge, new_mrs) = syscall_ep
+                    .reply_recv_with_mrs(libnova::ipc::MessageInfo::new(0, 0, 0, 1), [0, 0, 0, 0]);
                 info = new_info;
                 sender_badge = new_badge;
                 mrs = new_mrs;
             }
-            2 => { // sys_exit
+            2 => {
+                // sys_exit
                 println!("[INFO] Process exited with code: {}", mrs[0]);
                 break;
             }
-            3 => { // sys_brk
-                 // Mock sys_brk for test
-                 println!("[TEST] sys_brk called. Returning success.");
-                 let (new_info, new_badge, new_mrs) = syscall_ep.reply_recv_with_mrs(
-                    libnova::ipc::MessageInfo::new(0, 0, 0, 1),
-                    [mrs[0], 0, 0, 0] // Return same addr as success
-                );
-                info = new_info;
-                sender_badge = new_badge;
-                mrs = new_mrs;
-            }
-            4 => { // sys_yield
-                println!("[TEST] Process yielded.");
+            3 => {
+                // sys_brk
+                // Mock sys_brk for test
+                println!("[TEST] sys_brk called. Returning success.");
                 let (new_info, new_badge, new_mrs) = syscall_ep.reply_recv_with_mrs(
-                    libnova::ipc::MessageInfo::new(0, 0, 0, 0),
-                    [0, 0, 0, 0]
+                    libnova::ipc::MessageInfo::new(0, 0, 0, 1),
+                    [mrs[0], 0, 0, 0], // Return same addr as success
                 );
                 info = new_info;
                 sender_badge = new_badge;
                 mrs = new_mrs;
             }
-            9 => { // sys_get_pid
+            4 => {
+                // sys_yield
+                println!("[TEST] Process yielded.");
+                let (new_info, new_badge, new_mrs) = syscall_ep
+                    .reply_recv_with_mrs(libnova::ipc::MessageInfo::new(0, 0, 0, 0), [0, 0, 0, 0]);
+                info = new_info;
+                sender_badge = new_badge;
+                mrs = new_mrs;
+            }
+            9 => {
+                // sys_get_pid
                 // Return non-zero so this self-test instance follows child path
                 // and exits quickly without running the full suite again.
-                let (new_info, new_badge, new_mrs) = syscall_ep.reply_recv_with_mrs(
-                    libnova::ipc::MessageInfo::new(0, 0, 0, 1),
-                    [1, 0, 0, 0]
-                );
+                let (new_info, new_badge, new_mrs) = syscall_ep
+                    .reply_recv_with_mrs(libnova::ipc::MessageInfo::new(0, 0, 0, 1), [1, 0, 0, 0]);
                 info = new_info;
                 sender_badge = new_badge;
                 mrs = new_mrs;
             }
             _ => {
-                println!("[INFO] Unknown syscall label: {}. Badge: {}", label, sender_badge);
+                println!(
+                    "[INFO] Unknown syscall label: {}. Badge: {}",
+                    label, sender_badge
+                );
                 break;
             }
         }
@@ -254,17 +300,21 @@ fn test_user_hello_program(
 
 fn test_process_manager() {
     println!("[INFO] Testing ProcessManager (Global)...");
-    use crate::process::{Process, get_process_manager};
-    
+    use crate::process::{get_process_manager, Process};
+
     // Access the global process manager
     let mut pm = get_process_manager();
-    
+
     // Create a dummy process (invalid caps, just for structural test)
     let dummy_process = Process {
         name: alloc::string::String::from("dummy"),
         fs_forwarding_enabled: true,
         tcb_cap: 999,
-        vspace: crate::vspace::VSpace { pml4_cap: 888, paging_caps: [None; 32], paging_cap_count: 0 },
+        vspace: crate::vspace::VSpace {
+            pml4_cap: 888,
+            paging_caps: [None; 32],
+            paging_cap_count: 0,
+        },
         fault_ep_cap: 0,
         syscall_ep_cap: 0,
         ipc_buffer_cap: 0,
@@ -284,16 +334,16 @@ fn test_process_manager() {
         waiting_for_child: None,
         mmap_top: 0x7000_0000,
     };
-    
+
     // Test Add
     match pm.add_process(dummy_process) {
         Ok(pid) => {
             println!("[INFO] Added process with PID: {}", pid);
             assert!(pid == 0);
-        },
+        }
         Err(e) => println!("[ERROR] Failed to add process: {:?}", e),
     }
-    
+
     // Test Get
     if let Some(p) = pm.get_process(0) {
         println!("[INFO] Retrieved process 0, TCB cap: {}", p.tcb_cap);
@@ -307,7 +357,7 @@ fn test_process_manager() {
         println!("[INFO] Retrieved process 0 (mut), changing TCB cap...");
         p.tcb_cap = 1000;
     }
-    
+
     // Verify Mutation
     if let Some(p) = pm.get_process(0) {
         assert!(p.tcb_cap == 1000);
@@ -321,7 +371,7 @@ fn test_process_manager() {
     } else {
         println!("[ERROR] Failed to remove process 0");
     }
-    
+
     // Test Empty
     if pm.get_process(0).is_none() {
         println!("[INFO] Process 0 is indeed gone.");
@@ -336,66 +386,119 @@ fn benchmark_ipc_latency(
     slot_allocator: &mut SlotAllocator,
 ) {
     println!("[BENCHMARK] Measuring IPC Round-Trip Latency...");
-    
+
     // Setup Thread
     let tcb_obj = api_object_seL4_TCBObject;
     let tcb_bits = seL4_TCBBits;
-    let tcb_cap = allocator.allocate(boot_info, tcb_obj.into(), tcb_bits.into(), slot_allocator).expect("TCB Alloc");
-    
+    let tcb_cap = allocator
+        .allocate(boot_info, tcb_obj.into(), tcb_bits.into(), slot_allocator)
+        .expect("TCB Alloc");
+
     let vspace_root = seL4_RootCNodeCapSlots::seL4_CapInitThreadVSpace as seL4_CPtr;
     let mut process = Process::new(tcb_cap, VSpace::new(vspace_root));
-    
+
     // Allocate Stack
     let stack_vaddr = 0x40000000;
     let stack_top = stack_vaddr + 4096;
-    let stack_frame_cap = allocator.allocate(boot_info, seL4_X86_4K.into(), seL4_PageBits.into(), slot_allocator).expect("Stack Alloc");
+    let stack_frame_cap = allocator
+        .allocate(
+            boot_info,
+            seL4_X86_4K.into(),
+            seL4_PageBits.into(),
+            slot_allocator,
+        )
+        .expect("Stack Alloc");
     let rights = libnova::cap::cap_rights_new(false, false, true, true);
     let attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
-    process.vspace.map_page(allocator, slot_allocator, boot_info, stack_frame_cap, stack_vaddr, rights, attr).expect("Stack Map");
+    process
+        .vspace
+        .map_page(
+            allocator,
+            slot_allocator,
+            boot_info,
+            stack_frame_cap,
+            stack_vaddr,
+            rights,
+            attr,
+        )
+        .expect("Stack Map");
 
     // Allocate IPC Buffer
     let ipc_vaddr = 0xB0000000;
-    let ipc_frame_cap = allocator.allocate(boot_info, seL4_X86_4K.into(), seL4_PageBits.into(), slot_allocator).expect("IPC Alloc");
-    process.vspace.map_page(allocator, slot_allocator, boot_info, ipc_frame_cap, ipc_vaddr, rights, attr).expect("IPC Map");
-    
+    let ipc_frame_cap = allocator
+        .allocate(
+            boot_info,
+            seL4_X86_4K.into(),
+            seL4_PageBits.into(),
+            slot_allocator,
+        )
+        .expect("IPC Alloc");
+    process
+        .vspace
+        .map_page(
+            allocator,
+            slot_allocator,
+            boot_info,
+            ipc_frame_cap,
+            ipc_vaddr,
+            rights,
+            attr,
+        )
+        .expect("IPC Map");
+
     // Endpoint
-    let endpoint_cap = allocator.allocate(boot_info, api_object_seL4_EndpointObject.into(), seL4_EndpointBits.into(), slot_allocator).expect("EP Alloc");
-    
+    let endpoint_cap = allocator
+        .allocate(
+            boot_info,
+            api_object_seL4_EndpointObject.into(),
+            seL4_EndpointBits.into(),
+            slot_allocator,
+        )
+        .expect("EP Alloc");
+
     // Configure
     let cspace_root = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-    process.configure(cspace_root, 0, ipc_vaddr as seL4_Word, ipc_frame_cap).expect("Config");
-    
+    process
+        .configure(cspace_root, 0, ipc_vaddr as seL4_Word, ipc_frame_cap)
+        .expect("Config");
+
     let authority = seL4_RootCNodeCapSlots::seL4_CapInitThreadTCB as seL4_CPtr;
     process.set_priority(authority, 254).expect("Priority");
-    
+
     let rip = benchmark_worker as *const () as usize as seL4_Word;
     let rsp = stack_top as seL4_Word;
-    process.write_registers(rip, rsp, 0x202, endpoint_cap).expect("Regs");
-    
+    process
+        .write_registers(rip, rsp, 0x202, endpoint_cap)
+        .expect("Regs");
+
     process.resume().expect("Resume");
-    
+
     // Measurement Loop
     let endpoint = Endpoint::new(endpoint_cap);
     let iterations = 1000;
-    
+
     // Warmup
     for _ in 0..100 {
         endpoint.call(1);
     }
-    
+
     let start = unsafe { core::arch::x86_64::_rdtsc() };
     for _ in 0..iterations {
         endpoint.call(1);
     }
     let end = unsafe { core::arch::x86_64::_rdtsc() };
-    
+
     let total_cycles = end - start;
     let avg_cycles = total_cycles / iterations;
-    println!("[BENCHMARK] Average IPC Call-Reply Latency: {} cycles", avg_cycles);
-    
+    println!(
+        "[BENCHMARK] Average IPC Call-Reply Latency: {} cycles",
+        avg_cycles
+    );
+
     // Clean up (terminate worker)
     endpoint.call(0); // Signal to exit
-    // process.terminate(cspace_root).expect("Terminate"); // Optional cleanup
+                      // process.terminate(cspace_root).expect("Terminate"); //
+                      // Optional cleanup
 }
 
 #[no_mangle]
@@ -403,17 +506,21 @@ pub extern "C" fn benchmark_worker(endpoint_cap: seL4_CPtr) {
     let endpoint = Endpoint::new(endpoint_cap);
     let (mut msg, _) = endpoint.recv();
     loop {
-        if msg == 0 { 
+        if msg == 0 {
             // Reply to the exit signal to unblock the client
             // reply_recv replies to the current message (0) and waits for next.
             // This unblocks the client. We then break and yield/exit.
             endpoint.reply_recv(0);
-            break; 
+            break;
         }
         let (next_msg, _) = endpoint.reply_recv(msg);
         msg = next_msg;
     }
-    loop { unsafe { sel4_sys::seL4_Yield(); } }
+    loop {
+        unsafe {
+            sel4_sys::seL4_Yield();
+        }
+    }
 }
 
 fn test_process_spawn(
@@ -423,46 +530,51 @@ fn test_process_spawn(
     frame_allocator: &mut FrameAllocator,
 ) {
     println!("[INFO] Testing Process Spawn interface...");
-    
+
     // Dummy ELF Data (just enough to fail parsing gracefully or trigger logic)
-    // We pass a small buffer with invalid magic to ensure we don't trigger OOB panic in parser
-    let dummy_elf = [0u8; 64]; 
-    
-    // We expect this to fail at ELF loading stage, but it validates compilation and linkage of spawn()
+    // We pass a small buffer with invalid magic to ensure we don't trigger OOB
+    // panic in parser
+    let dummy_elf = [0u8; 64];
+
+    // We expect this to fail at ELF loading stage, but it validates compilation and
+    // linkage of spawn()
     match Process::spawn(
-        allocator, 
-        slot_allocator, 
+        allocator,
+        slot_allocator,
         frame_allocator,
-        boot_info, 
+        boot_info,
         "test_fail",
-        &dummy_elf, 
+        &dummy_elf,
         &[],
         &[],
         100,
         0,
         32,
         0,
-        0
+        0,
     ) {
         Ok(_) => println!("[INFO] Process spawned (unexpectedly success with empty ELF)"),
-        Err(e) => println!("[INFO] Process spawn validated (Expected failure for empty ELF: {:?})", e),
+        Err(e) => println!(
+            "[INFO] Process spawn validated (Expected failure for empty ELF: {:?})",
+            e
+        ),
     }
 
     // Verify spawn accepts arguments (compilation check)
     match Process::spawn(
-        allocator, 
-        slot_allocator, 
+        allocator,
+        slot_allocator,
         frame_allocator,
-        boot_info, 
+        boot_info,
         "test_args",
-        &dummy_elf, 
+        &dummy_elf,
         &["test_arg1", "test_arg2"],
         &[],
         100,
         0,
         32,
         0,
-        0
+        0,
     ) {
         Ok(_) => println!("[INFO] Process spawned with args (unexpectedly success)"),
         Err(_) => println!("[INFO] Process spawn with args interface validated"),
@@ -478,7 +590,7 @@ fn stress_test_memory_allocation(
     let mut caps = [0; 1000];
     for (i, cap_slot) in caps.iter_mut().enumerate() {
         if i % 100 == 0 {
-             println!("[STRESS] Progress: {}/1000", i);
+            println!("[STRESS] Progress: {}/1000", i);
         }
         match allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator) {
             Ok(cap) => *cap_slot = cap,
@@ -493,9 +605,17 @@ fn stress_test_memory_allocation(
 
     // Check fragmentation stats
     let (total_caps, ram_caps, ram_used, ram_total, _) = allocator.stats(boot_info);
-    println!("[STRESS] Memory Stats: Caps={}/{}, RAM Usage={} / {} bytes ({}%)", 
-        ram_caps, total_caps, ram_used, ram_total, 
-        if ram_total > 0 { (ram_used * 100) / ram_total } else { 0 }
+    println!(
+        "[STRESS] Memory Stats: Caps={}/{}, RAM Usage={} / {} bytes ({}%)",
+        ram_caps,
+        total_caps,
+        ram_used,
+        ram_total,
+        if ram_total > 0 {
+            (ram_used * 100) / ram_total
+        } else {
+            0
+        }
     );
     println!(
         "[STRESS] Free RAM={} bytes, FragmentedTail(<4K)={} bytes",
@@ -517,8 +637,8 @@ fn test_allocation(
     println!("[INFO] Testing allocation of 5 x 4KB Frames...");
     for i in 0..5 {
         match allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator) {
-           Ok(slot) => println!("[INFO] Allocated 4KB Frame #{} in slot {}", i + 1, slot),
-           Err(e) => println!("[ERROR] Allocation #{} failed with error: {:?}", i + 1, e),
+            Ok(slot) => println!("[INFO] Allocated 4KB Frame #{} in slot {}", i + 1, slot),
+            Err(e) => println!("[ERROR] Allocation #{} failed with error: {:?}", i + 1, e),
         }
     }
 }
@@ -531,25 +651,42 @@ fn test_vspace_mapping(
     println!("[INFO] Testing VSpace Mapping...");
     let pml4_cap = seL4_RootCNodeCapSlots::seL4_CapInitThreadVSpace as seL4_CPtr;
     let mut vspace = VSpace::new(pml4_cap);
-    
+
     println!("[INFO] Allocating frame for mapping...");
     match allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator) {
         Ok(frame_cap) => {
-            println!("[INFO] Frame allocated at slot {}. Mapping to 0x100_0000_0000...", frame_cap);
-                    let vaddr = 0x100_0000_0000;
+            println!(
+                "[INFO] Frame allocated at slot {}. Mapping to 0x100_0000_0000...",
+                frame_cap
+            );
+            let vaddr = 0x100_0000_0000;
             let rights = libnova::cap::cap_rights_new(false, false, true, true); // Read | Write
             let attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
-            
-            match vspace.map_page(allocator, slot_allocator, boot_info, frame_cap, vaddr, rights, attr) {
+
+            match vspace.map_page(
+                allocator,
+                slot_allocator,
+                boot_info,
+                frame_cap,
+                vaddr,
+                rights,
+                attr,
+            ) {
                 Ok(_) => {
-                     println!("[INFO] Page mapped successfully at 0x{:x}", vaddr);
-                     let ptr = vaddr as *mut u64;
-                     unsafe { *ptr = 0xDEADBEEF; }
-                     println!("[INFO] Write to 0x{:x} succeeded. Value: 0x{:x}", vaddr, unsafe { *ptr });
-                },
+                    println!("[INFO] Page mapped successfully at 0x{:x}", vaddr);
+                    let ptr = vaddr as *mut u64;
+                    unsafe {
+                        *ptr = 0xDEADBEEF;
+                    }
+                    println!(
+                        "[INFO] Write to 0x{:x} succeeded. Value: 0x{:x}",
+                        vaddr,
+                        unsafe { *ptr }
+                    );
+                }
                 Err(e) => println!("[ERROR] Page map failed: {:?}", e),
             }
-        },
+        }
         Err(e) => println!("[ERROR] Frame allocation failed: {:?}", e),
     }
 }
@@ -560,63 +697,84 @@ fn test_process_management(
     slot_allocator: &mut SlotAllocator,
 ) {
     println!("[INFO] Testing Process Management...");
-    
+
     let tcb_obj = api_object_seL4_TCBObject;
     let tcb_bits = seL4_TCBBits;
     let mut tcb_cap = 0;
-    
+
     match allocator.allocate(boot_info, tcb_obj.into(), tcb_bits.into(), slot_allocator) {
         Ok(cap) => {
             tcb_cap = cap;
             println!("[INFO] Allocated TCB at slot {}", tcb_cap);
-        },
+        }
         Err(e) => println!("[ERROR] Failed to allocate TCB: {:?}", e),
     }
 
     if tcb_cap != 0 {
         let vspace_root = seL4_RootCNodeCapSlots::seL4_CapInitThreadVSpace as seL4_CPtr;
         let mut process = Process::new(tcb_cap, VSpace::new(vspace_root));
-        
+
         let stack_vaddr = 0x20000000;
         let stack_top = stack_vaddr + 4096;
         let mut stack_frame_cap = 0;
-        
+
         match allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator) {
-             Ok(cap) => {
-                 stack_frame_cap = cap;
-                 let rights = libnova::cap::cap_rights_new(false, false, true, true);
-                 let attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
-                 match process.vspace.map_page(allocator, slot_allocator, boot_info, cap, stack_vaddr, rights, attr) {
-                     Ok(_) => println!("[INFO] Mapped stack at 0x{:x}", stack_vaddr),
-                     Err(e) => println!("[ERROR] Failed to map stack: {:?}", e),
-                 }
-             },
-             Err(e) => println!("[ERROR] Failed to allocate stack frame: {:?}", e),
+            Ok(cap) => {
+                stack_frame_cap = cap;
+                let rights = libnova::cap::cap_rights_new(false, false, true, true);
+                let attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
+                match process.vspace.map_page(
+                    allocator,
+                    slot_allocator,
+                    boot_info,
+                    cap,
+                    stack_vaddr,
+                    rights,
+                    attr,
+                ) {
+                    Ok(_) => println!("[INFO] Mapped stack at 0x{:x}", stack_vaddr),
+                    Err(e) => println!("[ERROR] Failed to map stack: {:?}", e),
+                }
+            }
+            Err(e) => println!("[ERROR] Failed to allocate stack frame: {:?}", e),
         }
-        
+
         let ipc_vaddr = 0x30000000;
         let mut ipc_frame_cap = 0;
-        
+
         match allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator) {
-             Ok(cap) => {
-                 ipc_frame_cap = cap;
-                 let rights = libnova::cap::cap_rights_new(false, false, true, true);
-                 let attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
-                 match process.vspace.map_page(allocator, slot_allocator, boot_info, cap, ipc_vaddr, rights, attr) {
-                     Ok(_) => println!("[INFO] Mapped IPC Buffer at 0x{:x}", ipc_vaddr),
-                     Err(e) => println!("[ERROR] Failed to map IPC Buffer: {:?}", e),
-                 }
-             },
-             Err(e) => println!("[ERROR] Failed to allocate IPC frame: {:?}", e),
+            Ok(cap) => {
+                ipc_frame_cap = cap;
+                let rights = libnova::cap::cap_rights_new(false, false, true, true);
+                let attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
+                match process.vspace.map_page(
+                    allocator,
+                    slot_allocator,
+                    boot_info,
+                    cap,
+                    ipc_vaddr,
+                    rights,
+                    attr,
+                ) {
+                    Ok(_) => println!("[INFO] Mapped IPC Buffer at 0x{:x}", ipc_vaddr),
+                    Err(e) => println!("[ERROR] Failed to map IPC Buffer: {:?}", e),
+                }
+            }
+            Err(e) => println!("[ERROR] Failed to allocate IPC frame: {:?}", e),
         }
-        
+
         if stack_frame_cap != 0 && ipc_frame_cap != 0 {
             let mut endpoint_cap = 0;
-            match allocator.allocate(boot_info, api_object_seL4_EndpointObject.into(), seL4_EndpointBits.into(), slot_allocator) {
+            match allocator.allocate(
+                boot_info,
+                api_object_seL4_EndpointObject.into(),
+                seL4_EndpointBits.into(),
+                slot_allocator,
+            ) {
                 Ok(cap) => {
                     endpoint_cap = cap;
                     println!("[INFO] Allocated Endpoint at slot {}", endpoint_cap);
-                },
+                }
                 Err(e) => println!("[ERROR] Failed to allocate Endpoint: {:?}", e),
             }
 
@@ -627,16 +785,19 @@ fn test_process_management(
                     let root_cap = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
                     let root_cnode = CNode::new(root_cap, 64); // 64-bit CNode
                     let badge = 0xBEEF;
-                    
+
                     let rights = libnova::cap::cap_rights_new(true, false, true, true);
                     match root_cnode.mint(
                         badged_endpoint_cap,
                         &root_cnode,
                         endpoint_cap,
                         rights,
-                        badge
+                        badge,
                     ) {
-                        Ok(_) => println!("[INFO] Minted Badged Endpoint (Badge=0x{:x}) at slot {}", badge, badged_endpoint_cap),
+                        Ok(_) => println!(
+                            "[INFO] Minted Badged Endpoint (Badge=0x{:x}) at slot {}",
+                            badge, badged_endpoint_cap
+                        ),
                         Err(e) => {
                             println!("[ERROR] Failed to mint badged cap: {:?}", e);
                             badged_endpoint_cap = 0;
@@ -645,38 +806,48 @@ fn test_process_management(
                 }
 
                 let cspace_root = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-                
-                // For this test, we don't strictly need a fault endpoint as it's running in same vspace (thread)
-                // But we can pass 0 for now or create one.
+
+                // For this test, we don't strictly need a fault endpoint as it's running in
+                // same vspace (thread) But we can pass 0 for now or create one.
                 match process.configure(cspace_root, 0, ipc_vaddr as seL4_Word, ipc_frame_cap) {
                     Ok(_) => println!("[INFO] TCB Configured."),
                     Err(e) => println!("[ERROR] TCB Configure failed: {:?}", e),
                 }
-                
+
                 let authority = seL4_RootCNodeCapSlots::seL4_CapInitThreadTCB as seL4_CPtr;
                 match process.set_priority(authority, 254) {
-                     Ok(_) => println!("[INFO] Priority Set."),
-                     Err(e) => println!("[ERROR] Set Priority failed: {:?}", e),
+                    Ok(_) => println!("[INFO] Priority Set."),
+                    Err(e) => println!("[ERROR] Set Priority failed: {:?}", e),
                 }
-                
+
                 let rip = worker_thread as *const () as usize as seL4_Word;
                 let rsp = stack_top as seL4_Word;
                 match process.write_registers(rip, rsp, 0x202, endpoint_cap) {
-                     Ok(_) => println!("[INFO] Registers Written. RIP=0x{:x}, RSP=0x{:x}, ARG1={}", rip, rsp, endpoint_cap),
-                     Err(e) => println!("[ERROR] Write Registers failed: {:?}", e),
+                    Ok(_) => println!(
+                        "[INFO] Registers Written. RIP=0x{:x}, RSP=0x{:x}, ARG1={}",
+                        rip, rsp, endpoint_cap
+                    ),
+                    Err(e) => println!("[ERROR] Write Registers failed: {:?}", e),
                 }
-                
+
                 match process.resume() {
-                     Ok(_) => println!("[INFO] Thread Resumed!"),
-                     Err(e) => println!("[ERROR] Resume failed: {:?}", e),
+                    Ok(_) => println!("[INFO] Thread Resumed!"),
+                    Err(e) => println!("[ERROR] Resume failed: {:?}", e),
                 }
-                
-                let client_cap = if badged_endpoint_cap != 0 { badged_endpoint_cap } else { endpoint_cap };
+
+                let client_cap = if badged_endpoint_cap != 0 {
+                    badged_endpoint_cap
+                } else {
+                    endpoint_cap
+                };
                 let endpoint = Endpoint::new(client_cap);
-                println!("[MAIN] Sending IPC message to worker using cap {}...", client_cap);
+                println!(
+                    "[MAIN] Sending IPC message to worker using cap {}...",
+                    client_cap
+                );
                 let response = endpoint.call(0x12345678);
                 println!("[MAIN] Received response: 0x{:x}", response);
-                
+
                 if response == 0x87654321 {
                     println!("[MAIN] IPC Test SUCCESS!");
                 } else {
@@ -694,113 +865,197 @@ fn test_independent_vspace(
     frame_allocator: &mut FrameAllocator,
 ) {
     println!("[INFO] Testing Independent VSpace Creation & Isolation & Fault Handling...");
-    
+
     let asid_pool = seL4_RootCNodeCapSlots::seL4_CapInitThreadASIDPool as seL4_CPtr;
-    
+
     match allocator.allocate(boot_info, seL4_X86_4K, seL4_PageBits.into(), slot_allocator) {
         Ok(code_frame_cap) => {
-             println!("[INFO] Allocated frame for Child Code at slot {}", code_frame_cap);
+            println!(
+                "[INFO] Allocated frame for Child Code at slot {}",
+                code_frame_cap
+            );
 
-             let root_vaddr = 0x500000;
-             let rights_all = libnova::cap::cap_rights_new(false, false, true, true);
-             let attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
-             
-             let root_pml4 = seL4_RootCNodeCapSlots::seL4_CapInitThreadVSpace as seL4_CPtr;
-             let mut root_vspace = VSpace::new(root_pml4);
-             
-             if root_vspace.map_page(allocator, slot_allocator, boot_info, code_frame_cap, root_vaddr, rights_all, attr).is_ok() {
-                  unsafe {
-                      let ptr = root_vaddr as *mut u8;
-                      // Write UD2 instruction (0x0F, 0x0B) to trigger fault
-                      *ptr = 0x0F;
-                      *(ptr.add(1)) = 0x0B;
-                  }
-                  println!("[INFO] Code written to frame via Root VSpace (UD2 instruction).");
-                  
-                  let mut child_code_frame_cap = 0;
-                  match slot_allocator.alloc() {
-                      Ok(slot) => {
-                          child_code_frame_cap = slot;
-                          let cnode_cap = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-                          let root_cnode = CNode::new(cnode_cap, 64);
-                           if let Err(e) = root_cnode.copy(
-                               child_code_frame_cap,
-                               &root_cnode,
-                               code_frame_cap,
-                               rights_all
-                           ) {
-                              println!("[ERROR] Failed to copy code frame cap: {:?}", e);
-                              child_code_frame_cap = 0;
-                          }
-                      }
-                      Err(_) => println!("[ERROR] Failed to allocate slot for copy"),
-                  }
+            let root_vaddr = 0x500000;
+            let rights_all = libnova::cap::cap_rights_new(false, false, true, true);
+            let attr = seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
 
-                  let child_vaddr = 0x400000;
+            let root_pml4 = seL4_RootCNodeCapSlots::seL4_CapInitThreadVSpace as seL4_CPtr;
+            let mut root_vspace = VSpace::new(root_pml4);
 
-                  match Process::create(allocator, slot_allocator, boot_info, asid_pool, "test_child", 0, 0) {
+            if root_vspace
+                .map_page(
+                    allocator,
+                    slot_allocator,
+                    boot_info,
+                    code_frame_cap,
+                    root_vaddr,
+                    rights_all,
+                    attr,
+                )
+                .is_ok()
+            {
+                unsafe {
+                    let ptr = root_vaddr as *mut u8;
+                    // Write UD2 instruction (0x0F, 0x0B) to trigger fault
+                    *ptr = 0x0F;
+                    *(ptr.add(1)) = 0x0B;
+                }
+                println!("[INFO] Code written to frame via Root VSpace (UD2 instruction).");
+
+                let mut child_code_frame_cap = 0;
+                match slot_allocator.alloc() {
+                    Ok(slot) => {
+                        child_code_frame_cap = slot;
+                        let cnode_cap =
+                            seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+                        let root_cnode = CNode::new(cnode_cap, 64);
+                        if let Err(e) = root_cnode.copy(
+                            child_code_frame_cap,
+                            &root_cnode,
+                            code_frame_cap,
+                            rights_all,
+                        ) {
+                            println!("[ERROR] Failed to copy code frame cap: {:?}", e);
+                            child_code_frame_cap = 0;
+                        }
+                    }
+                    Err(_) => println!("[ERROR] Failed to allocate slot for copy"),
+                }
+
+                let child_vaddr = 0x400000;
+
+                match Process::create(
+                    allocator,
+                    slot_allocator,
+                    boot_info,
+                    asid_pool,
+                    "test_child",
+                    0,
+                    0,
+                ) {
                     Ok(mut child_process) => {
                         if child_code_frame_cap != 0 {
-                             match child_process.vspace.map_page(allocator, slot_allocator, boot_info, child_code_frame_cap, child_vaddr, rights_all, attr) {
-                                 Ok(_) => println!("[INFO] Mapped code frame to Child VSpace at 0x{:x}", child_vaddr),
-                                 Err(e) => println!("[ERROR] Failed to map in new VSpace: {:?}", e),
-                             }
-                          }
+                            match child_process.vspace.map_page(
+                                allocator,
+                                slot_allocator,
+                                boot_info,
+                                child_code_frame_cap,
+                                child_vaddr,
+                                rights_all,
+                                attr,
+                            ) {
+                                Ok(_) => println!(
+                                    "[INFO] Mapped code frame to Child VSpace at 0x{:x}",
+                                    child_vaddr
+                                ),
+                                Err(e) => println!("[ERROR] Failed to map in new VSpace: {:?}", e),
+                            }
+                        }
 
-                          if let Ok(cap) = allocator.allocate(boot_info, seL4_X86_4K.into(), seL4_PageBits.into(), slot_allocator) {
-                              let ipc_frame_cap = cap;
-                              let ipc_vaddr = 0x600000;
-                              let _ = child_process.vspace.map_page(allocator, slot_allocator, boot_info, cap, ipc_vaddr, rights_all, attr);
-                              
-                              let cspace_root = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-                              
-                              // Create Fault Endpoint
-                              let mut fault_ep_cap = 0;
-                              if let Ok(ep) = allocator.allocate(boot_info, api_object_seL4_EndpointObject.into(), seL4_EndpointBits.into(), slot_allocator) {
-                                  fault_ep_cap = ep;
-                                  println!("[INFO] Allocated Fault Endpoint at slot {}", fault_ep_cap);
-                              }
+                        if let Ok(cap) = allocator.allocate(
+                            boot_info,
+                            seL4_X86_4K.into(),
+                            seL4_PageBits.into(),
+                            slot_allocator,
+                        ) {
+                            let ipc_frame_cap = cap;
+                            let ipc_vaddr = 0x600000;
+                            let _ = child_process.vspace.map_page(
+                                allocator,
+                                slot_allocator,
+                                boot_info,
+                                cap,
+                                ipc_vaddr,
+                                rights_all,
+                                attr,
+                            );
 
-                              match child_process.configure(cspace_root, fault_ep_cap, ipc_vaddr as seL4_Word, ipc_frame_cap) {
-                                  Ok(_) => {
-                                      println!("[INFO] Child TCB Configured.");
-                                      let authority = seL4_RootCNodeCapSlots::seL4_CapInitThreadTCB as seL4_CPtr;
-                                      let _ = child_process.set_priority(authority, 100);
+                            let cspace_root =
+                                seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
 
-                                      match child_process.write_registers(child_vaddr as seL4_Word, 0, 0x202, 0) {
-                                          Ok(_) => println!("[INFO] Child Registers Set."),
-                                          Err(e) => println!("[ERROR] Failed to set registers: {:?}", e),
-                                      }
+                            // Create Fault Endpoint
+                            let mut fault_ep_cap = 0;
+                            if let Ok(ep) = allocator.allocate(
+                                boot_info,
+                                api_object_seL4_EndpointObject.into(),
+                                seL4_EndpointBits.into(),
+                                slot_allocator,
+                            ) {
+                                fault_ep_cap = ep;
+                                println!(
+                                    "[INFO] Allocated Fault Endpoint at slot {}",
+                                    fault_ep_cap
+                                );
+                            }
 
-                                      match child_process.resume() {
-                                          Ok(_) => println!("[INFO] Child Thread Resumed! (Should Fault)"),
-                                          Err(e) => println!("[ERROR] Resume failed: {:?}", e),
-                                      }
-                                      
-                                      // Listen for Fault
-                                      if fault_ep_cap != 0 {
-                                          println!("[INFO] Waiting for fault on endpoint {}...", fault_ep_cap);
-                                          let fault_ep = Endpoint::new(fault_ep_cap);
-                                          // Blocking recv to let child run
-                                           let (msg, sender) = fault_ep.recv();
-                                           println!("[INFO] Received Fault Message! Data: 0x{:x}, Badge: {}", msg, sender);
-                                           
-                                           // Terminate Process
-                                           let cnode = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-                                           match child_process.terminate(cnode, slot_allocator, frame_allocator) {
-                                               Ok(_) => println!("[INFO] Child Process Terminated successfully."),
-                                               Err(e) => println!("[ERROR] Failed to terminate child: {:?}", e),
-                                           }
-                                       }
-                                   },
-                                  Err(e) => println!("[ERROR] Child Configure failed: {:?}", e),
-                              }
-                          }
-                      },
-                      Err(e) => println!("[ERROR] Failed to create child process: {:?}", e),
-                  }
-             }
-        },
+                            match child_process.configure(
+                                cspace_root,
+                                fault_ep_cap,
+                                ipc_vaddr as seL4_Word,
+                                ipc_frame_cap,
+                            ) {
+                                Ok(_) => {
+                                    println!("[INFO] Child TCB Configured.");
+                                    let authority =
+                                        seL4_RootCNodeCapSlots::seL4_CapInitThreadTCB as seL4_CPtr;
+                                    let _ = child_process.set_priority(authority, 100);
+
+                                    match child_process.write_registers(
+                                        child_vaddr as seL4_Word,
+                                        0,
+                                        0x202,
+                                        0,
+                                    ) {
+                                        Ok(_) => println!("[INFO] Child Registers Set."),
+                                        Err(e) => {
+                                            println!("[ERROR] Failed to set registers: {:?}", e)
+                                        }
+                                    }
+
+                                    match child_process.resume() {
+                                        Ok(_) => {
+                                            println!("[INFO] Child Thread Resumed! (Should Fault)")
+                                        }
+                                        Err(e) => println!("[ERROR] Resume failed: {:?}", e),
+                                    }
+
+                                    // Listen for Fault
+                                    if fault_ep_cap != 0 {
+                                        println!(
+                                            "[INFO] Waiting for fault on endpoint {}...",
+                                            fault_ep_cap
+                                        );
+                                        let fault_ep = Endpoint::new(fault_ep_cap);
+                                        // Blocking recv to let child run
+                                        let (msg, sender) = fault_ep.recv();
+                                        println!("[INFO] Received Fault Message! Data: 0x{:x}, Badge: {}", msg, sender);
+
+                                        // Terminate Process
+                                        let cnode = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode
+                                            as seL4_CPtr;
+                                        match child_process.terminate(
+                                            cnode,
+                                            slot_allocator,
+                                            frame_allocator,
+                                        ) {
+                                            Ok(_) => println!(
+                                                "[INFO] Child Process Terminated successfully."
+                                            ),
+                                            Err(e) => println!(
+                                                "[ERROR] Failed to terminate child: {:?}",
+                                                e
+                                            ),
+                                        }
+                                    }
+                                }
+                                Err(e) => println!("[ERROR] Child Configure failed: {:?}", e),
+                            }
+                        }
+                    }
+                    Err(e) => println!("[ERROR] Failed to create child process: {:?}", e),
+                }
+            }
+        }
         Err(e) => println!("[ERROR] Frame alloc failed: {:?}", e),
     }
 }
@@ -810,19 +1065,21 @@ pub extern "C" fn worker_thread(endpoint_cap: seL4_CPtr) {
     println!("\n[WORKER] Hello from the second thread!");
     println!("[WORKER] I am running in the same address space.");
     println!("[WORKER] Endpoint Cap: {}", endpoint_cap);
-    
+
     let endpoint = Endpoint::new(endpoint_cap);
-    
+
     println!("[WORKER] Waiting for message...");
     let (msg, sender) = endpoint.recv();
     println!("[WORKER] Received: 0x{:x} from badge/cap {}", msg, sender);
-    
+
     let reply_val = 0x87654321;
     println!("[WORKER] Replying with 0x{:x}", reply_val);
     endpoint.reply_recv(reply_val);
-    
+
     println!("[WORKER] Done.");
     loop {
-        unsafe { sel4_sys::seL4_Yield(); }
+        unsafe {
+            sel4_sys::seL4_Yield();
+        }
     }
 }

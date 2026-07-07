@@ -1,5 +1,7 @@
-use sel4_sys::*;
 use crate::ipc;
+use sel4_sys::*;
+
+const IPC_MAX_WORDS: usize = seL4_MsgLimits::seL4_MsgMaxLength as usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -70,29 +72,11 @@ pub fn sys_exit(ep: seL4_CPtr, code: usize) -> ! {
 }
 
 pub fn sys_print(ep: seL4_CPtr, s: &str) {
-    let len = s.len();
-    ipc::set_mr(0, len as seL4_Word);
-    
-    let mut word_idx = 1;
-    let mut byte_idx = 0;
-    let mut current_word = 0u64;
-    
-    for &b in s.as_bytes() {
-        current_word |= (b as u64) << (byte_idx * 8);
-        byte_idx += 1;
-        if byte_idx == 8 {
-            ipc::set_mr(word_idx, current_word);
-            word_idx += 1;
-            byte_idx = 0;
-            current_word = 0;
-        }
+    let mut w = ipc::pack::MessageWriter::new(IPC_MAX_WORDS);
+    if w.write_usize(s.len()).is_err() || w.write_bytes(s.as_bytes()).is_err() {
+        return;
     }
-    if byte_idx > 0 {
-        ipc::set_mr(word_idx, current_word);
-        word_idx += 1;
-    }
-    
-    let info = ipc::MessageInfo::new(1, 0, 0, word_idx as seL4_Word);
+    let info = ipc::MessageInfo::new(1, 0, 0, w.cursor() as seL4_Word);
     let _ = ipc::call(ep, info);
 }
 
@@ -114,22 +98,6 @@ pub fn sys_get_unix_time(ep: seL4_CPtr) -> u64 {
     ipc::get_mr(0)
 }
 
-fn write_packed_bytes(start_word: usize, bytes: &[u8]) -> usize {
-    let mut word_idx = start_word;
-    let mut i = 0;
-    while i < bytes.len() {
-        let mut word = 0u64;
-        let chunk_end = if i + 8 > bytes.len() { bytes.len() } else { i + 8 };
-        for j in i..chunk_end {
-            word |= (bytes[j] as u64) << ((j - i) * 8);
-        }
-        ipc::set_mr(word_idx, word);
-        word_idx += 1;
-        i += 8;
-    }
-    word_idx
-}
-
 pub fn sys_service_register(ep: seL4_CPtr, name: &str, service_cap: seL4_CPtr) -> isize {
     let name_bytes = name.as_bytes();
     let len = name_bytes.len();
@@ -137,11 +105,13 @@ pub fn sys_service_register(ep: seL4_CPtr, name: &str, service_cap: seL4_CPtr) -
         return -1;
     }
 
-    ipc::set_mr(0, len as seL4_Word);
-    let next_word = write_packed_bytes(1, name_bytes);
+    let mut w = ipc::pack::MessageWriter::new(seL4_MsgLimits::seL4_MsgMaxLength as usize);
+    if w.write_usize(len).is_err() || w.write_bytes(name_bytes).is_err() {
+        return -1;
+    }
     ipc::set_cap(0, service_cap);
 
-    let info = ipc::MessageInfo::new(30, 0, 1, next_word as seL4_Word);
+    let info = ipc::MessageInfo::new(30, 0, 1, w.cursor() as seL4_Word);
     let _ = ipc::call(ep, info);
     ipc::get_mr(0) as isize
 }
@@ -153,9 +123,11 @@ pub fn sys_service_lookup_exists(ep: seL4_CPtr, name: &str) -> bool {
         return false;
     }
 
-    ipc::set_mr(0, len as seL4_Word);
-    let next_word = write_packed_bytes(1, name_bytes);
-    let info = ipc::MessageInfo::new(31, 0, 0, next_word as seL4_Word);
+    let mut w = ipc::pack::MessageWriter::new(seL4_MsgLimits::seL4_MsgMaxLength as usize);
+    if w.write_usize(len).is_err() || w.write_bytes(name_bytes).is_err() {
+        return false;
+    }
+    let info = ipc::MessageInfo::new(31, 0, 0, w.cursor() as seL4_Word);
     match ipc::call(ep, info) {
         Ok(resp) => seL4_MessageInfo_get_extraCaps(resp.inner) > 0,
         Err(_) => false,
@@ -169,9 +141,11 @@ pub fn sys_service_set_ready(ep: seL4_CPtr, name: &str) -> isize {
         return -1;
     }
 
-    ipc::set_mr(0, len as seL4_Word);
-    let next_word = write_packed_bytes(1, name_bytes);
-    let info = ipc::MessageInfo::new(45, 0, 0, next_word as seL4_Word);
+    let mut w = ipc::pack::MessageWriter::new(seL4_MsgLimits::seL4_MsgMaxLength as usize);
+    if w.write_usize(len).is_err() || w.write_bytes(name_bytes).is_err() {
+        return -1;
+    }
+    let info = ipc::MessageInfo::new(45, 0, 0, w.cursor() as seL4_Word);
     let _ = ipc::call(ep, info);
     ipc::get_mr(0) as isize
 }
@@ -206,76 +180,33 @@ pub fn sys_wait(ep: seL4_CPtr, pid: isize, options: usize) -> (isize, usize) {
 pub fn sys_spawn(ep: seL4_CPtr, path: &str, args: &[&str], envs: &[&str]) -> isize {
     sys_print(ep, "[USER] sys_spawn: new version called\n");
     let path_len = path.len();
-
-    let ipc_buf = unsafe { &mut *seL4_GetIPCBuffer() };
-    let max_words = ipc_buf.msg.len();
-
-    let mut total_words = 3 + (path_len + 7) / 8;
-    for arg in args {
-        total_words += 1 + (arg.len() + 7) / 8;
-    }
-    for env in envs {
-        total_words += 1 + (env.len() + 7) / 8;
-    }
-    
-    // MR0-MR3 are registers (4 words).The rest must fit in IPC buffer.
-    if total_words > 4 + max_words {
+    if path_len > 4096 || args.len() > 256 || envs.len() > 256 {
         return -1;
     }
 
-    // Use standard IPC buffer access
-    macro_rules! set_word {
-        ($idx:expr, $val:expr) => {
-             if $idx < 4 {
-                 ipc::set_mr($idx, $val as seL4_Word);
-             } else {
-                 ipc_buf.msg[$idx] = $val as seL4_Word;
-             }
-        };
+    let mut w = ipc::pack::MessageWriter::new(IPC_MAX_WORDS);
+    if w.write_u64(0xCAFEBABE).is_err()        // MR0: canary
+        || w.write_usize(path_len).is_err()     // MR1: path_len
+        || w.write_usize(args.len()).is_err()   // MR2: args_count
+        || w.write_u64(0).is_err()              // MR3: skipped/padding
+        || w.write_u64(0).is_err()              // MR4: skipped/padding
+        || w.write_usize(envs.len()).is_err()   // MR5: envs_count
+        || w.write_bytes(path.as_bytes()).is_err()
+    {
+        return -1;
     }
-
-    set_word!(0, 0xCAFEBABE); // Canary
-    set_word!(1, path_len as u64);
-    set_word!(2, args.len() as u64);
-    
-    // MR3 skipped (register)
-    // MR4 skipped (register/buffer boundary?)
-    
-    // Place envs_len at MR5
-    set_word!(5, envs.len() as u64);
-
-    // Data starts at MR6
-    let mut word_idx = 6;
-    
-    macro_rules! write_bytes {
-        ($bytes:expr) => {
-            let mut i = 0;
-            while i < $bytes.len() {
-                let mut word = 0u64;
-                let chunk_end = if i + 8 > $bytes.len() { $bytes.len() } else { i + 8 };
-                for j in i..chunk_end {
-                    word |= ($bytes[j] as u64) << ((j - i) * 8);
-                }
-                set_word!(word_idx, word);
-                word_idx += 1;
-                i += 8;
-            }
-        };
-    }
-
-    write_bytes!(path.as_bytes());
     for arg in args {
-        set_word!(word_idx, arg.len() as u64);
-        word_idx += 1;
-        write_bytes!(arg.as_bytes());
+        if w.write_usize(arg.len()).is_err() || w.write_bytes(arg.as_bytes()).is_err() {
+            return -1;
+        }
     }
     for env in envs {
-        set_word!(word_idx, env.len() as u64);
-        word_idx += 1;
-        write_bytes!(env.as_bytes());
+        if w.write_usize(env.len()).is_err() || w.write_bytes(env.as_bytes()).is_err() {
+            return -1;
+        }
     }
 
-    let info = ipc::MessageInfo::new(8, 0, 0, word_idx as seL4_Word);
+    let info = ipc::MessageInfo::new(8, 0, 0, w.cursor() as seL4_Word);
     let _ = ipc::call(ep, info);
     ipc::get_mr(0) as isize
 }
@@ -328,92 +259,69 @@ pub fn sys_close(ep: seL4_CPtr, fd: usize) -> isize {
 
 pub fn sys_open(ep: seL4_CPtr, path: &str, flags: usize) -> isize {
     let len = path.len();
-    if len > 255 { return -1; }
-    
-    // Use standard IPC buffer access
-    macro_rules! set_word {
-        ($idx:expr, $val:expr) => {
-             ipc::set_mr($idx, $val as seL4_Word);
-        };
+    if len > 255 {
+        return -1;
     }
 
-    set_word!(0, len as u64);
-    set_word!(1, flags as u64);
-    
-    let mut word_idx = 2;
-    let mut i = 0;
-    while i < len {
-        let mut word = 0u64;
-        let chunk_end = if i + 8 > len { len } else { i + 8 };
-        for j in i..chunk_end {
-            word |= (path.as_bytes()[j] as u64) << ((j - i) * 8);
-        }
-        set_word!(word_idx, word);
-        word_idx += 1;
-        i += 8;
+    let mut w = ipc::pack::MessageWriter::new(IPC_MAX_WORDS);
+    if w.write_usize(len).is_err()
+        || w.write_usize(flags).is_err()
+        || w.write_bytes(path.as_bytes()).is_err()
+    {
+        return -1;
     }
-    
-    let path_words = (len + 7) / 8;
-    let info = ipc::MessageInfo::new(20, 0, 0, 2 + path_words as u64);
-    
+
+    let info = ipc::MessageInfo::new(20, 0, 0, w.cursor() as seL4_Word);
     let _ = ipc::call(ep, info);
     ipc::get_mr(0) as isize
 }
 
 pub fn sys_read(ep: seL4_CPtr, fd: usize, buf: &mut [u8]) -> isize {
     let len = buf.len();
-    if len > 900 { return -1; }
-    
-    ipc::set_mr(0, fd as u64);
-    ipc::set_mr(1, len as u64);
-    
-    let info = ipc::MessageInfo::new(21, 0, 0, 2);
-    
-    let _ = ipc::call(ep, info);
-    let bytes_read = ipc::get_mr(0) as usize;
-    
-    if bytes_read > len { return -1; } 
-    
-    unsafe {
-        let ipc_buf = &*seL4_GetIPCBuffer();
-        let offset = core::mem::size_of::<seL4_Word>();
-        let ptr = (ipc_buf.msg.as_ptr() as *const u8).add(offset);
-        core::ptr::copy_nonoverlapping(ptr, buf.as_mut_ptr(), bytes_read);
+    if len > 900 {
+        return -1;
     }
-    
-    bytes_read as isize
+
+    ipc::set_mr(0, fd as seL4_Word);
+    ipc::set_mr(1, len as seL4_Word);
+
+    let info = ipc::MessageInfo::new(21, 0, 0, 2);
+
+    match ipc::call(ep, info) {
+        Ok(reply) => {
+            let mut r = ipc::pack::MessageReader::new(reply.length() as usize);
+            let bytes_read = r.read_usize().map(|v| v as isize).unwrap_or(-1);
+            if bytes_read < 0 {
+                return bytes_read;
+            }
+            let bytes_read = bytes_read as usize;
+            if bytes_read > len {
+                return -1;
+            }
+            if r.read_bytes(&mut buf[..bytes_read]).is_err() {
+                return -1;
+            }
+            bytes_read as isize
+        }
+        Err(_) => -1,
+    }
 }
 
 pub fn sys_write(ep: seL4_CPtr, fd: usize, buf: &[u8]) -> isize {
     let len = buf.len();
-    if len > 900 { return -1; }
-    
-    // Use standard IPC buffer access
-    macro_rules! set_word {
-        ($idx:expr, $val:expr) => {
-             ipc::set_mr($idx, $val as seL4_Word);
-        };
+    if len > 900 {
+        return -1;
     }
 
-    set_word!(0, fd as u64);
-    set_word!(1, len as u64);
-    
-    let mut word_idx = 2;
-    let mut i = 0;
-    while i < len {
-        let mut word = 0u64;
-        let chunk_end = if i + 8 > len { len } else { i + 8 };
-        for j in i..chunk_end {
-            word |= (buf[j] as u64) << ((j - i) * 8);
-        }
-        set_word!(word_idx, word);
-        word_idx += 1;
-        i += 8;
+    let mut w = ipc::pack::MessageWriter::new(IPC_MAX_WORDS);
+    if w.write_usize(fd).is_err()
+        || w.write_usize(len).is_err()
+        || w.write_bytes(buf).is_err()
+    {
+        return -1;
     }
-    
-    let data_words = (len + 7) / 8;
-    let info = ipc::MessageInfo::new(22, 0, 0, 2 + data_words as u64);
-    
+
+    let info = ipc::MessageInfo::new(22, 0, 0, w.cursor() as seL4_Word);
     let _ = ipc::call(ep, info);
     ipc::get_mr(0) as isize
 }
@@ -424,29 +332,12 @@ pub fn sys_file_write(ep: seL4_CPtr, fd: usize, buf: &[u8]) -> isize {
 }
 
 pub fn sys_unlink(ep: seL4_CPtr, path: &str) -> isize {
-    let path_len = path.len();
-    ipc::set_mr(0, path_len as seL4_Word);
-    
-    let mut word_idx = 1;
-    let mut byte_idx = 0;
-    let mut current_word = 0u64;
-    
-    for &b in path.as_bytes() {
-        current_word |= (b as u64) << (byte_idx * 8);
-        byte_idx += 1;
-        if byte_idx == 8 {
-            ipc::set_mr(word_idx, current_word);
-            word_idx += 1;
-            byte_idx = 0;
-            current_word = 0;
-        }
+    let mut w = ipc::pack::MessageWriter::new(IPC_MAX_WORDS);
+    if w.write_usize(path.len()).is_err() || w.write_bytes(path.as_bytes()).is_err() {
+        return -1;
     }
-    if byte_idx > 0 {
-        ipc::set_mr(word_idx, current_word);
-        word_idx += 1;
-    }
-    
-    let info = ipc::MessageInfo::new(36, 0, 0, word_idx as seL4_Word);
+
+    let info = ipc::MessageInfo::new(36, 0, 0, w.cursor() as seL4_Word);
     let _ = ipc::call(ep, info);
     ipc::get_mr(0) as isize
 }
@@ -454,42 +345,23 @@ pub fn sys_unlink(ep: seL4_CPtr, path: &str) -> isize {
 pub fn sys_link(ep: seL4_CPtr, target_path: &str, link_path: &str) -> isize {
     let target_len = target_path.len();
     let link_len = link_path.len();
-
-    ipc::set_mr(0, target_len as seL4_Word);
-    ipc::set_mr(1, link_len as seL4_Word);
-
-    let mut word_idx = 2;
-    let mut byte_idx = 0;
-    let mut current_word = 0u64;
-
-    for &b in target_path.as_bytes() {
-        current_word |= (b as u64) << (byte_idx * 8);
-        byte_idx += 1;
-        if byte_idx == 8 {
-            ipc::set_mr(word_idx, current_word);
-            word_idx += 1;
-            byte_idx = 0;
-            current_word = 0;
-        }
+    if target_len > 255 || link_len > 255 {
+        return -1;
     }
 
-    for &b in link_path.as_bytes() {
-        current_word |= (b as u64) << (byte_idx * 8);
-        byte_idx += 1;
-        if byte_idx == 8 {
-            ipc::set_mr(word_idx, current_word);
-            word_idx += 1;
-            byte_idx = 0;
-            current_word = 0;
-        }
+    let mut payload = [0u8; 512];
+    payload[..target_len].copy_from_slice(target_path.as_bytes());
+    payload[target_len..target_len + link_len].copy_from_slice(link_path.as_bytes());
+
+    let mut w = ipc::pack::MessageWriter::new(IPC_MAX_WORDS);
+    if w.write_usize(target_len).is_err()
+        || w.write_usize(link_len).is_err()
+        || w.write_bytes(&payload[..target_len + link_len]).is_err()
+    {
+        return -1;
     }
 
-    if byte_idx > 0 {
-        ipc::set_mr(word_idx, current_word);
-        word_idx += 1;
-    }
-
-    let info = ipc::MessageInfo::new(40, 0, 0, word_idx as seL4_Word);
+    let info = ipc::MessageInfo::new(40, 0, 0, w.cursor() as seL4_Word);
     let _ = ipc::call(ep, info);
     ipc::get_mr(0) as isize
 }
@@ -497,42 +369,23 @@ pub fn sys_link(ep: seL4_CPtr, target_path: &str, link_path: &str) -> isize {
 pub fn sys_symlink(ep: seL4_CPtr, target: &str, link_path: &str) -> isize {
     let target_len = target.len();
     let link_len = link_path.len();
-
-    ipc::set_mr(0, target_len as seL4_Word);
-    ipc::set_mr(1, link_len as seL4_Word);
-
-    let mut word_idx = 2;
-    let mut byte_idx = 0;
-    let mut current_word = 0u64;
-
-    for &b in target.as_bytes() {
-        current_word |= (b as u64) << (byte_idx * 8);
-        byte_idx += 1;
-        if byte_idx == 8 {
-            ipc::set_mr(word_idx, current_word);
-            word_idx += 1;
-            byte_idx = 0;
-            current_word = 0;
-        }
+    if target_len > 255 || link_len > 255 {
+        return -1;
     }
 
-    for &b in link_path.as_bytes() {
-        current_word |= (b as u64) << (byte_idx * 8);
-        byte_idx += 1;
-        if byte_idx == 8 {
-            ipc::set_mr(word_idx, current_word);
-            word_idx += 1;
-            byte_idx = 0;
-            current_word = 0;
-        }
+    let mut payload = [0u8; 512];
+    payload[..target_len].copy_from_slice(target.as_bytes());
+    payload[target_len..target_len + link_len].copy_from_slice(link_path.as_bytes());
+
+    let mut w = ipc::pack::MessageWriter::new(IPC_MAX_WORDS);
+    if w.write_usize(target_len).is_err()
+        || w.write_usize(link_len).is_err()
+        || w.write_bytes(&payload[..target_len + link_len]).is_err()
+    {
+        return -1;
     }
 
-    if byte_idx > 0 {
-        ipc::set_mr(word_idx, current_word);
-        word_idx += 1;
-    }
-
-    let info = ipc::MessageInfo::new(26, 0, 0, word_idx as seL4_Word);
+    let info = ipc::MessageInfo::new(26, 0, 0, w.cursor() as seL4_Word);
     let _ = ipc::call(ep, info);
     ipc::get_mr(0) as isize
 }
@@ -540,42 +393,23 @@ pub fn sys_symlink(ep: seL4_CPtr, target: &str, link_path: &str) -> isize {
 pub fn sys_rename(ep: seL4_CPtr, old_path: &str, new_path: &str) -> isize {
     let old_len = old_path.len();
     let new_len = new_path.len();
-    
-    ipc::set_mr(0, old_len as seL4_Word);
-    ipc::set_mr(1, new_len as seL4_Word);
-    
-    let mut word_idx = 2;
-    let mut byte_idx = 0;
-    let mut current_word = 0u64;
-    
-    for &b in old_path.as_bytes() {
-        current_word |= (b as u64) << (byte_idx * 8);
-        byte_idx += 1;
-        if byte_idx == 8 {
-            ipc::set_mr(word_idx, current_word);
-            word_idx += 1;
-            byte_idx = 0;
-            current_word = 0;
-        }
+    if old_len > 255 || new_len > 255 {
+        return -1;
     }
-    
-    for &b in new_path.as_bytes() {
-        current_word |= (b as u64) << (byte_idx * 8);
-        byte_idx += 1;
-        if byte_idx == 8 {
-            ipc::set_mr(word_idx, current_word);
-            word_idx += 1;
-            byte_idx = 0;
-            current_word = 0;
-        }
+
+    let mut payload = [0u8; 512];
+    payload[..old_len].copy_from_slice(old_path.as_bytes());
+    payload[old_len..old_len + new_len].copy_from_slice(new_path.as_bytes());
+
+    let mut w = ipc::pack::MessageWriter::new(IPC_MAX_WORDS);
+    if w.write_usize(old_len).is_err()
+        || w.write_usize(new_len).is_err()
+        || w.write_bytes(&payload[..old_len + new_len]).is_err()
+    {
+        return -1;
     }
-    
-    if byte_idx > 0 {
-        ipc::set_mr(word_idx, current_word);
-        word_idx += 1;
-    }
-    
-    let info = ipc::MessageInfo::new(37, 0, 0, word_idx as seL4_Word);
+
+    let info = ipc::MessageInfo::new(37, 0, 0, w.cursor() as seL4_Word);
     let _ = ipc::call(ep, info);
     ipc::get_mr(0) as isize
 }
@@ -595,64 +429,55 @@ pub fn sys_block_info(ep: seL4_CPtr) -> Option<(u64, bool)> {
 pub fn sys_block_read(ep: seL4_CPtr, block_id: u32, buf: &mut [u8; 512]) -> isize {
     ipc::set_mr(0, block_id as seL4_Word);
     let info = ipc::MessageInfo::new(41, 0, 0, 1);
-    let _ = ipc::call(ep, info);
-    let status = ipc::get_mr(0) as isize;
-    if status < 0 {
-        return status;
+    match ipc::call(ep, info) {
+        Ok(reply) => {
+            let mut r = ipc::pack::MessageReader::new(reply.length() as usize);
+            let status = r.read_usize().map(|v| v as isize).unwrap_or(-1);
+            if status < 0 {
+                return status;
+            }
+            let bytes_read = status as usize;
+            if bytes_read != buf.len() {
+                return -1;
+            }
+            if r.read_bytes(buf).is_err() {
+                return -1;
+            }
+            status
+        }
+        Err(_) => -1,
     }
-
-    let bytes_read = status as usize;
-    if bytes_read != buf.len() {
-        return -1;
-    }
-
-    unsafe {
-        let ipc_buf = &*seL4_GetIPCBuffer();
-        let offset = core::mem::size_of::<seL4_Word>();
-        let ptr = (ipc_buf.msg.as_ptr() as *const u8).add(offset);
-        core::ptr::copy_nonoverlapping(ptr, buf.as_mut_ptr(), bytes_read);
-    }
-
-    status
 }
 
 pub fn sys_block_write(ep: seL4_CPtr, block_id: u32, buf: &[u8; 512]) -> isize {
-    ipc::set_mr(0, block_id as seL4_Word);
-
-    let mut word_idx = 1usize;
-    let mut i = 0usize;
-    while i < buf.len() {
-        let mut word = 0u64;
-        let chunk_end = if i + 8 > buf.len() { buf.len() } else { i + 8 };
-        for j in i..chunk_end {
-            word |= (buf[j] as u64) << ((j - i) * 8);
-        }
-        ipc::set_mr(word_idx, word as seL4_Word);
-        word_idx += 1;
-        i += 8;
+    let mut w = ipc::pack::MessageWriter::new(IPC_MAX_WORDS);
+    if w.write_u64(block_id as u64).is_err() || w.write_bytes(buf).is_err() {
+        return -1;
     }
 
-    let info = ipc::MessageInfo::new(42, 0, 0, word_idx as seL4_Word);
+    let info = ipc::MessageInfo::new(42, 0, 0, w.cursor() as seL4_Word);
     let _ = ipc::call(ep, info);
     ipc::get_mr(0) as isize
 }
 
 pub fn sys_print_hex(ep: seL4_CPtr, val: usize) {
-    let mut buffer = [0u8; 18]; 
+    let mut buffer = [0u8; 18];
     buffer[0] = b'0';
     buffer[1] = b'x';
-    
+
     let digits = b"0123456789ABCDEF";
     for i in 0..16 {
         let nibble = (val >> ((15 - i) * 4)) & 0xF;
         buffer[2 + i] = digits[nibble];
     }
-    
+
     if let Ok(s) = core::str::from_utf8(&buffer) {
         sys_print(ep, s);
     }
 }
 
 pub fn yield_thread() {
-    unsafe { seL4_Yield(); }
+    unsafe {
+        seL4_Yield();
+    }
 }

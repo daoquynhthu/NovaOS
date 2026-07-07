@@ -1,15 +1,13 @@
-use sel4_sys::{
-    seL4_BootInfo, seL4_BootInfoHeader, seL4_CPtr, seL4_Error, seL4_Word,
-};
-use sel4_sys::seL4_RootCNodeCapSlots;
-use sel4_sys::seL4_X86_VMAttributes;
-use core::mem::size_of;
-use core::str;
-use alloc::vec::Vec;
+use crate::arch::port_io;
 use crate::memory::{SlotAllocator, UntypedAllocator};
 use crate::vspace::VSpace;
-use crate::arch::port_io;
-use libnova::cap::{CNode, cap_rights_new};
+use alloc::vec::Vec;
+use core::mem::size_of;
+use core::str;
+use libnova::cap::{cap_rights_new, CNode};
+use sel4_sys::seL4_RootCNodeCapSlots;
+use sel4_sys::seL4_X86_VMAttributes;
+use sel4_sys::{seL4_BootInfo, seL4_BootInfoHeader, seL4_CPtr, seL4_Error, seL4_Word};
 
 // Temporary constant until we confirm sel4_sys export
 #[allow(non_upper_case_globals)]
@@ -18,7 +16,9 @@ const seL4_X86_4K: seL4_Word = 8;
 static mut FADT_PTR: Option<*const Fadt> = None;
 
 pub fn set_fadt(fadt: *const Fadt) {
-    unsafe { FADT_PTR = Some(fadt); }
+    unsafe {
+        FADT_PTR = Some(fadt);
+    }
 }
 
 pub fn shutdown() -> ! {
@@ -33,7 +33,7 @@ const MAX_MAPPED_CAPS: usize = 16;
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct MappedCap {
-    pub cap_index: usize, // Index in boot_info.untypedList
+    pub cap_index: usize,    // Index in boot_info.untypedList
     pub cap_cptr: seL4_CPtr, // The capability itself
     pub paddr_start: usize,
     pub size_bits: usize,
@@ -53,10 +53,11 @@ impl AcpiContext {
     pub fn new() -> Self {
         Self {
             mapped_caps: [
-                None, None, None, None, None, None, None, None,
-                None, None, None, None, None, None, None, None
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None,
             ],
-            next_vaddr: 0x80_0000_0000, // Start at 512GB (First entry of PML4 after kernel/rootserver)
+            next_vaddr: 0x80_0000_0000, /* Start at 512GB (First entry of PML4 after
+                                         * kernel/rootserver) */
             vspace: VSpace::new(seL4_RootCNodeCapSlots::seL4_CapInitThreadVSpace as seL4_CPtr),
         }
     }
@@ -65,30 +66,38 @@ impl AcpiContext {
     pub fn cleanup(&mut self, _vspace: &mut VSpace, slots: &mut SlotAllocator) {
         log_debug!(libnova::log::DOM_ACPI, "[ACPI] Cleaning up resources...");
         let root_cnode = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
-        
+
         for i in 0..MAX_MAPPED_CAPS {
             if let Some(mut mc) = self.mapped_caps[i].take() {
-                // 1. Unmap pages (Implicitly handled by Revoke of Untyped, or we can explicit unmap)
+                // 1. Unmap pages (Implicitly handled by Revoke of Untyped, or we can explicit
+                //    unmap)
                 // Explicit unmap is safer but requires vspace traversal or just unmap syscall.
-                // Since we are revoking the parent untyped, the children (frames) will be destroyed,
-                // and mappings should disappear.
-                
+                // Since we are revoking the parent untyped, the children (frames) will be
+                // destroyed, and mappings should disappear.
+
                 // 2. Revoke Untyped
-                // We need to be careful: MappedCap wraps an Untyped. 
+                // We need to be careful: MappedCap wraps an Untyped.
                 // Did we allocate this Untyped? No, it's from boot_info.
-                // So we shouldn't delete the Untyped Cap itself (it's in Root CNode), 
+                // So we shouldn't delete the Untyped Cap itself (it's in Root CNode),
                 // but we should Revoke it to destroy any children we created (the 4K frames).
                 let root_cnode_obj = CNode::new(root_cnode, sel4_sys::seL4_WordBits as u8);
                 if let Err(e) = root_cnode_obj.revoke(mc.cap_cptr) {
-                    println!("[ACPI] Failed to revoke untyped cap {}: {:?}", mc.cap_cptr, e);
+                    println!(
+                        "[ACPI] Failed to revoke untyped cap {}: {:?}",
+                        mc.cap_cptr, e
+                    );
                 }
 
                 // 3. Free slots
                 for slot in mc.allocated_slots.drain(..) {
                     slots.free(slot);
                 }
-                
-                log_debug!(libnova::log::DOM_ACPI, "[ACPI] Cleaned up MappedCap index {}", mc.cap_index);
+
+                log_debug!(
+                    libnova::log::DOM_ACPI,
+                    "[ACPI] Cleaned up MappedCap index {}",
+                    mc.cap_index
+                );
             }
         }
     }
@@ -270,13 +279,17 @@ pub fn init(boot_info: &seL4_BootInfo) -> Option<AcpiInfo> {
         return None;
     }
 
-    // The extra info starts at the offset seL4_BootInfoFrameSize (4KB) from the start of boot_info
+    // The extra info starts at the offset seL4_BootInfoFrameSize (4KB) from the
+    // start of boot_info
     let boot_info_addr = boot_info as *const _ as usize;
     let mut current_offset = SEL4_BOOTINFOFRAME_SIZE;
     // Cast extraLen (u64) to usize
     let end_offset = SEL4_BOOTINFOFRAME_SIZE + (boot_info.extraLen as usize);
 
-    println!("[INFO] Scanning extra boot info (len: {})", boot_info.extraLen);
+    println!(
+        "[INFO] Scanning extra boot info (len: {})",
+        boot_info.extraLen
+    );
 
     while current_offset < end_offset {
         let header_ptr = (boot_info_addr + current_offset) as *const seL4_BootInfoHeader;
@@ -285,45 +298,51 @@ pub fn init(boot_info: &seL4_BootInfo) -> Option<AcpiInfo> {
         let len = header.len;
 
         if len == 0 {
-            println!("[ERROR] Invalid chunk length 0 at offset {}. Aborting scan.", current_offset);
+            println!(
+                "[ERROR] Invalid chunk length 0 at offset {}. Aborting scan.",
+                current_offset
+            );
             break;
         }
 
         if u64::from(id) == SEL4_BOOTINFO_HEADER_X86_ACPI_RSDP {
-             println!("[INFO] Found ACPI RSDP Chunk at offset 0x{:x}", current_offset);
-             let header_size = size_of::<seL4_BootInfoHeader>();
-             let rsdp_ptr = (boot_info_addr + current_offset + header_size) as *const Rsdp;
-             let rsdp = unsafe { &*rsdp_ptr };
-             
-             if let Ok(sig_str) = str::from_utf8(&rsdp.signature) {
-                 println!("[INFO] RSDP Signature: {:?}", sig_str);
-                 if sig_str == "RSD PTR " {
-                     // Verify Checksum
-                     let rsdp_u8 = rsdp_ptr as *const u8;
-                     // RSDP 1.0 size is 20 bytes
-                     if validate_checksum(rsdp_u8, 20) {
-                         println!("[INFO] ACPI RSDP Checksum validated.");
-                     } else {
-                         println!("[ERROR] ACPI RSDP Checksum failed!");
-                         // debug_assert!(false, "ACPI RSDP Checksum failed");
-                         return None;
-                     }
+            println!(
+                "[INFO] Found ACPI RSDP Chunk at offset 0x{:x}",
+                current_offset
+            );
+            let header_size = size_of::<seL4_BootInfoHeader>();
+            let rsdp_ptr = (boot_info_addr + current_offset + header_size) as *const Rsdp;
+            let rsdp = unsafe { &*rsdp_ptr };
 
-                     println!("[INFO] ACPI RSDP validated.");
-                     let revision = rsdp.revision;
-                     let rsdt_address = rsdp.rsdt_address;
-                     let xsdt_address = rsdp.xsdt_address;
+            if let Ok(sig_str) = str::from_utf8(&rsdp.signature) {
+                println!("[INFO] RSDP Signature: {:?}", sig_str);
+                if sig_str == "RSD PTR " {
+                    // Verify Checksum
+                    let rsdp_u8 = rsdp_ptr as *const u8;
+                    // RSDP 1.0 size is 20 bytes
+                    if validate_checksum(rsdp_u8, 20) {
+                        println!("[INFO] ACPI RSDP Checksum validated.");
+                    } else {
+                        println!("[ERROR] ACPI RSDP Checksum failed!");
+                        // debug_assert!(false, "ACPI RSDP Checksum failed");
+                        return None;
+                    }
 
-                     println!("[INFO] RSDP Revision: {}", revision);
-                     println!("[INFO] RSDT Address: 0x{:x}", rsdt_address);
-                     
-                     if revision >= 2 {
-                         println!("[INFO] XSDT Address: 0x{:x}", xsdt_address);
-                     }
-                     return find_rsdt_cap(boot_info, rsdt_address as usize);
-                 }
-             }
-             return None;
+                    println!("[INFO] ACPI RSDP validated.");
+                    let revision = rsdp.revision;
+                    let rsdt_address = rsdp.rsdt_address;
+                    let xsdt_address = rsdp.xsdt_address;
+
+                    println!("[INFO] RSDP Revision: {}", revision);
+                    println!("[INFO] RSDT Address: 0x{:x}", rsdt_address);
+
+                    if revision >= 2 {
+                        println!("[INFO] XSDT Address: 0x{:x}", xsdt_address);
+                    }
+                    return find_rsdt_cap(boot_info, rsdt_address as usize);
+                }
+            }
+            return None;
         }
         current_offset += len as usize;
     }
@@ -331,29 +350,31 @@ pub fn init(boot_info: &seL4_BootInfo) -> Option<AcpiInfo> {
     None
 }
 
-
 pub fn enable_acpi(fadt: &Fadt) {
     if fadt.smi_cmd == 0 {
-        log_debug!(libnova::log::DOM_ACPI, "[ACPI] ACPI already enabled (SMI_CMD=0).");
+        log_debug!(
+            libnova::log::DOM_ACPI,
+            "[ACPI] ACPI already enabled (SMI_CMD=0)."
+        );
         return;
     }
-    
+
     let pm1a_cnt = fadt.pm1a_cnt_blk as u16;
     if pm1a_cnt == 0 {
-         println!("[ACPI] PM1a_CNT_BLK is 0. Cannot check/enable ACPI.");
-         return;
+        println!("[ACPI] PM1a_CNT_BLK is 0. Cannot check/enable ACPI.");
+        return;
     }
-    
+
     let val = port_io::inw(pm1a_cnt);
     if (val & 1) != 0 {
         log_debug!(libnova::log::DOM_ACPI, "[ACPI] ACPI already enabled.");
         return;
     }
-    
+
     log_debug!(libnova::log::DOM_ACPI, "[ACPI] Enabling ACPI...");
     if fadt.acpi_enable != 0 {
         port_io::outb(fadt.smi_cmd as u16, fadt.acpi_enable);
-        
+
         // Wait for enabling
         for _ in 0..100 {
             if (port_io::inw(pm1a_cnt) & 1) != 0 {
@@ -361,33 +382,35 @@ pub fn enable_acpi(fadt: &Fadt) {
                 return;
             }
             // spin
-            for _ in 0..10000 { core::hint::spin_loop(); }
+            for _ in 0..10000 {
+                core::hint::spin_loop();
+            }
         }
         println!("[ACPI] Failed to enable ACPI (timeout).");
     } else {
-            println!("[ACPI] No ACPI_ENABLE command specified.");
+        println!("[ACPI] No ACPI_ENABLE command specified.");
     }
 }
 
 pub fn system_shutdown(fadt: Option<&Fadt>) -> ! {
     println!("[KERNEL] Shutting down...");
-    
+
     // Method 1: QEMU specific (works even without ACPI if supported)
     port_io::outw(0x604, 0x2000);
-    
+
     // Method 2: ACPI
     if let Some(fadt) = fadt {
         println!("[KERNEL] Attempting ACPI Shutdown...");
         let pm1a_cnt = fadt.pm1a_cnt_blk as u16;
         let pm1b_cnt = fadt.pm1b_cnt_blk as u16;
-        
+
         // SLP_TYP_S5 is usually 0 or 5 for QEMU.
         // QEMU: SLP_TYP_S5 = 0.
         // Command: (SLP_TYP_S5 << 10) | SLP_EN (1<<13)
         // 0 << 10 | 1 << 13 = 0x2000
-        
-        let cmd = 0x2000u16; 
-        
+
+        let cmd = 0x2000u16;
+
         if pm1a_cnt != 0 {
             port_io::outw(pm1a_cnt, cmd);
         }
@@ -395,10 +418,12 @@ pub fn system_shutdown(fadt: Option<&Fadt>) -> ! {
             port_io::outw(pm1b_cnt, cmd);
         }
     }
-    
+
     println!("[KERNEL] Shutdown failed. Halted.");
     loop {
-        unsafe { core::arch::asm!("hlt"); }
+        unsafe {
+            core::arch::asm!("hlt");
+        }
     }
 }
 
@@ -407,21 +432,24 @@ pub fn find_iso_for_irq(madt_ptr: *const Madt, irq: u8) -> Option<MadtIso> {
     let length = madt.header.length as usize;
     let madt_start = madt_ptr as usize;
     let mut offset = core::mem::size_of::<Madt>();
-    
+
     while offset < length {
         let entry_ptr = (madt_start + offset) as *const MadtEntryHeader;
         let entry = unsafe { &*entry_ptr };
         let record_len = entry.record_length as usize;
-        
-        if record_len < 2 { break; }
 
-        if entry.entry_type == 2 { // ISO
-             let iso = unsafe { &*(entry_ptr as *const MadtIso) };
-             if iso.irq_source == irq {
-                 return Some(*iso);
-             }
+        if record_len < 2 {
+            break;
         }
-        
+
+        if entry.entry_type == 2 {
+            // ISO
+            let iso = unsafe { &*(entry_ptr as *const MadtIso) };
+            if iso.irq_source == irq {
+                return Some(*iso);
+            }
+        }
+
         offset += record_len;
     }
     None
@@ -429,11 +457,16 @@ pub fn find_iso_for_irq(madt_ptr: *const Madt, irq: u8) -> Option<MadtIso> {
 
 fn find_rsdt_cap(boot_info: &seL4_BootInfo, rsdt_paddr: usize) -> Option<AcpiInfo> {
     let count = boot_info.untyped.end - boot_info.untyped.start;
-    println!("[INFO] Searching for RSDT (paddr=0x{:x}) in {} untyped caps...", rsdt_paddr, count);
+    println!(
+        "[INFO] Searching for RSDT (paddr=0x{:x}) in {} untyped caps...",
+        rsdt_paddr, count
+    );
 
     for i in 0..count {
         let desc_idx = i as usize;
-        if desc_idx >= boot_info.untypedList.len() { break; }
+        if desc_idx >= boot_info.untypedList.len() {
+            break;
+        }
         let desc = &boot_info.untypedList[desc_idx];
         let paddr = desc.paddr as usize;
         let size_bits = desc.sizeBits as usize;
@@ -441,9 +474,11 @@ fn find_rsdt_cap(boot_info: &seL4_BootInfo, rsdt_paddr: usize) -> Option<AcpiInf
 
         if rsdt_paddr >= paddr && rsdt_paddr < paddr + size_bytes {
             let cap_idx = boot_info.untyped.start + i;
-            println!("[INFO] Found RSDT in Untyped Cap #{} (paddr=0x{:x}, size=2^{}, isDevice={})", 
-                     cap_idx, paddr, size_bits, desc.isDevice);
-            
+            println!(
+                "[INFO] Found RSDT in Untyped Cap #{} (paddr=0x{:x}, size=2^{}, isDevice={})",
+                cap_idx, paddr, size_bits, desc.isDevice
+            );
+
             return Some(AcpiInfo {
                 rsdt_paddr,
                 rsdt_cap: cap_idx,
@@ -466,15 +501,15 @@ pub fn map_rsdt(
     // map_phys handles the complexity now
     let vaddr = map_phys(boot_info, info.rsdt_paddr, 0, allocator, slots, context)?;
     let rsdt_ptr = vaddr as *const Rsdt;
-    
+
     // Validate RSDT Checksum
     let rsdt = unsafe { &*rsdt_ptr };
     let length = rsdt.header.length as usize;
-    
+
     // Verify signature
     if &rsdt.header.signature != b"RSDT" {
-         println!("[ERROR] RSDT Signature mismatch!");
-         return Err(seL4_Error::seL4_InvalidArgument);
+        println!("[ERROR] RSDT Signature mismatch!");
+        return Err(seL4_Error::seL4_InvalidArgument);
     }
 
     if !validate_checksum(rsdt_ptr as *const u8, length) {
@@ -482,15 +517,20 @@ pub fn map_rsdt(
         debug_assert!(false, "RSDT Checksum failed");
         return Err(seL4_Error::seL4_InvalidArgument);
     }
-    
+
     Ok(rsdt_ptr)
 }
 
-fn find_untyped_for_paddr(boot_info: &seL4_BootInfo, paddr: usize) -> Option<(seL4_CPtr, usize, usize, usize)> {
+fn find_untyped_for_paddr(
+    boot_info: &seL4_BootInfo,
+    paddr: usize,
+) -> Option<(seL4_CPtr, usize, usize, usize)> {
     let count = boot_info.untyped.end - boot_info.untyped.start;
     for i in 0..count {
         let desc_idx = i as usize;
-        if desc_idx >= boot_info.untypedList.len() { break; }
+        if desc_idx >= boot_info.untypedList.len() {
+            break;
+        }
         let desc = &boot_info.untypedList[desc_idx];
         let cap_paddr = desc.paddr as usize;
         let size_bits = desc.sizeBits as usize;
@@ -501,23 +541,23 @@ fn find_untyped_for_paddr(boot_info: &seL4_BootInfo, paddr: usize) -> Option<(se
             return Some((cap_idx, cap_paddr, i as usize, size_bits)); // Return untyped list index and size_bits too
         }
     }
-    
+
     // Debug: Print available device untypeds if not found
-            /*
-            println!("[ACPI] Debug: Untyped lookup failed for paddr 0x{:x}. Available device caps:", paddr);
-            for i in 0..count {
-                let desc = boot_info.untypedList[i as usize];
-                if desc.isDevice != 0 {
-                     let cap_paddr = desc.paddr as usize;
-                     let size_bits = desc.sizeBits as usize;
-                     let size_bytes = 1 << size_bits;
-                     println!("  [Device] Cap #{}: paddr=0x{:x}-0x{:x} (size=2^{})", 
-                        boot_info.untyped.start + i, cap_paddr, cap_paddr + size_bytes, size_bits);
-                }
-            }
-            */
-            
-            None
+    /*
+    println!("[ACPI] Debug: Untyped lookup failed for paddr 0x{:x}. Available device caps:", paddr);
+    for i in 0..count {
+        let desc = boot_info.untypedList[i as usize];
+        if desc.isDevice != 0 {
+             let cap_paddr = desc.paddr as usize;
+             let size_bits = desc.sizeBits as usize;
+             let size_bytes = 1 << size_bits;
+             println!("  [Device] Cap #{}: paddr=0x{:x}-0x{:x} (size=2^{})",
+                boot_info.untyped.start + i, cap_paddr, cap_paddr + size_bytes, size_bits);
+        }
+    }
+    */
+
+    None
 }
 
 pub fn map_phys(
@@ -529,7 +569,6 @@ pub fn map_phys(
     context: &mut AcpiContext,
 ) -> Result<usize, seL4_Error> {
     if let Some((cap, cap_paddr, list_idx, size_bits)) = find_untyped_for_paddr(boot_info, paddr) {
-        
         // Check if we already have this cap in context
         let mut mapped_idx = None;
         for i in 0..MAX_MAPPED_CAPS {
@@ -549,8 +588,8 @@ pub fn map_phys(
                     // Reserve vspace
                     let vaddr_start = context.next_vaddr;
                     // Align up next_vaddr based on size
-                    context.next_vaddr += size_bytes; 
-                    
+                    context.next_vaddr += size_bytes;
+
                     context.mapped_caps[i] = Some(MappedCap {
                         cap_index: list_idx,
                         cap_cptr: cap,
@@ -569,59 +608,65 @@ pub fn map_phys(
         }
 
         let idx = mapped_idx.ok_or(seL4_Error::seL4_NotEnoughMemory)?;
-        
+
         // Map the required page(s) if not already mapped
         let offset = paddr - cap_paddr;
         let page_offset = offset & !(4096 - 1);
         let target_limit = page_offset + 4096;
-        
+
         let mut mc = context.mapped_caps[idx].take().unwrap();
-        
+
         if target_limit > mc.mapped_limit {
             // Need to map more pages
             let current_limit = mc.mapped_limit;
             let bytes_needed = target_limit - current_limit;
             let pages_needed = bytes_needed / 4096;
-            
-            // println!("[ACPI] Mapping {} more pages for cap {} (current limit: 0x{:x}, target: 0x{:x})", 
-            //    pages_needed, list_idx, current_limit, target_limit);
+
+            // println!("[ACPI] Mapping {} more pages for cap {} (current limit: 0x{:x},
+            // target: 0x{:x})",    pages_needed, list_idx, current_limit,
+            // target_limit);
 
             for i in 0..pages_needed {
-                 let slot = slots.alloc().map_err(|_| seL4_Error::seL4_NotEnoughMemory)?;
-                 mc.allocated_slots.push(slot);
-                 
-                 let root_cnode_obj = libnova::cap::CNode::new(seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr, 64);
-                 
-                 let res = libnova::cap::untyped_retype(
-                         mc.cap_cptr,
-                         seL4_X86_4K,
-                         12,
-                         &root_cnode_obj,
-                         0,
-                         0,
-                         slot,
-                         1
-                    );
-                
+                let slot = slots
+                    .alloc()
+                    .map_err(|_| seL4_Error::seL4_NotEnoughMemory)?;
+                mc.allocated_slots.push(slot);
+
+                let root_cnode_obj = libnova::cap::CNode::new(
+                    seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr,
+                    64,
+                );
+
+                let res = libnova::cap::untyped_retype(
+                    mc.cap_cptr,
+                    seL4_X86_4K,
+                    12,
+                    &root_cnode_obj,
+                    0,
+                    0,
+                    slot,
+                    1,
+                );
+
                 if res.is_err() {
                     return Err(seL4_Error::seL4_NotEnoughMemory);
                 }
-                
+
                 let page_vaddr = mc.vaddr_start + current_limit + (i * 4096);
-                
+
                 context.vspace.map_page(
-                   allocator,
-                   slots,
-                   boot_info,
-                   slot,
-                   page_vaddr,
-                   cap_rights_new(false, true, true, true),
-                   seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes
+                    allocator,
+                    slots,
+                    boot_info,
+                    slot,
+                    page_vaddr,
+                    cap_rights_new(false, true, true, true),
+                    seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes,
                 )?;
             }
             mc.mapped_limit = target_limit;
         }
-        
+
         let vaddr_start = mc.vaddr_start;
         context.mapped_caps[idx] = Some(mc);
 
@@ -637,50 +682,78 @@ pub fn walk_madt(madt_ptr: *const Madt) {
     let length = madt.header.length as usize;
     let madt_start = madt_ptr as usize;
     let mut offset = core::mem::size_of::<Madt>();
-    
-    log_debug!(libnova::log::DOM_ACPI, "[ACPI] Walking MADT (Length: {})", length);
-    
+
+    log_debug!(
+        libnova::log::DOM_ACPI,
+        "[ACPI] Walking MADT (Length: {})",
+        length
+    );
+
     while offset < length {
         let entry_ptr = (madt_start + offset) as *const MadtEntryHeader;
         let entry = unsafe { &*entry_ptr };
         let record_len = entry.record_length as usize;
-        
+
         if record_len < 2 {
             println!("[ACPI] Error: Invalid MADT record length {}", record_len);
             break;
         }
 
         match entry.entry_type {
-            0 => { // Processor Local APIC
+            0 => {
+                // Processor Local APIC
                 let lapic = unsafe { &*(entry_ptr as *const MadtLocalApic) };
                 let pid = lapic.processor_id;
                 let aid = lapic.apic_id;
                 let flags = lapic.flags;
-                log_debug!(libnova::log::DOM_ACPI, "[ACPI] MADT Type 0: Local APIC (CPU ID: {}, APIC ID: {}, Flags: 0x{:x})", 
-                    pid, aid, flags);
-            },
-            1 => { // IO APIC
+                log_debug!(
+                    libnova::log::DOM_ACPI,
+                    "[ACPI] MADT Type 0: Local APIC (CPU ID: {}, APIC ID: {}, Flags: 0x{:x})",
+                    pid,
+                    aid,
+                    flags
+                );
+            }
+            1 => {
+                // IO APIC
                 let ioapic = unsafe { &*(entry_ptr as *const MadtIoApic) };
                 let id = ioapic.io_apic_id;
                 let addr = ioapic.io_apic_address;
                 let gsi_base = ioapic.global_system_interrupt_base;
-                log_debug!(libnova::log::DOM_ACPI, "[ACPI] MADT Type 1: IO APIC (ID: {}, Addr: 0x{:x}, GSI Base: {})", 
-                    id, addr, gsi_base);
-            },
-            2 => { // Interrupt Source Override
+                log_debug!(
+                    libnova::log::DOM_ACPI,
+                    "[ACPI] MADT Type 1: IO APIC (ID: {}, Addr: 0x{:x}, GSI Base: {})",
+                    id,
+                    addr,
+                    gsi_base
+                );
+            }
+            2 => {
+                // Interrupt Source Override
                 let iso = unsafe { &*(entry_ptr as *const MadtIso) };
                 let bus = iso.bus_source;
                 let irq = iso.irq_source;
                 let gsi = iso.gsi;
                 let flags = iso.flags;
-                log_debug!(libnova::log::DOM_ACPI, "[ACPI] MADT Type 2: ISO (Bus: {}, Source: {}, GSI: {}, Flags: 0x{:x})", 
-                    bus, irq, gsi, flags);
-            },
+                log_debug!(
+                    libnova::log::DOM_ACPI,
+                    "[ACPI] MADT Type 2: ISO (Bus: {}, Source: {}, GSI: {}, Flags: 0x{:x})",
+                    bus,
+                    irq,
+                    gsi,
+                    flags
+                );
+            }
             t => {
-                log_debug!(libnova::log::DOM_ACPI, "[ACPI] MADT Type {}: Skipped (Length: {})", t, record_len);
+                log_debug!(
+                    libnova::log::DOM_ACPI,
+                    "[ACPI] MADT Type {}: Skipped (Length: {})",
+                    t,
+                    record_len
+                );
             }
         }
-        
+
         offset += record_len;
     }
 }
@@ -698,23 +771,26 @@ pub fn find_first_ioapic(madt_ptr: *const Madt) -> Option<IoApicInfo> {
     let length = madt.header.length as usize;
     let madt_start = madt_ptr as usize;
     let mut offset = core::mem::size_of::<Madt>();
-    
+
     while offset < length {
         let entry_ptr = (madt_start + offset) as *const MadtEntryHeader;
         let entry = unsafe { &*entry_ptr };
         let record_len = entry.record_length as usize;
-        
-        if record_len < 2 { break; }
 
-        if entry.entry_type == 1 { // IO APIC
-             let ioapic = unsafe { &*(entry_ptr as *const MadtIoApic) };
-             return Some(IoApicInfo {
-                 id: ioapic.io_apic_id,
-                 address: ioapic.io_apic_address,
-                 gsi_base: ioapic.global_system_interrupt_base,
-             });
+        if record_len < 2 {
+            break;
         }
-        
+
+        if entry.entry_type == 1 {
+            // IO APIC
+            let ioapic = unsafe { &*(entry_ptr as *const MadtIoApic) };
+            return Some(IoApicInfo {
+                id: ioapic.io_apic_id,
+                address: ioapic.io_apic_address,
+                gsi_base: ioapic.global_system_interrupt_base,
+            });
+        }
+
         offset += record_len;
     }
     None

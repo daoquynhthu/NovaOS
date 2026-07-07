@@ -1,7 +1,5 @@
 use alloc::vec::Vec;
-use sel4_sys::{
-    seL4_BootInfo, seL4_Error, seL4_Word, seL4_CPtr,
-};
+use sel4_sys::{seL4_BootInfo, seL4_CPtr, seL4_Error, seL4_Word};
 
 const SE_L4_UNTYPED_RETYPE: seL4_Word = 1;
 const SE_L4_CAP_INIT_THREAD_CNODE: seL4_CPtr = 2;
@@ -14,7 +12,8 @@ const FRAGMENTATION_GUARD_GAP_BITS: u8 = 6; // avoid burning very large untyped 
 
 pub const MAX_REGION_PAGES: usize = 16;
 
-/// Represents a contiguous virtual memory region backed by 4K frame capabilities.
+/// Represents a contiguous virtual memory region backed by 4K frame
+/// capabilities.
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryRegion {
     pub frame_caps: [seL4_CPtr; MAX_REGION_PAGES],
@@ -41,15 +40,18 @@ impl SlotAllocator {
         for i in 0..allocator.start {
             allocator.mark(i);
         }
-        
+
         // Mark all slots after 'end' as allocated (if any)
         for i in allocator.end..MAX_CSPACE_SLOTS {
             allocator.mark(i);
         }
-        
+
         // Invariant: start <= end <= MAX_SLOTS
         debug_assert!(allocator.start <= allocator.end, "Invariant: start <= end");
-        debug_assert!(allocator.end <= MAX_CSPACE_SLOTS, "Invariant: end <= MAX_SLOTS");
+        debug_assert!(
+            allocator.end <= MAX_CSPACE_SLOTS,
+            "Invariant: end <= MAX_SLOTS"
+        );
 
         allocator
     }
@@ -89,11 +91,14 @@ impl SlotAllocator {
             if !self.is_allocated(i) {
                 // Pre-condition: Slot must be free
                 debug_assert!(!self.is_allocated(i), "Slot must be free before allocation");
-                
+
                 self.mark(i);
-                
+
                 // Post-condition: Slot must be marked allocated
-                debug_assert!(self.is_allocated(i), "Slot must be marked allocated after alloc");
+                debug_assert!(
+                    self.is_allocated(i),
+                    "Slot must be marked allocated after alloc"
+                );
                 return Ok(i as seL4_CPtr);
             }
         }
@@ -103,14 +108,20 @@ impl SlotAllocator {
     pub fn free(&mut self, slot: seL4_CPtr) {
         let slot_idx = slot as usize;
         // Pre-condition: Slot must be allocated
-        // Note: In some cases double-free might happen safely if we just clear, 
+        // Note: In some cases double-free might happen safely if we just clear,
         // but for strict verification we assert it was allocated.
-        debug_assert!(self.is_allocated(slot_idx), "Double free or freeing unallocated slot");
-        
+        debug_assert!(
+            self.is_allocated(slot_idx),
+            "Double free or freeing unallocated slot"
+        );
+
         self.clear(slot_idx);
-        
+
         // Post-condition: Slot must be free
-        debug_assert!(!self.is_allocated(slot_idx), "Slot must be free after release");
+        debug_assert!(
+            !self.is_allocated(slot_idx),
+            "Slot must be free after release"
+        );
     }
 
     pub fn stats(&self) -> (usize, usize, usize) {
@@ -194,7 +205,7 @@ impl UntypedAllocator {
         libnova::ipc::set_mr(3, node_depth);
         libnova::ipc::set_mr(4, node_offset);
         libnova::ipc::set_mr(5, num_objects);
-        
+
         let dest_info = libnova::ipc::call(service, info);
         seL4_Error::from(dest_info.expect("Untyped retype IPC failed").label() as i32)
     }
@@ -202,26 +213,35 @@ impl UntypedAllocator {
     pub fn print_info(&self, boot_info: &seL4_BootInfo) {
         log_debug!(libnova::log::DOM_ALLOC, "[Alloc] Untyped memory info:");
         let list_ptr = boot_info.untypedList.as_ptr();
-        log_debug!(libnova::log::DOM_ALLOC, "[Alloc] UntypedList Addr: {:p}", list_ptr);
-        
+        log_debug!(
+            libnova::log::DOM_ALLOC,
+            "[Alloc] UntypedList Addr: {:p}",
+            list_ptr
+        );
+
         let start = self.untyped_start;
         let end = self.untyped_end;
         // let len = end - start;
-        
-        log_debug!(libnova::log::DOM_ALLOC, "[Alloc] Scanning untyped slots {} to {}", start, end);
-        
+
+        log_debug!(
+            libnova::log::DOM_ALLOC,
+            "[Alloc] Scanning untyped slots {} to {}",
+            start,
+            end
+        );
+
         // Print all untyped slots, summarizing devices
         /*
         for i in 0..len {
-             let idx = i; 
+             let idx = i;
              let slot = start + i;
              if idx < boot_info.untypedList.len() {
                  let desc = boot_info.untypedList[idx];
                  let type_str = if desc.isDevice != 0 { "Device" } else { "RAM" };
-                 
+
                  // Always print RAM, limit Device printing
                  if desc.isDevice == 0 || i < 15 {
-                    println!("[Alloc] Slot {}: PAddr={:#x}, SizeBits={}, Type={}", 
+                    println!("[Alloc] Slot {}: PAddr={:#x}, SizeBits={}, Type={}",
                         slot, desc.paddr, desc.sizeBits, type_str);
                  }
              }
@@ -250,7 +270,13 @@ impl UntypedAllocator {
             ram_used_bytes = ram_used_bytes.saturating_add(self.usage[idx] as u64);
         }
 
-        (total_caps, ram_caps, ram_used_bytes, ram_total_bytes, self.last_used_idx)
+        (
+            total_caps,
+            ram_caps,
+            ram_used_bytes,
+            ram_total_bytes,
+            self.last_used_idx,
+        )
     }
 
     pub fn oom_stats(&self) -> (usize, seL4_Word) {
@@ -339,12 +365,12 @@ impl UntypedAllocator {
             }
 
             let remaining = cap_size - end_offset;
-            let tail_penalty = if remaining > 0 && remaining < (1usize << MIN_REUSABLE_FRAGMENT_BITS)
-            {
-                1
-            } else {
-                0
-            };
+            let tail_penalty =
+                if remaining > 0 && remaining < (1usize << MIN_REUSABLE_FRAGMENT_BITS) {
+                    1
+                } else {
+                    0
+                };
 
             let better = best_idx.is_none()
                 || gap < best_gap
@@ -386,14 +412,14 @@ impl ObjectAllocator for UntypedAllocator {
         if let Some(idx) = best_idx {
             let untyped_cptr = self.untyped_start + idx;
             let desc = &boot_info.untypedList[idx];
-            
+
             // Calculate offset again for the chosen block
             let current_usage = self.usage[idx];
             let alignment = 1usize << size_bits;
             let start_offset = (current_usage + alignment - 1) & !(alignment - 1);
-            
+
             // Perform retype
-             unsafe {
+            unsafe {
                 let err = UntypedAllocator::untyped_retype(
                     untyped_cptr.try_into().unwrap(),
                     type_,
@@ -404,14 +430,14 @@ impl ObjectAllocator for UntypedAllocator {
                     dest_slot,
                     1,
                 );
-                
+
                 if err != seL4_Error::seL4_NoError {
                     println!("[Alloc] Retype failed: {:?}", err);
                     slots.free(dest_slot);
                     return Err(err);
                 }
             }
-            
+
             // Update usage
             self.usage[idx] = start_offset + (1 << size_bits);
             self.last_used_idx = idx;
@@ -425,7 +451,7 @@ impl ObjectAllocator for UntypedAllocator {
                     idx, remaining
                 );
             }
-            
+
             return Ok(dest_slot);
         }
 
@@ -462,7 +488,7 @@ impl FrameAllocator {
     ) -> Result<(seL4_CPtr, bool), seL4_Error> {
         // Recycle frames if available
         if let Some(cap) = self.free_frames.pop() {
-           return Ok((cap, true));
+            return Ok((cap, true));
         }
         // No free frames, allocate new one
         // 4K Frame = size_bits 12, type = seL4_X86_4K (value 8)

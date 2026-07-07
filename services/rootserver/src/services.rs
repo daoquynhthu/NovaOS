@@ -122,7 +122,11 @@ pub fn lookup_latest_entry(base_name: &str) -> Option<(String, ServiceEntry, u32
     }
 
     if found {
-        Some((best_name.expect("name exists"), best_entry.expect("entry exists"), best_version))
+        Some((
+            best_name.expect("name exists"),
+            best_entry.expect("entry exists"),
+            best_version,
+        ))
     } else {
         None
     }
@@ -178,7 +182,12 @@ pub fn ping(name: &str) -> Result<(seL4_Word, seL4_Word, seL4_Word, seL4_Word), 
     };
 
     match ipc::call(endpoint, ipc::MessageInfo::new(FS_LABEL_PING, 0, 0, 0)) {
-        Ok(_) => Ok((ipc::get_mr(0), ipc::get_mr(1), ipc::get_mr(2), ipc::get_mr(3))),
+        Ok(_) => Ok((
+            ipc::get_mr(0),
+            ipc::get_mr(1),
+            ipc::get_mr(2),
+            ipc::get_mr(3),
+        )),
         Err(_) => {
             let open_count = FS_FWD_OPEN.load(Ordering::Relaxed) as seL4_Word;
             let close_count = FS_FWD_CLOSE.load(Ordering::Relaxed) as seL4_Word;

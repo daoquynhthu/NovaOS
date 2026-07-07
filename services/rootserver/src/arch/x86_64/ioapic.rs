@@ -1,7 +1,7 @@
 #![allow(dead_code)]
-use sel4_sys::seL4_BootInfo;
-use crate::memory::{UntypedAllocator, SlotAllocator};
 use crate::arch::acpi::AcpiContext;
+use crate::memory::{SlotAllocator, UntypedAllocator};
+use sel4_sys::seL4_BootInfo;
 
 // Invocation label for X86IRQIssueIRQHandlerIOAPIC
 // Based on typical seL4 x86 generation:
@@ -17,16 +17,25 @@ pub fn ack_irq(irq_handler: usize) -> Result<(), usize> {
     let info = libnova::ipc::MessageInfo::new((IRQ_ACK_IRQ as u64).try_into().unwrap(), 0, 0, 0);
     let resp = libnova::ipc::call(irq_handler.try_into().unwrap(), info);
     let label = resp.expect("ack_irq failed").label();
-    if label == 0 { Ok(()) } else { Err(label as usize) }
+    if label == 0 {
+        Ok(())
+    } else {
+        Err(label as usize)
+    }
 }
 
 pub fn set_irq_handler(irq_handler: usize, notification: usize) -> Result<(), usize> {
     libnova::ipc::set_cap(0, (notification as u64).try_into().unwrap());
-    
-    let info = libnova::ipc::MessageInfo::new((IRQ_SET_IRQ_HANDLER as u64).try_into().unwrap(), 0, 1, 0);
+
+    let info =
+        libnova::ipc::MessageInfo::new((IRQ_SET_IRQ_HANDLER as u64).try_into().unwrap(), 0, 1, 0);
     let resp = libnova::ipc::call(irq_handler.try_into().unwrap(), info);
     let label = resp.expect("set_irq_handler failed").label();
-    if label == 0 { Ok(()) } else { Err(label as usize) }
+    if label == 0 {
+        Ok(())
+    } else {
+        Err(label as usize)
+    }
 }
 
 pub struct IoApic {
@@ -54,15 +63,15 @@ impl IoApic {
         let data_ptr = (self.base_vaddr + 0x10) as *mut u32;
         core::ptr::write_volatile(data_ptr, value);
     }
-    
+
     pub fn id(&self) -> u8 {
         unsafe { ((self.read(0x00) >> 24) & 0xF) as u8 }
     }
-    
+
     pub fn version(&self) -> u8 {
         unsafe { (self.read(0x01) & 0xFF) as u8 }
     }
-    
+
     pub fn max_redirection_entry(&self) -> u8 {
         unsafe { ((self.read(0x01) >> 16) & 0xFF) as u8 }
     }
@@ -81,10 +90,9 @@ pub fn get_ioapic_handler(
     depth: usize,
     vector: usize,
 ) -> Result<(), usize> {
-    
     // Set extra cap (root CNode) at index 0
     libnova::ipc::set_cap(0, (root as u64).try_into().unwrap());
-    
+
     // Set Message Registers based on kernel/seL4/src/arch/x86/object/interrupt.c
     // Arg 0: index
     libnova::ipc::set_mr(0, (index as u64).try_into().unwrap());
@@ -92,7 +100,7 @@ pub fn get_ioapic_handler(
     libnova::ipc::set_mr(1, (depth as u64).try_into().unwrap());
     // Arg 2: ioapic
     libnova::ipc::set_mr(2, (ioapic as u64).try_into().unwrap());
-    
+
     // Arg 3: pin
     libnova::ipc::set_mr(3, (pin as u64).try_into().unwrap());
 
@@ -106,15 +114,17 @@ pub fn get_ioapic_handler(
     libnova::ipc::set_mr(6, (vector as u64).try_into().unwrap());
 
     let info = libnova::ipc::MessageInfo::new(
-        (X86_IRQ_ISSUE_IRQ_HANDLER_IOAPIC as u64).try_into().unwrap(), // label
+        (X86_IRQ_ISSUE_IRQ_HANDLER_IOAPIC as u64)
+            .try_into()
+            .unwrap(), // label
         0,
         1, // extra caps
-        7  // MRs
+        7, // MRs
     );
-    
+
     let resp = libnova::ipc::call(irq_control.try_into().unwrap(), info);
     let label = resp.expect("get_ioapic_handler failed").label();
-    
+
     if label == 0 {
         Ok(())
     } else {
@@ -129,20 +139,34 @@ pub fn init(
     slots: &mut SlotAllocator,
     context: &mut AcpiContext,
 ) -> Option<IoApic> {
-    log_debug!(libnova::log::DOM_APIC, "[IOAPIC] Initializing IOAPIC at paddr 0x{:x}...", paddr);
-    
+    log_debug!(
+        libnova::log::DOM_APIC,
+        "[IOAPIC] Initializing IOAPIC at paddr 0x{:x}...",
+        paddr
+    );
+
     match crate::arch::acpi::map_phys(boot_info, paddr, 0, allocator, slots, context) {
         Ok(vaddr) => {
-            log_debug!(libnova::log::DOM_APIC, "[IOAPIC] Mapped IOAPIC to vaddr 0x{:x}", vaddr);
+            log_debug!(
+                libnova::log::DOM_APIC,
+                "[IOAPIC] Mapped IOAPIC to vaddr 0x{:x}",
+                vaddr
+            );
             let ioapic = unsafe { IoApic::new(vaddr) };
-            
+
             let id = ioapic.id();
             let ver = ioapic.version();
             let max_entries = ioapic.max_redirection_entry();
-            
-            log_debug!(libnova::log::DOM_APIC, "[IOAPIC] ID: {}, Version: 0x{:x}, Max Redirection Entries: {}", id, ver, max_entries);
+
+            log_debug!(
+                libnova::log::DOM_APIC,
+                "[IOAPIC] ID: {}, Version: 0x{:x}, Max Redirection Entries: {}",
+                id,
+                ver,
+                max_entries
+            );
             Some(ioapic)
-        },
+        }
         Err(e) => {
             println!("[IOAPIC] Failed to map IOAPIC: {:?}", e);
             None

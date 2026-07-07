@@ -9,8 +9,9 @@ pub struct Args {
 
 impl Args {
     /// # Safety
-    /// This function must be called with valid argc and argv from the process entry point.
-    /// The argv array and strings pointed to must be valid for the lifetime of this iterator.
+    /// This function must be called with valid argc and argv from the process
+    /// entry point. The argv array and strings pointed to must be valid for
+    /// the lifetime of this iterator.
     pub unsafe fn new(count: usize, argv: *const *const u8) -> Self {
         Args {
             count,
@@ -36,7 +37,7 @@ impl Iterator for Args {
             }
             let s_slice = slice::from_raw_parts(s_ptr, len);
             self.current += 1;
-            
+
             // We assume args are valid UTF-8 and live forever (on stack)
             // Transmute to 'static because stack args live for process duration
             let s = str::from_utf8(s_slice).ok()?;

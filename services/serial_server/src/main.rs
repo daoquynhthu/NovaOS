@@ -3,7 +3,10 @@
 
 mod allocator;
 
-use libnova::syscall::{sys_get_pid, sys_print, sys_service_lookup_exists, sys_service_register, sys_service_set_ready, sys_yield};
+use libnova::syscall::{
+    sys_get_pid, sys_print, sys_service_lookup_exists, sys_service_register, sys_service_set_ready,
+    sys_yield,
+};
 use sel4_sys::{seL4_CPtr, seL4_IPCBuffer};
 
 #[no_mangle]

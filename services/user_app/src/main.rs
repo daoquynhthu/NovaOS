@@ -6,13 +6,15 @@ use alloc::vec::Vec;
 
 mod allocator;
 use libnova::fs_ipc::{
-    chmod_direct as fs_chmod_direct, chown_direct as fs_chown_direct, close_direct as fs_close_direct,
-    decrypt_direct as fs_decrypt_direct, encrypt_direct as fs_encrypt_direct, link_direct as fs_link_direct,
-    list_direct as fs_list_direct, mkdir_direct as fs_mkdir_direct, open_direct as fs_open_direct, read_direct as fs_read_direct,
-    rename_direct as fs_rename_direct, sync_direct as fs_sync_direct, symlink_direct as fs_symlink_direct,
-    truncate_direct as fs_truncate_direct, unlink_direct as fs_unlink_direct, write_direct as fs_write_direct,
-    writetest_direct as fs_writetest_direct, stat_direct as fs_stat_direct,
-    FS_MAX_RW_LEN,
+    chmod_direct as fs_chmod_direct, chown_direct as fs_chown_direct,
+    close_direct as fs_close_direct, decrypt_direct as fs_decrypt_direct,
+    encrypt_direct as fs_encrypt_direct, link_direct as fs_link_direct,
+    list_direct as fs_list_direct, mkdir_direct as fs_mkdir_direct, open_direct as fs_open_direct,
+    read_direct as fs_read_direct, rename_direct as fs_rename_direct,
+    stat_direct as fs_stat_direct, symlink_direct as fs_symlink_direct,
+    sync_direct as fs_sync_direct, truncate_direct as fs_truncate_direct,
+    unlink_direct as fs_unlink_direct, write_direct as fs_write_direct,
+    writetest_direct as fs_writetest_direct, FS_MAX_RW_LEN,
 };
 use libnova::syscall::*;
 use libnova::{print, println};
@@ -185,7 +187,8 @@ impl EarlyArgs {
         if self.fs_writetest_len == 0 {
             None
         } else {
-            let path = core::str::from_utf8(&self.fs_writetest_path[..self.fs_writetest_len]).ok()?;
+            let path =
+                core::str::from_utf8(&self.fs_writetest_path[..self.fs_writetest_len]).ok()?;
             Some((path, self.fs_writetest_kb))
         }
     }
@@ -228,7 +231,8 @@ impl EarlyArgs {
         if self.fs_link_target_len == 0 || self.fs_link_path_len == 0 {
             None
         } else {
-            let target = core::str::from_utf8(&self.fs_link_target_path[..self.fs_link_target_len]).ok()?;
+            let target =
+                core::str::from_utf8(&self.fs_link_target_path[..self.fs_link_target_len]).ok()?;
             let link = core::str::from_utf8(&self.fs_link_path[..self.fs_link_path_len]).ok()?;
             Some((target, link))
         }
@@ -238,8 +242,11 @@ impl EarlyArgs {
         if self.fs_symlink_target_len == 0 || self.fs_symlink_path_len == 0 {
             None
         } else {
-            let target = core::str::from_utf8(&self.fs_symlink_target_path[..self.fs_symlink_target_len]).ok()?;
-            let link = core::str::from_utf8(&self.fs_symlink_path[..self.fs_symlink_path_len]).ok()?;
+            let target =
+                core::str::from_utf8(&self.fs_symlink_target_path[..self.fs_symlink_target_len])
+                    .ok()?;
+            let link =
+                core::str::from_utf8(&self.fs_symlink_path[..self.fs_symlink_path_len]).ok()?;
             Some((target, link))
         }
     }
@@ -448,7 +455,8 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
                 continue;
             }
             if expect_fs_symlink_target {
-                parsed.fs_symlink_target_len = copy_str_to_buf(arg, &mut parsed.fs_symlink_target_path);
+                parsed.fs_symlink_target_len =
+                    copy_str_to_buf(arg, &mut parsed.fs_symlink_target_path);
                 expect_fs_symlink_target = false;
                 expect_fs_symlink_path = true;
                 continue;
@@ -491,7 +499,8 @@ fn parse_early_args(argc: usize, argv: *const *const u8) -> EarlyArgs {
             }
             if expect_fs_chown_uid_gid {
                 let mut split = arg.split(':');
-                if let (Some(uid_s), Some(gid_s), None) = (split.next(), split.next(), split.next()) {
+                if let (Some(uid_s), Some(gid_s), None) = (split.next(), split.next(), split.next())
+                {
                     if let (Ok(uid), Ok(gid)) = (uid_s.parse::<u32>(), gid_s.parse::<u32>()) {
                         parsed.fs_chown_uid = uid;
                         parsed.fs_chown_gid = gid;
@@ -630,7 +639,8 @@ fn parse_env_usize(envp: *const *const u8, key: &str) -> Option<usize> {
 
 fn run_fs_proxy_smoke(envp: *const *const u8) -> isize {
     println!("[FS_PROXY] Starting smoke test...");
-    let Some(fs_ep) = parse_env_usize(envp, "NOVA_FS_SERVICE_EP").map(|slot| slot as seL4_CPtr) else {
+    let Some(fs_ep) = parse_env_usize(envp, "NOVA_FS_SERVICE_EP").map(|slot| slot as seL4_CPtr)
+    else {
         println!("[FS_PROXY] missing NOVA_FS_SERVICE_EP");
         return 209;
     };
@@ -941,7 +951,10 @@ fn run_fs_writetest(envp: *const *const u8, path: &str, size_kb: usize) -> isize
     };
 
     println!("Writing {} KB to {}", size_kb, path);
-    println!("[FS_CMD] writetest direct begin {} size={}KB", path, size_kb);
+    println!(
+        "[FS_CMD] writetest direct begin {} size={}KB",
+        path, size_kb
+    );
     let res = fs_writetest_direct(fs_ep, path, size_kb);
     println!("[FS_CMD] writetest direct result {} => {}", path, res);
     if res != 0 {
@@ -1285,7 +1298,12 @@ fn usize_to_decimal_str<'a>(mut value: usize, buf: &'a mut [u8; 20]) -> &'a str 
 }
 
 #[no_mangle]
-pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usize, envp: *const *const u8) -> ! {
+pub extern "C" fn _start(
+    argc: usize,
+    argv: *const *const u8,
+    ep_cap_usize: usize,
+    envp: *const *const u8,
+) -> ! {
     let ep_cap = ep_cap_usize as seL4_CPtr;
     // Initialize libnova console
     libnova::console::init_console(ep_cap_usize);
@@ -1322,56 +1340,58 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
             println!("  <none>");
         }
     }
-    
+
     // Determine who we are
     let pid = sys_get_pid(ep_cap);
     println!("DEBUG: Got PID {}", pid);
-    
+
     // Only PID 0 should execute the full integration suite.
-    // This avoids duplicated destructive setup when extra user_app instances are launched.
+    // This avoids duplicated destructive setup when extra user_app instances are
+    // launched.
     let is_main_suite = pid == 0;
 
     if is_main_suite {
         println!("Process {}: Started (Main Suite).", pid);
         println!("Hello from Rust User App via Syscall!");
-        
+
         // Test File System Syscalls
         println!("Testing File System Syscalls...");
         let filename = "/test_fs.txt";
         // 1 = WriteOnly (Implies Create in our simplified logic for now)
-        let fd = sys_open(ep_cap, filename, 1); 
-        
+        let fd = sys_open(ep_cap, filename, 1);
+
         if fd >= 0 {
             println!("File opened successfully. FD: {}", fd);
             let content = b"Hello NovaFS!";
             let written = sys_file_write(ep_cap, fd as usize, content);
             println!("Written {} bytes.", written);
-            
+
             sys_close(ep_cap, fd as usize);
             println!("File closed.");
-            
+
             // Re-open for reading
             let fd_read = sys_open(ep_cap, filename, 0); // 0 = ReadOnly
             if fd_read >= 0 {
-                 println!("File re-opened for reading. FD: {}", fd_read);
-                 let mut read_buf = [0u8; 32];
-                 let read_bytes = sys_read(ep_cap, fd_read as usize, &mut read_buf);
-                 if read_bytes > 0 {
-                     let read_str = core::str::from_utf8(&read_buf[..read_bytes as usize]).unwrap_or("<invalid utf8>");
-                     println!("Read content: {}", read_str);
-                     if read_str == "Hello NovaFS!" {
-                         println!("FS Test Passed!");
-                     } else {
-                         println!("FS Test Failed: Content mismatch.");
-                     }
-                 } else {
-                     println!("FS Test Failed: Read returned {}", read_bytes);
-                 }
-                 sys_close(ep_cap, fd_read as usize);
+                println!("File re-opened for reading. FD: {}", fd_read);
+                let mut read_buf = [0u8; 32];
+                let read_bytes = sys_read(ep_cap, fd_read as usize, &mut read_buf);
+                if read_bytes > 0 {
+                    let read_str = core::str::from_utf8(&read_buf[..read_bytes as usize])
+                        .unwrap_or("<invalid utf8>");
+                    println!("Read content: {}", read_str);
+                    if read_str == "Hello NovaFS!" {
+                        println!("FS Test Passed!");
+                    } else {
+                        println!("FS Test Failed: Content mismatch.");
+                    }
+                } else {
+                    println!("FS Test Failed: Read returned {}", read_bytes);
+                }
+                sys_close(ep_cap, fd_read as usize);
             } else {
                 println!("FS Test Failed: Could not re-open file.");
             }
-            
+
             // Test Rename
             println!("Testing sys_rename...");
             if sys_rename(ep_cap, filename, "/test_renamed.txt") == 0 {
@@ -1388,22 +1408,24 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
                 println!("Rename Test Failed: sys_rename returned error.");
             }
         } else {
-             println!("FS Test Failed: Could not open file (FD={}).", fd);
+            println!("FS Test Failed: Could not open file (FD={}).", fd);
         }
-        
+
         // Test Dynamic Memory
         let current_brk = sys_brk(ep_cap, 0);
         let new_brk_req = current_brk + 4096;
         let new_brk = sys_brk(ep_cap, new_brk_req);
-        
+
         if new_brk == new_brk_req {
             println!("Heap expansion successful!");
             let ptr = current_brk as *mut u8;
-            unsafe { *ptr = b'A'; }
+            unsafe {
+                *ptr = b'A';
+            }
             if unsafe { *ptr } == b'A' {
-                 println!("Heap memory write verified!");
+                println!("Heap memory write verified!");
             } else {
-                 println!("Heap memory write failed!");
+                println!("Heap memory write failed!");
             }
         } else {
             println!("Heap expansion failed!");
@@ -1511,10 +1533,7 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
 
                     unsafe {
                         let p = SHM_PARENT_VADDR as *mut u64;
-                        if child_reaped
-                            && child_status == 124
-                            && *p == SHM_CHILD_MAGIC
-                        {
+                        if child_reaped && child_status == 124 && *p == SHM_CHILD_MAGIC {
                             println!("Cross-process SHM test passed.");
                         } else {
                             println!(
@@ -1534,10 +1553,7 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
             if parent_unmap_ret == 0 {
                 println!("Cross-process SHM cleanup passed.");
             } else {
-                println!(
-                    "Cross-process SHM cleanup failed: {}.",
-                    parent_unmap_ret
-                );
+                println!("Cross-process SHM cleanup failed: {}.", parent_unmap_ret);
             }
         }
 
@@ -1546,42 +1562,50 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
         let heap_size = 64 * 1024; // 64KB
         let heap_start = sys_brk(ep_cap, 0);
         let heap_end = sys_brk(ep_cap, heap_start + heap_size);
-        
+
         println!("Heap Range: 0x{:x} - 0x{:x}", heap_start, heap_end);
 
         if heap_end == heap_start + heap_size {
-             println!("Heap block allocated. Initializing Allocator...");
-             allocator::init_heap(heap_start, heap_size);
-             
-             // Test Vec
-             println!("Testing Vec...");
-             {
-                 let mut v = Vec::new();
-                 v.push(10);
-                 v.push(20);
-                 v.push(30);
-                 println!("Vec: {:?}", v);
-             }
-             println!("Vec test passed!");
+            println!("Heap block allocated. Initializing Allocator...");
+            allocator::init_heap(heap_start, heap_size);
+
+            // Test Vec
+            println!("Testing Vec...");
+            {
+                let mut v = Vec::new();
+                v.push(10);
+                v.push(20);
+                v.push(30);
+                println!("Vec: {:?}", v);
+            }
+            println!("Vec test passed!");
         } else {
-             println!("Failed to allocate heap for allocator!");
+            println!("Failed to allocate heap for allocator!");
         }
 
         // Test Process Management
         println!("Testing Process Management...");
-    println!("[USER APP] About to call sys_spawn...");
-    // Use standard sys_spawn
-    let child_pid = sys_spawn(ep_cap, "/bin/hello", &["arg1", "arg2"], &["TEST_ENV=NovaOS"]);
-        
+        println!("[USER APP] About to call sys_spawn...");
+        // Use standard sys_spawn
+        let child_pid = sys_spawn(
+            ep_cap,
+            "/bin/hello",
+            &["arg1", "arg2"],
+            &["TEST_ENV=NovaOS"],
+        );
+
         if child_pid >= 0 {
             println!("Spawned child PID: {}", child_pid);
             let (wpid, status) = sys_wait(ep_cap, child_pid, 0);
             println!("Waited for child {}, status: {}", wpid, status);
-            
+
             if wpid == child_pid && status == 123 {
                 println!("Process Management Test Passed!");
             } else {
-                println!("Process Management Test Failed! (Expected status 123, got {})", status);
+                println!(
+                    "Process Management Test Failed! (Expected status 123, got {})",
+                    status
+                );
             }
         } else {
             println!("Failed to spawn child!");
@@ -1591,26 +1615,28 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
         println!("Testing sys_kill...");
         let child_pid_kill = sys_spawn(ep_cap, "/bin/hello", &["loop"], &[]);
         if child_pid_kill >= 0 {
-             println!("Spawned child to kill PID: {}", child_pid_kill);
-             sys_yield(ep_cap);
-             
-             println!("Killing child {}...", child_pid_kill);
-             if sys_kill(ep_cap, child_pid_kill as usize, 9) == 0 {
-                 println!("Kill signal sent.");
-                 let (wpid, status) = sys_wait(ep_cap, child_pid_kill, 0);
-                 println!("Waited for killed child {}, status: {}", wpid, status);
-                 
-                 // status -1 cast to usize is u64::MAX
-                 if wpid == child_pid_kill && (status as isize) == -1 {
-                     println!("Kill Test Passed!");
-                 } else {
-                     println!("Kill Test Failed! Status: {} (Expected -1)", status as isize);
-                 }
-             } else {
-                 println!("Kill Test Failed: sys_kill returned error.");
-             }
-        }
+            println!("Spawned child to kill PID: {}", child_pid_kill);
+            sys_yield(ep_cap);
 
+            println!("Killing child {}...", child_pid_kill);
+            if sys_kill(ep_cap, child_pid_kill as usize, 9) == 0 {
+                println!("Kill signal sent.");
+                let (wpid, status) = sys_wait(ep_cap, child_pid_kill, 0);
+                println!("Waited for killed child {}, status: {}", wpid, status);
+
+                // status -1 cast to usize is u64::MAX
+                if wpid == child_pid_kill && (status as isize) == -1 {
+                    println!("Kill Test Passed!");
+                } else {
+                    println!(
+                        "Kill Test Failed! Status: {} (Expected -1)",
+                        status as isize
+                    );
+                }
+            } else {
+                println!("Kill Test Failed: sys_kill returned error.");
+            }
+        }
     } else {
         println!("Process {} (Child) Started!", pid);
         println!(
@@ -1652,7 +1678,8 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
                 }
                 *p = SHM_CHILD_MAGIC;
             }
-            // Intentionally do not call munmap here to verify exit-time detach/reclaim path.
+            // Intentionally do not call munmap here to verify exit-time detach/reclaim
+            // path.
             println!("Child SHM verification passed.");
             sys_exit(ep_cap, 124);
         } else if let Some(path) = early_args.fs_touch_path() {
@@ -1716,15 +1743,15 @@ pub extern "C" fn _start(argc: usize, argv: *const *const u8, ep_cap_usize: usiz
             let code = run_fs_syscall_smoke(ep_cap);
             sys_exit(ep_cap, code as usize);
         } else if early_args.loop_mode {
-             println!("Child entering infinite loop...");
-             loop {
-                 sys_yield(ep_cap);
-             }
+            println!("Child entering infinite loop...");
+            loop {
+                sys_yield(ep_cap);
+            }
         } else {
             println!("Child exiting with code 123...");
             sys_exit(ep_cap, 123);
         }
     }
-    
+
     sys_exit(ep_cap, 0);
 }

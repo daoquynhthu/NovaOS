@@ -3,10 +3,11 @@ use std::path::PathBuf;
 
 fn main() {
     let _target = env::var("TARGET").expect("TARGET must be set");
-    
+
     // 1. 获取从 CMake 传递过来的 seL4 内核构建目录
     // CMakeLists.txt 中需要通过 set(ENV{SEL4_OUT_DIR} ...) 传递此变量
-    let sel4_out_dir = env::var("SEL4_OUT_DIR").expect("SEL4_OUT_DIR not set. Are you building via CMake?");
+    let sel4_out_dir =
+        env::var("SEL4_OUT_DIR").expect("SEL4_OUT_DIR not set. Are you building via CMake?");
     let sel4_out_path = PathBuf::from(&sel4_out_dir);
 
     let sel4_kernel_dir = env::var("SEL4_KERNEL_DIR").expect("SEL4_KERNEL_DIR not set");

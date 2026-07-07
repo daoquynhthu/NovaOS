@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![allow(dead_code)] // TEMP: shared code via include!() from rootserver; remove when extracted
 
 extern crate alloc;
 #[macro_use]
@@ -8,74 +7,52 @@ extern crate libnova;
 
 mod allocator;
 use alloc::string::ToString;
-#[path = "../../rootserver/src/crypto.rs"]
-mod crypto;
-#[path = "../../rootserver/src/vfs.rs"]
-mod vfs;
-
-mod drivers {
-    pub mod block {
-        include!("../../rootserver/src/drivers/block.rs");
-    }
-
-    pub mod rtc {
-        use core::sync::atomic::{AtomicUsize, Ordering};
-        use libnova::syscall::sys_get_unix_time;
-        use sel4_sys::seL4_CPtr;
-
-        static SYSCALL_EP: AtomicUsize = AtomicUsize::new(0);
-
-        pub fn set_syscall_ep(ep: seL4_CPtr) {
-            SYSCALL_EP.store(ep as usize, Ordering::Relaxed);
-        }
-
-        pub struct RtcDriver;
-
-        impl RtcDriver {
-            pub fn new() -> Self {
-                Self
-            }
-
-            pub fn get_unix_timestamp(&self) -> u64 {
-                let ep = SYSCALL_EP.load(Ordering::Relaxed) as seL4_CPtr;
-                if ep == 0 {
-                    0
-                } else {
-                    sys_get_unix_time(ep)
-                }
-            }
-        }
-    }
-}
-
-mod fs {
-    pub mod block_cache {
-        include!("../../rootserver/src/fs/block_cache.rs");
-    }
-    pub mod novafs {
-        include!("../../rootserver/src/fs/novafs.rs");
-    }
-    pub mod strategy {
-        include!("../../rootserver/src/fs/strategy.rs");
-    }
-}
-
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
-use drivers::block::BlockDevice;
 use libnova::fs_ipc::{
     fs_err_not_implemented_word, FS_LABEL_CHMOD, FS_LABEL_CHOWN, FS_LABEL_CLOSE, FS_LABEL_DECRYPT,
-    FS_LABEL_ENCRYPT, FS_LABEL_LINK, FS_LABEL_LIST, FS_LABEL_MKDIR, FS_LABEL_OPEN, FS_LABEL_PING, FS_LABEL_READ,
-    FS_LABEL_REFRESH, FS_LABEL_RENAME, FS_LABEL_STAT, FS_LABEL_SYNC, FS_LABEL_SYMLINK, FS_LABEL_TRUNCATE,
-    FS_LABEL_UNLINK, FS_LABEL_WRITE, FS_LABEL_WRITETEST, FS_PROTO_V1, FS_STATUS_READY,
+    FS_LABEL_ENCRYPT, FS_LABEL_LINK, FS_LABEL_LIST, FS_LABEL_MKDIR, FS_LABEL_OPEN, FS_LABEL_PING,
+    FS_LABEL_READ, FS_LABEL_REFRESH, FS_LABEL_RENAME, FS_LABEL_STAT, FS_LABEL_SYMLINK,
+    FS_LABEL_SYNC, FS_LABEL_TRUNCATE, FS_LABEL_UNLINK, FS_LABEL_WRITE, FS_LABEL_WRITETEST,
+    FS_PROTO_V1, FS_STATUS_READY,
 };
 use libnova::ipc;
 use libnova::syscall::{
-    sys_block_info, sys_block_read, sys_block_write, sys_brk, sys_fs_view_epoch, sys_service_set_ready,
+    sys_block_info, sys_block_read, sys_block_write, sys_brk, sys_fs_view_epoch,
+    sys_service_set_ready,
 };
+use novafs_core::{block_device::BlockDevice, FileSystem, FileType, Inode, NovaFS};
 use sel4_sys::{seL4_CPtr, seL4_IPCBuffer, seL4_Word};
 use spin::Mutex;
-use vfs::{FileSystem, FileType, Inode};
+
+mod rtc {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use libnova::syscall::sys_get_unix_time;
+    use sel4_sys::seL4_CPtr;
+
+    static SYSCALL_EP: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn set_syscall_ep(ep: seL4_CPtr) {
+        SYSCALL_EP.store(ep as usize, Ordering::Relaxed);
+    }
+
+    pub struct RtcDriver;
+
+    impl RtcDriver {
+        pub fn new() -> Self {
+            Self
+        }
+
+        pub fn get_unix_timestamp(&self) -> u64 {
+            let ep = SYSCALL_EP.load(Ordering::Relaxed) as seL4_CPtr;
+            if ep == 0 {
+                0
+            } else {
+                sys_get_unix_time(ep)
+            }
+        }
+    }
+}
 
 static OPEN_COUNT: AtomicU64 = AtomicU64::new(0);
 static READ_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -121,14 +98,16 @@ struct RemoteBlockDevice {
 
 impl RemoteBlockDevice {
     fn new(syscall_ep_cap: seL4_CPtr) -> Result<Self, &'static str> {
-        println!("[FS_SERVER] requesting block info via syscall ep {}", syscall_ep_cap);
+        println!(
+            "[FS_SERVER] requesting block info via syscall ep {}",
+            syscall_ep_cap
+        );
         let Some((sector_count, rotational)) = sys_block_info(syscall_ep_cap) else {
             return Err("disk-info-unavailable");
         };
         println!(
             "[FS_SERVER] block info ok sectors={} rotational={}",
-            sector_count,
-            rotational
+            sector_count, rotational
         );
 
         Ok(Self {
@@ -187,7 +166,12 @@ fn pack_u32_pair(high: u64, low: u64) -> u64 {
     ((high & 0xFFFF_FFFF) << 32) | (low & 0xFFFF_FFFF)
 }
 
-fn copy_bytes_from_msg(start_word: usize, requested_len: usize, msg_words: usize, out: &mut [u8]) -> usize {
+fn copy_bytes_from_msg(
+    start_word: usize,
+    requested_len: usize,
+    msg_words: usize,
+    out: &mut [u8],
+) -> usize {
     let available_words = msg_words.saturating_sub(start_word);
     let available_bytes = available_words.saturating_mul(core::mem::size_of::<seL4_Word>());
     let len = core::cmp::min(requested_len, core::cmp::min(available_bytes, out.len()));
@@ -219,9 +203,10 @@ fn current_fs() -> Option<Arc<dyn FileSystem>> {
 }
 
 fn mount_local_fs(syscall_ep_cap: seL4_CPtr) -> Result<(), &'static str> {
-    drivers::rtc::set_syscall_ep(syscall_ep_cap);
+    rtc::set_syscall_ep(syscall_ep_cap);
+    novafs_core::set_wall_clock(rtc::RtcDriver::new().get_unix_timestamp());
     let device = Arc::new(RemoteBlockDevice::new(syscall_ep_cap)?);
-    let fs = fs::novafs::NovaFS::new(device, 0)?;
+    let fs = NovaFS::new(device, 0)?;
     let fs_arc = Arc::new(fs.clone());
     let fs_trait: Arc<dyn FileSystem> = fs_arc;
     *DISK_FS.lock() = Some(fs_trait);
@@ -250,7 +235,10 @@ fn ensure_local_fs_fresh(syscall_ep_cap: seL4_CPtr) -> Result<(), &'static str> 
     Ok(())
 }
 
-fn resolve_parent<'a>(fs: &Arc<dyn FileSystem>, path: &'a str) -> Result<(Arc<dyn Inode>, &'a str), i64> {
+fn resolve_parent<'a>(
+    fs: &Arc<dyn FileSystem>,
+    path: &'a str,
+) -> Result<(Arc<dyn Inode>, &'a str), i64> {
     if path.is_empty() || path == "/" {
         return Err(FS_ERR_INVAL);
     }
@@ -261,7 +249,11 @@ fn resolve_parent<'a>(fs: &Arc<dyn FileSystem>, path: &'a str) -> Result<(Arc<dy
         if name.is_empty() {
             return Err(FS_ERR_INVAL);
         }
-        let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
+        let parent_path = if parent_path.is_empty() {
+            "/"
+        } else {
+            parent_path
+        };
         fs.resolve_path("/", parent_path)
             .map(|parent| (parent, name))
             .map_err(|_| FS_ERR_INVAL)
@@ -278,9 +270,7 @@ fn open_inode(fs: &Arc<dyn FileSystem>, path: &str, mode: u64) -> Result<FdEntry
                 return Err(FS_ERR_INVAL);
             }
             let (parent, name) = resolve_parent(fs, path)?;
-            parent
-                .create(name, FileType::File)
-                .map_err(|_| FS_ERR_IO)?
+            parent.create(name, FileType::File).map_err(|_| FS_ERR_IO)?
         }
     };
 
@@ -290,7 +280,11 @@ fn open_inode(fs: &Arc<dyn FileSystem>, path: &str, mode: u64) -> Result<FdEntry
         0
     };
 
-    Ok(FdEntry { inode, offset, mode })
+    Ok(FdEntry {
+        inode,
+        offset,
+        mode,
+    })
 }
 
 fn local_unlink(fs: &Arc<dyn FileSystem>, path: &str) -> i64 {
@@ -390,9 +384,7 @@ fn local_writetest(fs: &Arc<dyn FileSystem>, path: &str, size_kb: usize) -> i64 
 
     println!(
         "[FS_SERVER] writetest path={} size_kb={} total_bytes={}",
-        path,
-        size_kb,
-        total_bytes
+        path, size_kb, total_bytes
     );
 
     while written_total < total_bytes {
@@ -414,8 +406,7 @@ fn local_writetest(fs: &Arc<dyn FileSystem>, path: &str, size_kb: usize) -> i64 
 
     println!(
         "[FS_SERVER] writetest done path={} bytes={}",
-        path,
-        written_total
+        path, written_total
     );
     0
 }
@@ -476,7 +467,11 @@ fn format_time(ts: u64) -> alloc::string::String {
 
     let mut year = 1970;
     loop {
-        let days_in_year = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) { 366 } else { 365 };
+        let days_in_year = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
+            366
+        } else {
+            365
+        };
         if days >= days_in_year {
             days -= days_in_year;
             year += 1;
@@ -503,10 +498,18 @@ fn format_time(ts: u64) -> alloc::string::String {
     }
 
     let day = days + 1;
-    alloc::format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, minute, second)
+    alloc::format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second
+    )
 }
 
-fn print_ls_line(name_display: &str, stat: &vfs::FileStat) {
+fn print_ls_line(name_display: &str, stat: &novafs_core::FileStat) {
     let type_char = match stat.file_type {
         FileType::Directory => 'd',
         FileType::Symlink => 'l',
@@ -516,14 +519,7 @@ fn print_ls_line(name_display: &str, stat: &vfs::FileStat) {
     let time_str = format_time(stat.mtime);
     println!(
         "{}{} {:>2} {:>4} {:>4} {:>8} {} {}",
-        type_char,
-        mode_str,
-        stat.nlink,
-        stat.uid,
-        stat.gid,
-        stat.size,
-        time_str,
-        name_display
+        type_char, mode_str, stat.nlink, stat.uid, stat.gid, stat.size, time_str, name_display
     );
 }
 
@@ -541,8 +537,10 @@ fn local_ls(fs: &Arc<dyn FileSystem>, path: &str) -> i64 {
                                         if cstat.file_type == FileType::Symlink {
                                             let mut buf = alloc::vec![0u8; cstat.size];
                                             if let Ok(n) = child.read_at(0, &mut buf) {
-                                                if let Ok(target) = core::str::from_utf8(&buf[..n]) {
-                                                    name_display = alloc::format!("{} -> {}", name, target);
+                                                if let Ok(target) = core::str::from_utf8(&buf[..n])
+                                                {
+                                                    name_display =
+                                                        alloc::format!("{} -> {}", name, target);
                                                 }
                                             }
                                         }
@@ -651,13 +649,14 @@ pub extern "C" fn _start(
     let heap_end = sys_brk(syscall_ep_cap, heap_start + heap_size);
     if heap_end == heap_start + heap_size {
         allocator::init_heap(heap_start, heap_size);
-        println!("[FS_SERVER] heap initialized start=0x{:x} size={}", heap_start, heap_size);
+        println!(
+            "[FS_SERVER] heap initialized start=0x{:x} size={}",
+            heap_start, heap_size
+        );
     } else {
         println!(
             "[FS_SERVER] heap init failed start=0x{:x} requested={} got=0x{:x}",
-            heap_start,
-            heap_size,
-            heap_end
+            heap_start, heap_size, heap_end
         );
     }
 
@@ -677,9 +676,7 @@ pub extern "C" fn _start(
                     }
                     if b.is_ascii_digit() {
                         seen_digit = true;
-                        slot = slot
-                            .saturating_mul(10)
-                            .saturating_add((b - b'0') as usize);
+                        slot = slot.saturating_mul(10).saturating_add((b - b'0') as usize);
                     } else {
                         valid = false;
                         break;
@@ -722,7 +719,14 @@ pub extern "C" fn _start(
 
         match label {
             FS_LABEL_PING => {
-                ipc::set_mr(0, if current_fs().is_some() { FS_STATUS_READY } else { 0 });
+                ipc::set_mr(
+                    0,
+                    if current_fs().is_some() {
+                        FS_STATUS_READY
+                    } else {
+                        0
+                    },
+                );
                 ipc::set_mr(1, FS_PROTO_V1);
                 let open = OPEN_COUNT.load(Ordering::Relaxed);
                 let close = CLOSE_COUNT.load(Ordering::Relaxed);
@@ -747,7 +751,8 @@ pub extern "C" fn _start(
                 let path_len = ipc::get_mr(0) as usize;
                 let mode = ipc::get_mr(1);
                 let mut path_buf = [0u8; MAX_PATH_LEN];
-                let actual_len = copy_bytes_from_msg(2, path_len, info.length() as usize, &mut path_buf);
+                let actual_len =
+                    copy_bytes_from_msg(2, path_len, info.length() as usize, &mut path_buf);
                 let path_str = match core::str::from_utf8(&path_buf[..actual_len]) {
                     Ok(s) if !s.is_empty() => s,
                     _ => {
@@ -788,7 +793,12 @@ pub extern "C" fn _start(
                     }
                 };
 
-                let Some((idx, slot)) = state.fds.iter_mut().enumerate().find(|(_, entry)| entry.is_none()) else {
+                let Some((idx, slot)) = state
+                    .fds
+                    .iter_mut()
+                    .enumerate()
+                    .find(|(_, entry)| entry.is_none())
+                else {
                     ipc::set_mr(0, FS_ERR_MFILE as u64);
                     ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
                     continue;
@@ -829,7 +839,8 @@ pub extern "C" fn _start(
             FS_LABEL_UNLINK => {
                 let path_len = ipc::get_mr(0) as usize;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
-                let actual_len = copy_bytes_from_msg(1, path_len, info.length() as usize, &mut path_buf);
+                let actual_len =
+                    copy_bytes_from_msg(1, path_len, info.length() as usize, &mut path_buf);
                 let path_str = match core::str::from_utf8(&path_buf[..actual_len]) {
                     Ok(s) if !s.is_empty() => s,
                     _ => {
@@ -838,14 +849,17 @@ pub extern "C" fn _start(
                         continue;
                     }
                 };
-                let res = current_fs().map(|fs| local_unlink(&fs, path_str)).unwrap_or(FS_ERR_IO);
+                let res = current_fs()
+                    .map(|fs| local_unlink(&fs, path_str))
+                    .unwrap_or(FS_ERR_IO);
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
             FS_LABEL_MKDIR => {
                 let path_len = ipc::get_mr(0) as usize;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
-                let actual_len = copy_bytes_from_msg(1, path_len, info.length() as usize, &mut path_buf);
+                let actual_len =
+                    copy_bytes_from_msg(1, path_len, info.length() as usize, &mut path_buf);
                 let path_str = match core::str::from_utf8(&path_buf[..actual_len]) {
                     Ok(s) if !s.is_empty() => s,
                     _ => {
@@ -859,7 +873,9 @@ pub extern "C" fn _start(
                     ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
                     continue;
                 }
-                let res = current_fs().map(|fs| local_mkdir(&fs, path_str)).unwrap_or(FS_ERR_IO);
+                let res = current_fs()
+                    .map(|fs| local_mkdir(&fs, path_str))
+                    .unwrap_or(FS_ERR_IO);
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
@@ -867,7 +883,8 @@ pub extern "C" fn _start(
                 let path_len = ipc::get_mr(0) as usize;
                 let size = ipc::get_mr(1);
                 let mut path_buf = [0u8; MAX_PATH_LEN];
-                let actual_len = copy_bytes_from_msg(2, path_len, info.length() as usize, &mut path_buf);
+                let actual_len =
+                    copy_bytes_from_msg(2, path_len, info.length() as usize, &mut path_buf);
                 let path_str = match core::str::from_utf8(&path_buf[..actual_len]) {
                     Ok(s) if !s.is_empty() => s,
                     _ => {
@@ -891,7 +908,8 @@ pub extern "C" fn _start(
                 let path_len = ipc::get_mr(0) as usize;
                 let mode = ipc::get_mr(1) as u16;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
-                let actual_len = copy_bytes_from_msg(2, path_len, info.length() as usize, &mut path_buf);
+                let actual_len =
+                    copy_bytes_from_msg(2, path_len, info.length() as usize, &mut path_buf);
                 let path_str = match core::str::from_utf8(&path_buf[..actual_len]) {
                     Ok(s) if !s.is_empty() => s,
                     _ => {
@@ -916,7 +934,8 @@ pub extern "C" fn _start(
                 let uid = ipc::get_mr(1) as u32;
                 let gid = ipc::get_mr(2) as u32;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
-                let actual_len = copy_bytes_from_msg(3, path_len, info.length() as usize, &mut path_buf);
+                let actual_len =
+                    copy_bytes_from_msg(3, path_len, info.length() as usize, &mut path_buf);
                 let path_str = match core::str::from_utf8(&path_buf[..actual_len]) {
                     Ok(s) if !s.is_empty() => s,
                     _ => {
@@ -949,7 +968,8 @@ pub extern "C" fn _start(
             FS_LABEL_LIST => {
                 let path_len = ipc::get_mr(0) as usize;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
-                let actual_len = copy_bytes_from_msg(1, path_len, info.length() as usize, &mut path_buf);
+                let actual_len =
+                    copy_bytes_from_msg(1, path_len, info.length() as usize, &mut path_buf);
                 let path_str = match core::str::from_utf8(&path_buf[..actual_len]) {
                     Ok(s) if !s.is_empty() => s,
                     _ => {
@@ -963,14 +983,17 @@ pub extern "C" fn _start(
                     ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
                     continue;
                 }
-                let res = current_fs().map(|fs| local_ls(&fs, path_str)).unwrap_or(FS_ERR_IO);
+                let res = current_fs()
+                    .map(|fs| local_ls(&fs, path_str))
+                    .unwrap_or(FS_ERR_IO);
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
             FS_LABEL_STAT => {
                 let path_len = ipc::get_mr(0) as usize;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
-                let actual_len = copy_bytes_from_msg(1, path_len, info.length() as usize, &mut path_buf);
+                let actual_len =
+                    copy_bytes_from_msg(1, path_len, info.length() as usize, &mut path_buf);
                 let path_str = match core::str::from_utf8(&path_buf[..actual_len]) {
                     Ok(s) if !s.is_empty() => s,
                     _ => {
@@ -979,14 +1002,17 @@ pub extern "C" fn _start(
                         continue;
                     }
                 };
-                let res = current_fs().map(|fs| local_stat_kind(&fs, path_str)).unwrap_or(FS_ERR_IO);
+                let res = current_fs()
+                    .map(|fs| local_stat_kind(&fs, path_str))
+                    .unwrap_or(FS_ERR_IO);
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
             FS_LABEL_ENCRYPT => {
                 let path_len = ipc::get_mr(0) as usize;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
-                let actual_len = copy_bytes_from_msg(1, path_len, info.length() as usize, &mut path_buf);
+                let actual_len =
+                    copy_bytes_from_msg(1, path_len, info.length() as usize, &mut path_buf);
                 let path_str = match core::str::from_utf8(&path_buf[..actual_len]) {
                     Ok(s) if !s.is_empty() => s,
                     _ => {
@@ -1009,7 +1035,8 @@ pub extern "C" fn _start(
             FS_LABEL_DECRYPT => {
                 let path_len = ipc::get_mr(0) as usize;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
-                let actual_len = copy_bytes_from_msg(1, path_len, info.length() as usize, &mut path_buf);
+                let actual_len =
+                    copy_bytes_from_msg(1, path_len, info.length() as usize, &mut path_buf);
                 let path_str = match core::str::from_utf8(&path_buf[..actual_len]) {
                     Ok(s) if !s.is_empty() => s,
                     _ => {
@@ -1032,14 +1059,20 @@ pub extern "C" fn _start(
             FS_LABEL_RENAME => {
                 let old_len = ipc::get_mr(0) as usize;
                 let new_len = ipc::get_mr(1) as usize;
-                if old_len == 0 || old_len > MAX_PATH_LEN || new_len == 0 || new_len > MAX_PATH_LEN {
+                if old_len == 0 || old_len > MAX_PATH_LEN || new_len == 0 || new_len > MAX_PATH_LEN
+                {
                     ipc::set_mr(0, FS_ERR_INVAL as u64);
                     ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
                     continue;
                 }
 
                 let mut path_buf = [0u8; MAX_PATH_LEN * 2];
-                let actual_len = copy_bytes_from_msg(2, old_len + new_len, info.length() as usize, &mut path_buf);
+                let actual_len = copy_bytes_from_msg(
+                    2,
+                    old_len + new_len,
+                    info.length() as usize,
+                    &mut path_buf,
+                );
                 if actual_len < old_len + new_len {
                     ipc::set_mr(0, FS_ERR_INVAL as u64);
                     ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
@@ -1077,14 +1110,23 @@ pub extern "C" fn _start(
             FS_LABEL_LINK => {
                 let target_len = ipc::get_mr(0) as usize;
                 let link_len = ipc::get_mr(1) as usize;
-                if target_len == 0 || target_len > MAX_PATH_LEN || link_len == 0 || link_len > MAX_PATH_LEN {
+                if target_len == 0
+                    || target_len > MAX_PATH_LEN
+                    || link_len == 0
+                    || link_len > MAX_PATH_LEN
+                {
                     ipc::set_mr(0, FS_ERR_INVAL as u64);
                     ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
                     continue;
                 }
 
                 let mut path_buf = [0u8; MAX_PATH_LEN * 2];
-                let actual_len = copy_bytes_from_msg(2, target_len + link_len, info.length() as usize, &mut path_buf);
+                let actual_len = copy_bytes_from_msg(
+                    2,
+                    target_len + link_len,
+                    info.length() as usize,
+                    &mut path_buf,
+                );
                 if actual_len < target_len + link_len {
                     ipc::set_mr(0, FS_ERR_INVAL as u64);
                     ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
@@ -1099,14 +1141,15 @@ pub extern "C" fn _start(
                         continue;
                     }
                 };
-                let link_path = match core::str::from_utf8(&path_buf[target_len..target_len + link_len]) {
-                    Ok(s) if !s.is_empty() => s,
-                    _ => {
-                        ipc::set_mr(0, FS_ERR_INVAL as u64);
-                        ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                        continue;
-                    }
-                };
+                let link_path =
+                    match core::str::from_utf8(&path_buf[target_len..target_len + link_len]) {
+                        Ok(s) if !s.is_empty() => s,
+                        _ => {
+                            ipc::set_mr(0, FS_ERR_INVAL as u64);
+                            ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
+                            continue;
+                        }
+                    };
 
                 if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
                     ipc::set_mr(0, FS_ERR_IO as u64);
@@ -1122,14 +1165,23 @@ pub extern "C" fn _start(
             FS_LABEL_SYMLINK => {
                 let target_len = ipc::get_mr(0) as usize;
                 let link_len = ipc::get_mr(1) as usize;
-                if target_len == 0 || target_len > MAX_PATH_LEN || link_len == 0 || link_len > MAX_PATH_LEN {
+                if target_len == 0
+                    || target_len > MAX_PATH_LEN
+                    || link_len == 0
+                    || link_len > MAX_PATH_LEN
+                {
                     ipc::set_mr(0, FS_ERR_INVAL as u64);
                     ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
                     continue;
                 }
 
                 let mut path_buf = [0u8; MAX_PATH_LEN * 2];
-                let actual_len = copy_bytes_from_msg(2, target_len + link_len, info.length() as usize, &mut path_buf);
+                let actual_len = copy_bytes_from_msg(
+                    2,
+                    target_len + link_len,
+                    info.length() as usize,
+                    &mut path_buf,
+                );
                 if actual_len < target_len + link_len {
                     ipc::set_mr(0, FS_ERR_INVAL as u64);
                     ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
@@ -1144,14 +1196,15 @@ pub extern "C" fn _start(
                         continue;
                     }
                 };
-                let link_path = match core::str::from_utf8(&path_buf[target_len..target_len + link_len]) {
-                    Ok(s) if !s.is_empty() => s,
-                    _ => {
-                        ipc::set_mr(0, FS_ERR_INVAL as u64);
-                        ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                        continue;
-                    }
-                };
+                let link_path =
+                    match core::str::from_utf8(&path_buf[target_len..target_len + link_len]) {
+                        Ok(s) if !s.is_empty() => s,
+                        _ => {
+                            ipc::set_mr(0, FS_ERR_INVAL as u64);
+                            ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
+                            continue;
+                        }
+                    };
 
                 if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
                     ipc::set_mr(0, FS_ERR_IO as u64);
@@ -1206,9 +1259,7 @@ pub extern "C" fn _start(
                 }
                 println!(
                     "[FS_SERVER] write fd={} len={} offset={}",
-                    fd,
-                    len,
-                    entry.offset
+                    fd, len, entry.offset
                 );
                 if entry.mode == 3 {
                     if let Ok(meta) = entry.inode.metadata() {
@@ -1227,9 +1278,7 @@ pub extern "C" fn _start(
 
                 println!(
                     "[FS_SERVER] write done fd={} wrote={} new_offset={}",
-                    fd,
-                    written,
-                    entry.offset
+                    fd, written, entry.offset
                 );
                 ipc::set_mr(0, written as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
@@ -1238,7 +1287,8 @@ pub extern "C" fn _start(
                 let path_len = ipc::get_mr(0) as usize;
                 let size_kb = ipc::get_mr(1) as usize;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
-                let actual_len = copy_bytes_from_msg(2, path_len, info.length() as usize, &mut path_buf);
+                let actual_len =
+                    copy_bytes_from_msg(2, path_len, info.length() as usize, &mut path_buf);
                 let path_str = match core::str::from_utf8(&path_buf[..actual_len]) {
                     Ok(s) if !s.is_empty() => s,
                     _ => {
@@ -1254,7 +1304,10 @@ pub extern "C" fn _start(
                     continue;
                 }
 
-                println!("[FS_SERVER] writetest begin path={} size_kb={}", path_str, size_kb);
+                println!(
+                    "[FS_SERVER] writetest begin path={} size_kb={}",
+                    path_str, size_kb
+                );
                 let res = current_fs()
                     .map(|fs| local_writetest(&fs, path_str, size_kb))
                     .unwrap_or(FS_ERR_IO);

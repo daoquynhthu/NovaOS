@@ -1,24 +1,30 @@
+use crate::syscall::{check_err, Result};
 use sel4_sys::*;
-use crate::syscall::{Result, check_err};
 
 // Import invocation labels
-// Note: If these are missing, we might need to hardcode them based on architecture
-// x86_64: Revoke=17? No, bindings usually export invocation_label_...
+// Note: If these are missing, we might need to hardcode them based on
+// architecture x86_64: Revoke=17? No, bindings usually export
+// invocation_label_...
 use sel4_sys::{
-    invocation_label_CNodeCopy,
-    invocation_label_CNodeMint,
-    invocation_label_CNodeMove,
-    invocation_label_CNodeDelete,
-    invocation_label_CNodeRevoke,
+    invocation_label_CNodeCopy, invocation_label_CNodeDelete, invocation_label_CNodeMint,
+    invocation_label_CNodeMove, invocation_label_CNodeRevoke,
 };
 
 /// Create a new CapRights structure
 pub fn cap_rights_new(grant_reply: bool, grant: bool, read: bool, write: bool) -> seL4_CapRights {
     let mut word: seL4_Word = 0;
-    if write { word |= 1 << 0; }
-    if read { word |= 1 << 1; }
-    if grant { word |= 1 << 2; }
-    if grant_reply { word |= 1 << 3; }
+    if write {
+        word |= 1 << 0;
+    }
+    if read {
+        word |= 1 << 1;
+    }
+    if grant {
+        word |= 1 << 2;
+    }
+    if grant_reply {
+        word |= 1 << 3;
+    }
     seL4_CapRights { words: [word] }
 }
 
@@ -60,7 +66,9 @@ impl CNode {
             seL4_SetCap_My(0, src_root.cptr);
 
             let dest_info = seL4_Call(self.cptr, info);
-            check_err(seL4_Error::from(seL4_MessageInfo_get_label(dest_info) as i32))
+            check_err(seL4_Error::from(
+                seL4_MessageInfo_get_label(dest_info) as i32
+            ))
         }
     }
 
@@ -91,7 +99,9 @@ impl CNode {
             seL4_SetCap_My(0, src_root.cptr);
 
             let dest_info = seL4_Call(self.cptr, info);
-            check_err(seL4_Error::from(seL4_MessageInfo_get_label(dest_info) as i32))
+            check_err(seL4_Error::from(
+                seL4_MessageInfo_get_label(dest_info) as i32
+            ))
         }
     }
 
@@ -118,7 +128,9 @@ impl CNode {
             seL4_SetCap_My(0, src_root.cptr);
 
             let dest_info = seL4_Call(self.cptr, info);
-            check_err(seL4_Error::from(seL4_MessageInfo_get_label(dest_info) as i32))
+            check_err(seL4_Error::from(
+                seL4_MessageInfo_get_label(dest_info) as i32
+            ))
         }
     }
 
@@ -136,7 +148,9 @@ impl CNode {
             seL4_SetMR(1, self.depth as seL4_Word);
 
             let dest_info = seL4_Call(self.cptr, info);
-            check_err(seL4_Error::from(seL4_MessageInfo_get_label(dest_info) as i32))
+            check_err(seL4_Error::from(
+                seL4_MessageInfo_get_label(dest_info) as i32
+            ))
         }
     }
 
@@ -154,7 +168,9 @@ impl CNode {
             seL4_SetMR(1, self.depth as seL4_Word);
 
             let dest_info = seL4_Call(self.cptr, info);
-            check_err(seL4_Error::from(seL4_MessageInfo_get_label(dest_info) as i32))
+            check_err(seL4_Error::from(
+                seL4_MessageInfo_get_label(dest_info) as i32
+            ))
         }
     }
 
@@ -163,19 +179,31 @@ impl CNode {
         unsafe {
             // invocation_label_CNodeSaveCaller usually 25
             const SE_L4_CNODE_SAVECALLER: seL4_Word = 25;
-            let info = seL4_MessageInfo_new(
-                SE_L4_CNODE_SAVECALLER,
-                0,
-                0,
-                2,
-            );
+            let info = seL4_MessageInfo_new(SE_L4_CNODE_SAVECALLER, 0, 0, 2);
 
             seL4_SetMR(0, index);
             seL4_SetMR(1, self.depth as seL4_Word);
 
             let dest_info = seL4_Call(self.cptr, info);
-            check_err(seL4_Error::from(seL4_MessageInfo_get_label(dest_info) as i32))
+            check_err(seL4_Error::from(
+                seL4_MessageInfo_get_label(dest_info) as i32
+            ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cap_rights_bits() {
+        let r = cap_rights_new(false, false, true, false);
+        assert_eq!(r.words[0], 1 << 1);
+        let rw = cap_rights_new(false, false, true, true);
+        assert_eq!(rw.words[0], (1 << 1) | 1);
+        let all = cap_rights_new(true, true, true, true);
+        assert_eq!(all.words[0], 0b1111);
     }
 }
 
@@ -193,7 +221,7 @@ pub fn untyped_retype(
 ) -> Result<()> {
     unsafe {
         const SE_L4_UNTYPED_RETYPE: seL4_Word = 1;
-        
+
         let info = seL4_MessageInfo_new(SE_L4_UNTYPED_RETYPE, 0, 1, 7);
         seL4_SetMR(0, type_);
         seL4_SetMR(1, size_bits);
@@ -202,10 +230,10 @@ pub fn untyped_retype(
         seL4_SetMR(3, node_depth);
         seL4_SetMR(4, node_offset);
         seL4_SetMR(5, num_objects);
-        
+
         let dest_info = seL4_Call(service, info);
-        check_err(seL4_Error::from(seL4_MessageInfo_get_label(dest_info) as i32))
+        check_err(seL4_Error::from(
+            seL4_MessageInfo_get_label(dest_info) as i32
+        ))
     }
 }
-
-

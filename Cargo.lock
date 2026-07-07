@@ -119,6 +119,7 @@ version = "0.1.0"
 dependencies = [
  "libnova",
  "linked_list_allocator",
+ "novafs-core",
  "sel4-sys",
  "spin",
 ]
@@ -236,6 +237,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "novafs-core"
+version = "0.1.0"
+dependencies = [
+ "libnova",
+ "linked_list_allocator",
+ "spin",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -305,6 +315,7 @@ dependencies = [
  "cc",
  "libnova",
  "linked_list_allocator",
+ "novafs-core",
  "sel4-sys",
  "spin",
  "xmas-elf",

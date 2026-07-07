@@ -23,6 +23,14 @@ pub use self::seL4_BootInfo as BootInfo;
 pub use self::seL4_CapRights as CapRights;
 pub use self::seL4_MessageInfo as MessageInfo;
 
+/// Host-test stub for the seL4 IPC-buffer pointer.
+/// When building with `std` for host-native tests, the kernel does not provide
+/// this symbol, so we define a null pointer here. The syscall stubs are not
+/// actually invoked in unit tests, but the linker still needs the symbol.
+#[cfg(feature = "std")]
+#[no_mangle]
+pub static mut __sel4_ipc_buffer: *mut seL4_IPCBuffer = core::ptr::null_mut();
+
 impl From<i32> for seL4_Error {
     fn from(code: i32) -> Self {
         unsafe { core::mem::transmute(code) }
@@ -41,12 +49,10 @@ pub fn seL4_MessageInfo_new(
     length: seL4_Word,
 ) -> seL4_MessageInfo {
     seL4_MessageInfo {
-        words: [
-            (label << 12)
+        words: [(label << 12)
             | ((capsUnwrapped & 0x7) << 9)
             | ((extraCaps & 0x3) << 7)
-            | (length & 0x7f),
-        ],
+            | (length & 0x7f)],
     }
 }
 
@@ -115,7 +121,8 @@ pub unsafe fn seL4_GetMR(i: usize) -> seL4_Word {
 }
 
 /// # Safety
-/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - Must only be called in a seL4 user context on x86_64 using the seL4
+///   syscall ABI.
 /// - `dest` must be a valid capability pointer for the expected invocation.
 /// - If this call expects to read/write message registers or extra caps, the
 ///   IPC buffer must be initialized appropriately via `seL4_SetIPCBuffer`.
@@ -126,16 +133,16 @@ pub unsafe fn seL4_Call(dest: seL4_CPtr, msgInfo: seL4_MessageInfo) -> seL4_Mess
     let mut mr2 = seL4_GetMR(2);
     let mut mr3 = seL4_GetMR(3);
     let mut dest_badge = dest;
-    
+
     // seL4_SysCall constant from bindings
-    
+
     core::arch::asm!(
         "push rbx",       // Save RBX (callee-saved)
         "mov rbx, rsp",   // Save RSP to RBX
         "syscall",
         "mov rsp, rbx",   // Restore RSP from RBX
         "pop rbx",        // Restore RBX
-        in("rdx") seL4_Syscall_ID::seL4_SysCall as isize, 
+        in("rdx") seL4_Syscall_ID::seL4_SysCall as isize,
         inout("rdi") dest_badge,
         inout("rsi") info_val,
         inout("r10") mr0,
@@ -157,7 +164,8 @@ pub unsafe fn seL4_Call(dest: seL4_CPtr, msgInfo: seL4_MessageInfo) -> seL4_Mess
 }
 
 /// # Safety
-/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - Must only be called in a seL4 user context on x86_64 using the seL4
+///   syscall ABI.
 /// - `dest` must be a valid capability pointer for the expected invocation.
 pub unsafe fn seL4_CallWithMRs(
     dest: seL4_CPtr,
@@ -166,7 +174,14 @@ pub unsafe fn seL4_CallWithMRs(
     mr1: seL4_Word,
     mr2: seL4_Word,
     mr3: seL4_Word,
-) -> (seL4_MessageInfo, seL4_Word, seL4_Word, seL4_Word, seL4_Word, seL4_Word) {
+) -> (
+    seL4_MessageInfo,
+    seL4_Word,
+    seL4_Word,
+    seL4_Word,
+    seL4_Word,
+    seL4_Word,
+) {
     let mut info_val = msgInfo.words[0];
     let mut out_mr0 = mr0;
     let mut out_mr1 = mr1;
@@ -202,7 +217,8 @@ pub unsafe fn seL4_CallWithMRs(
 }
 
 /// # Safety
-/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - Must only be called in a seL4 user context on x86_64 using the seL4
+///   syscall ABI.
 /// - `src` must be a valid capability pointer for a receive endpoint.
 /// - `sender` must be null or point to valid writable memory for a `seL4_Word`.
 pub unsafe fn seL4_RecvWithMRs(
@@ -253,7 +269,8 @@ pub unsafe fn seL4_Wait(src: seL4_CPtr, sender: *mut seL4_Word) {
 }
 
 /// # Safety
-/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - Must only be called in a seL4 user context on x86_64 using the seL4
+///   syscall ABI.
 /// - `src` must be a valid capability pointer for a receive endpoint.
 /// - `sender` must be null or point to valid writable memory for a `seL4_Word`.
 pub unsafe fn seL4_ReplyRecvWithMRs(
@@ -304,7 +321,8 @@ pub unsafe fn seL4_ReplyRecvWithMRs(
 }
 
 /// # Safety
-/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - Must only be called in a seL4 user context on x86_64 using the seL4
+///   syscall ABI.
 /// - `src` must be a valid capability pointer for a receive endpoint.
 /// - `sender` must be null or point to valid writable memory for a `seL4_Word`.
 pub unsafe fn seL4_Recv(src: seL4_CPtr, sender: *mut seL4_Word) -> seL4_MessageInfo {
@@ -345,15 +363,20 @@ pub unsafe fn seL4_Recv(src: seL4_CPtr, sender: *mut seL4_Word) -> seL4_MessageI
 }
 
 /// # Safety
-/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - Must only be called in a seL4 user context on x86_64 using the seL4
+///   syscall ABI.
 /// - `src` must be a valid capability pointer for a receive endpoint.
 /// - `sender` must be null or point to valid writable memory for a `seL4_Word`.
 /// - If this call expects to read/write message registers or extra caps, the
 ///   IPC buffer must be initialized appropriately via `seL4_SetIPCBuffer`.
-pub unsafe fn seL4_ReplyRecv(src: seL4_CPtr, msgInfo: seL4_MessageInfo, sender: *mut seL4_Word) -> seL4_MessageInfo {
+pub unsafe fn seL4_ReplyRecv(
+    src: seL4_CPtr,
+    msgInfo: seL4_MessageInfo,
+    sender: *mut seL4_Word,
+) -> seL4_MessageInfo {
     let mut info_val = msgInfo.words[0];
     let mut src_badge = src;
-    
+
     let mut mr0 = seL4_GetMR(0);
     let mut mr1 = seL4_GetMR(1);
     let mut mr2 = seL4_GetMR(2);
@@ -390,7 +413,8 @@ pub unsafe fn seL4_ReplyRecv(src: seL4_CPtr, msgInfo: seL4_MessageInfo, sender: 
 
 #[allow(clippy::too_many_arguments)]
 /// # Safety
-/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - Must only be called in a seL4 user context on x86_64 using the seL4
+///   syscall ABI.
 /// - `service` must be a valid CNode capability pointer.
 /// - `src_root` must be a valid capability pointer for the source CNode.
 /// - All indices and depths must follow seL4 CSpace addressing rules for the
@@ -406,14 +430,15 @@ pub unsafe fn seL4_CNode_Mint(
     badge: seL4_Word,
 ) -> seL4_Error {
     // Hardcoded invocation label for seL4_CNode_Mint
-        // Based on seL4 XML: Revoke=17, Delete=18, CancelBadgedSends=19, Copy=20, Mint=21
-        const SE_L4_CNODE_MINT: seL4_Word = 21;
+    // Based on seL4 XML: Revoke=17, Delete=18, CancelBadgedSends=19, Copy=20,
+    // Mint=21
+    const SE_L4_CNODE_MINT: seL4_Word = 21;
 
     let info = seL4_MessageInfo_new(
         SE_L4_CNODE_MINT, // Label = Method ID
-        0, // capsUnwrapped
-        1, // extraCaps (src_root)
-        6, // length
+        0,                // capsUnwrapped
+        1,                // extraCaps (src_root)
+        6,                // length
     );
 
     seL4_SetMR(0, dest_index);
@@ -422,7 +447,7 @@ pub unsafe fn seL4_CNode_Mint(
     seL4_SetMR(3, src_depth as seL4_Word);
     seL4_SetMR(4, rights.words[0]);
     seL4_SetMR(5, badge);
-    
+
     seL4_SetCap_My(0, src_root);
 
     let dest_info = seL4_Call(service, info);
@@ -431,7 +456,8 @@ pub unsafe fn seL4_CNode_Mint(
 
 #[allow(clippy::too_many_arguments)]
 /// # Safety
-/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - Must only be called in a seL4 user context on x86_64 using the seL4
+///   syscall ABI.
 /// - `service` must be a valid CNode capability pointer.
 /// - `src_root` must be a valid capability pointer for the source CNode.
 /// - All indices and depths must follow seL4 CSpace addressing rules for the
@@ -445,7 +471,7 @@ pub unsafe fn seL4_CNode_Move(
     src_depth: u8,
 ) -> seL4_Error {
     // Hardcoded invocation label for seL4_CNode_Move
-    const SE_L4_CNODE_MOVE: seL4_Word = 22; 
+    const SE_L4_CNODE_MOVE: seL4_Word = 22;
 
     let info = seL4_MessageInfo_new(
         SE_L4_CNODE_MOVE,
@@ -458,7 +484,7 @@ pub unsafe fn seL4_CNode_Move(
     seL4_SetMR(1, dest_depth as seL4_Word);
     seL4_SetMR(2, src_index);
     seL4_SetMR(3, src_depth as seL4_Word);
-    
+
     seL4_SetCap_My(0, src_root);
 
     let dest_info = seL4_Call(service, info);
@@ -466,7 +492,8 @@ pub unsafe fn seL4_CNode_Move(
 }
 
 /// # Safety
-/// Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// Must only be called in a seL4 user context on x86_64 using the seL4 syscall
+/// ABI.
 pub unsafe fn seL4_Yield() {
     core::arch::asm!(
         "syscall",
@@ -478,7 +505,8 @@ pub unsafe fn seL4_Yield() {
 }
 
 /// # Safety
-/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - Must only be called in a seL4 user context on x86_64 using the seL4
+///   syscall ABI.
 /// - `dest` must be a valid capability pointer for the expected invocation.
 /// - If this call expects to write message registers, the IPC buffer must be
 ///   initialized appropriately via `seL4_SetIPCBuffer`.
@@ -489,7 +517,7 @@ pub unsafe fn seL4_Send(dest: seL4_CPtr, msgInfo: seL4_MessageInfo) {
     let mut mr1 = seL4_GetMR(1);
     let mut mr2 = seL4_GetMR(2);
     let mut mr3 = seL4_GetMR(3);
-    
+
     core::arch::asm!(
         "push rbx",
         "mov rbx, rsp",
@@ -509,7 +537,8 @@ pub unsafe fn seL4_Send(dest: seL4_CPtr, msgInfo: seL4_MessageInfo) {
 }
 
 /// # Safety
-/// - Must only be called in a seL4 user context on x86_64 using the seL4 syscall ABI.
+/// - Must only be called in a seL4 user context on x86_64 using the seL4
+///   syscall ABI.
 /// - If this call expects to write message registers, the IPC buffer must be
 ///   initialized appropriately via `seL4_SetIPCBuffer`.
 #[allow(unused_assignments)]
@@ -519,7 +548,7 @@ pub unsafe fn seL4_Reply(msgInfo: seL4_MessageInfo) {
     let mut mr1 = seL4_GetMR(1);
     let mut mr2 = seL4_GetMR(2);
     let mut mr3 = seL4_GetMR(3);
-    
+
     core::arch::asm!(
         "push rbx",
         "mov rbx, rsp",
@@ -534,7 +563,7 @@ pub unsafe fn seL4_Reply(msgInfo: seL4_MessageInfo) {
         inout("r15") mr3,
         out("rcx") _,
         out("r11") _,
-        out("rdi") _, // dest is not used for Reply, but register might be clobbered? 
+        out("rdi") _, // dest is not used for Reply, but register might be clobbered?
                       // Actually rdi is not input for Reply.
     );
 }

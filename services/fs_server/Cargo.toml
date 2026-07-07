@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 libnova = { path = "../../libs/libnova" }
+novafs-core = { path = "../../libs/novafs-core" }
 sel4-sys = { path = "../../libs/seL4-sys" }
 linked_list_allocator = { workspace = true }
 spin = { workspace = true }
