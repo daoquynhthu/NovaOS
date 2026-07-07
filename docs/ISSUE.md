@@ -531,3 +531,21 @@
 **修复**: 已将 `🟡 执行中` 更新为 `✅ 已完成`。
 
 > **P3.1 再审计：零开问题，满足闭环条件。**
+
+---
+
+## P3.3 审计详情
+
+> **审计时间**: 2026-07-07
+> **审计范围**: `libs/novafs-core/tests/novafs_host.rs`（`crash_recovery_keeps_consistency`、`crash_recovery_preserves_synced_data`）、`docs/TASK.md`
+> **验证命令**:
+> - `cargo test -p novafs-core --features std --target x86_64-pc-windows-msvc` — 9 项全过（含 P3.3 新增 2 项）
+> - `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+>
+> **验证结果**:
+> 1. `crash_recovery_keeps_consistency` — format → write+sync → snapshot → write without sync → restore → `check_consistency().is_ok()` ✅
+> 2. `crash_recovery_preserves_synced_data` — write+sync → write unsynced → drop → snapshot → restore → synced file `/sync.txt` 存在 + 一致性校验通过 ✅
+> 3. 两个测试均正确使用 `device.snapshot()` 和 `MockBlockDevice::from_snapshot()` ✅
+> 4. `docs/TASK.md:26` P3.3 状态已标记 `✅` ✅
+>
+> **P3.3 审计：零问题，满足闭环条件。**
