@@ -330,3 +330,22 @@
 > 7. `docs/INDEX.md` 与 `docs/TASK.md` 已同步，描述 `SyscallNum` / `FsLabel` 为单一真相源。
 >
 > **TASK-6 审计：零问题，满足闭环条件。**
+
+---
+
+## TASK-7 审计详情
+
+> **审计时间**: 2026-07-07
+> **审计范围**: `libs/libnova/src/allocator.rs`、`libs/libnova/src/lib.rs`、`services/rootserver/src/memory.rs`、`docs/INDEX.md`、`docs/TASK.md`
+> **验证命令**:
+> - `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+> - `cargo test -p libnova --features std --target x86_64-pc-windows-msvc` — 21 项全过
+>
+> **审计结论**:
+> 1. 所有分配器类型和常量（`SlotAllocator`、`ObjectAllocator` trait、`UntypedAllocator`、`FrameAllocator`、`MemoryRegion`、`MAX_REGION_PAGES`、`MAX_CSPACE_SLOTS`、`MAX_UNTYPED_CAPS`、`MIN_REUSABLE_FRAGMENT_BITS`）已完整从原始 `memory.rs` 迁移至 `allocator.rs`，无遗漏。
+> 2. `allocator.rs` 中无任何 `libnova::ipc` 遗留引用 — 全部已改为 `crate::ipc`。
+> 3. `services/rootserver/src/memory.rs` 的 re-export 覆盖所有被 `crate::memory::*` 引用的类型（7 个 public 项），共 13 处 import 站点全部满足。
+> 4. 零代码重复 — 分配器类型定义仅存在于 `libs/libnova/src/allocator.rs`，`services/` 下无重复定义。
+> 5. `docs/INDEX.md` 与 `docs/TASK.md` 对 TASK-7 的描述与实际代码状态一致。
+>
+> **TASK-7 审计：零问题，满足闭环条件。**

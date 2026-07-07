@@ -33,6 +33,7 @@
 |---|---|---|
 | `ipc` — raw seL4 IPC | `ipc.rs` | `MessageInfo`, `call()`, `send()`, `recv()`, `reply()`, `reply_recv()`, `set_mr()`, `get_mr()` |
 | `ipc::pack` — bounded message packing | `ipc/pack.rs` | `BoundError`, `MessageWriter`, `MessageReader`; replaces duplicate packing loops in `syscall.rs` and `fs_ipc.rs` |
+| `allocator` — memory management | `allocator.rs` | `SlotAllocator`, `UntypedAllocator`, `FrameAllocator`, `ObjectAllocator` trait; moved from RootServer's `memory.rs` |
 | `syscall` — syscall stubs | `syscall.rs` | `sys_open` (260), `sys_read` (279), `sys_write` (310), `sys_close` (251), `sys_spawn` (180), `sys_yield` (62), `sys_exit` (67), `Error` enum (6) |
 | `fs_ipc` — FS protocol | `fs_ipc.rs` | `FS_LABEL_OPEN=20` (4), `FS_LABEL_*` constants (4-23), `open_direct()` (50), `read_direct()` (95), `write_direct()` (77), `close_direct()` (69), all FS helpers (50-400) |
 | `cap` — CNode ops | `cap.rs` | `CNode` (27), `cap_rights_new()` (16), `copy()`, `mint()`, `move_()`, `delete()`, `revoke()` |
@@ -77,10 +78,10 @@
 | Service registry — `register()` | `services.rs` | 34 |
 | Service registry — `mark_ready()` | `services.rs` | 47 |
 | Service registry — `lookup_ready()` | `services.rs` | 73 |
-| Memory — `SlotAllocator` | `memory.rs` | 26 |
-| Memory — `UntypedAllocator` | `memory.rs` | 150 |
-| Memory — `FrameAllocator` | `memory.rs` | 446 |
-| Memory — `MAX_CSPACE_SLOTS=4096` | `memory.rs` | 9 |
+| Memory — `SlotAllocator` | `libnova::allocator` (via `memory.rs` re-export) | `libs/libnova/src/allocator.rs:42` |
+| Memory — `UntypedAllocator` | `libnova::allocator` (via `memory.rs` re-export) | `libs/libnova/src/allocator.rs:175` |
+| Memory — `FrameAllocator` | `libnova::allocator` (via `memory.rs` re-export) | `libs/libnova/src/allocator.rs:439` |
+| Memory — `MAX_CSPACE_SLOTS=4096` | `libnova::allocator` | `libs/libnova/src/allocator.rs:13` |
 | Shared Memory — `SharedMemoryManager` | `shared_memory.rs` | — |
 | ELF loader | `elf_loader.rs` | — |
 | Drivers — ATA PIO | `drivers/ata.rs` | — |
