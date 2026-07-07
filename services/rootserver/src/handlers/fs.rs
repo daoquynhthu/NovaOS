@@ -7,6 +7,7 @@
 
 use crate::handlers::SyscallContext;
 use crate::process::{get_process_manager, FileMode};
+use libnova::fs_ipc::FsLabel;
 use libnova::ipc::MessageInfo;
 use libnova::validate::ValidateError;
 use novafs_core::BlockDevice;
@@ -142,13 +143,13 @@ fn try_forward_fs_write_data(
     let req_len = (2 + payload_words) as seL4_Word;
     let resp = libnova::ipc::call(
         fs_ep,
-        libnova::ipc::MessageInfo::new(libnova::fs_ipc::FS_LABEL_WRITE, 0, 0, req_len),
+        libnova::ipc::MessageInfo::new(FsLabel::Write.as_word(), 0, 0, req_len),
     );
     let ret = match resp {
         Ok(info) => {
             let status = libnova::ipc::get_mr(0);
             if !libnova::fs_ipc::is_not_implemented(status) {
-                crate::services::note_fs_forward(libnova::fs_ipc::FS_LABEL_WRITE);
+                crate::services::note_fs_forward(FsLabel::Write.as_word());
                 Some(info)
             } else {
                 None
@@ -181,7 +182,7 @@ fn try_forward_fs_read_data(
 
     let resp = libnova::ipc::call(
         fs_ep,
-        libnova::ipc::MessageInfo::new(libnova::fs_ipc::FS_LABEL_READ, 0, 0, 2),
+        libnova::ipc::MessageInfo::new(FsLabel::Read.as_word(), 0, 0, 2),
     );
 
     let ret = match resp {
@@ -199,7 +200,7 @@ fn try_forward_fs_read_data(
                     let word = ipc_buf.msg[1 + (i / 8)];
                     *dst = ((word >> ((i % 8) * 8)) & 0xFF) as u8;
                 }
-                crate::services::note_fs_forward(libnova::fs_ipc::FS_LABEL_READ);
+                crate::services::note_fs_forward(FsLabel::Read.as_word());
                 Some(copy_len)
             }
         }
@@ -421,7 +422,7 @@ pub fn handle_open(ctx: &mut SyscallContext<'_>) -> FsHandlerResult {
             if let Some(fs_reply_info) = try_forward_fs_call(
                 fs_ep,
                 ctx.syscall_ep_cap,
-                libnova::fs_ipc::FS_LABEL_OPEN,
+                FsLabel::Open.as_word(),
                 ctx.info.length(),
                 ctx.mrs,
             ) {
@@ -465,7 +466,7 @@ pub fn handle_open(ctx: &mut SyscallContext<'_>) -> FsHandlerResult {
             let _ = try_forward_fs_call(
                 fs_ep,
                 ctx.syscall_ep_cap,
-                libnova::fs_ipc::FS_LABEL_CLOSE,
+                FsLabel::Close.as_word(),
                 1,
                 &req,
             );
@@ -687,7 +688,7 @@ pub fn handle_close(ctx: &mut SyscallContext<'_>) -> FsHandlerResult {
                 if let Some(fs_reply_info) = try_forward_fs_call(
                     fs_ep,
                     ctx.syscall_ep_cap,
-                    libnova::fs_ipc::FS_LABEL_CLOSE,
+                    FsLabel::Close.as_word(),
                     1,
                     &req,
                 ) {

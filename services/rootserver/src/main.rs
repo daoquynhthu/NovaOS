@@ -32,6 +32,7 @@ mod vspace;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use libnova::cap::cap_rights_new;
+use libnova::syscall::SyscallNum;
 use sel4_sys::{seL4_BootInfo, seL4_CPtr, seL4_Word};
 // Temporary constant until we confirm sel4_sys export
 #[allow(dead_code, non_upper_case_globals)]
@@ -1436,8 +1437,8 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
             // Syscall from Process
             let label = info.label();
 
-            match label {
-                1 => {
+            match SyscallNum::from_u64(label) {
+                Some(SyscallNum::Print) => {
                     // sys_print
                     let len = info.length(); // u64
                     let ipc_buf = unsafe { &*sel4_sys::seL4_GetIPCBuffer() };
@@ -1459,7 +1460,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0);
                     need_reply = true;
                 }
-                2 => {
+                Some(SyscallNum::Exit) => {
                     // sys_exit
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1480,7 +1481,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     handlers::core::handle_exit(&mut ctx);
                     need_reply = false;
                 }
-                3 => {
+                Some(SyscallNum::Brk) => {
                     // sys_brk
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1503,14 +1504,14 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                4 => {
+                Some(SyscallNum::Yield) => {
                     // sys_yield
                     let (info, mrs) = handlers::core::handle_yield();
                     reply_info = info;
                     reply_mrs = mrs;
                     need_reply = true;
                 }
-                7 => {
+                Some(SyscallNum::WaitPid) => {
                     // sys_waitpid(pid, options) -> (pid, status)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1533,7 +1534,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                8 => {
+                Some(SyscallNum::Spawn) => {
                     // sys_spawn(path, args, envs)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1556,7 +1557,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                14 => {
+                Some(SyscallNum::Fork) => {
                     // sys_fork() -> pid
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1579,14 +1580,14 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                9 => {
+                Some(SyscallNum::GetPid) => {
                     // sys_get_pid() -> pid
                     let (info, mrs) = handlers::core::handle_get_pid(pid);
                     reply_info = info;
                     reply_mrs = mrs;
                     need_reply = true;
                 }
-                15 => {
+                Some(SyscallNum::Kill) => {
                     // sys_kill(pid, sig)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1609,7 +1610,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                22 => {
+                Some(SyscallNum::Write) => {
                     // sys_write(fd, len, data...) -> bytes_written
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1632,7 +1633,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                23 => {
+                Some(SyscallNum::Close) => {
                     // sys_close(fd)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1655,7 +1656,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                20 => {
+                Some(SyscallNum::Open) => {
                     // sys_open(path, mode) -> fd
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1679,7 +1680,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     need_reply = r_reply;
                     manual_reply = r_manual;
                 }
-                21 => {
+                Some(SyscallNum::Read) => {
                     // sys_read(fd, len) -> bytes_read
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1703,7 +1704,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     need_reply = r_reply;
                     manual_reply = r_manual;
                 }
-                28 => {
+                Some(SyscallNum::GetUid) => {
                     // sys_getuid()
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1726,7 +1727,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                29 => {
+                Some(SyscallNum::SetUid) => {
                     // sys_setuid(uid)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1749,7 +1750,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                32 => {
+                Some(SyscallNum::GetGid) => {
                     // sys_getgid()
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1772,7 +1773,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                33 => {
+                Some(SyscallNum::SetGid) => {
                     // sys_setgid(gid)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1795,7 +1796,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                24 => {
+                Some(SyscallNum::Chmod) => {
                     // sys_chmod(path, mode)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1818,7 +1819,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                25 => {
+                Some(SyscallNum::Chown) => {
                     // sys_chown(path, uid, gid)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1841,7 +1842,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                26 => {
+                Some(SyscallNum::Symlink) => {
                     // sys_symlink(target, linkpath)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1865,7 +1866,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                27 => {
+                Some(SyscallNum::Readlink) => {
                     // sys_readlink(path, buf_len)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1890,7 +1891,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     need_reply = r_reply;
                     manual_reply = r_manual;
                 }
-                34 => {
+                Some(SyscallNum::Mkdir) => {
                     // sys_mkdir(path)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1913,7 +1914,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                35 => {
+                Some(SyscallNum::Rmdir) => {
                     // sys_rmdir(path)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1936,7 +1937,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                36 => {
+                Some(SyscallNum::Unlink) => {
                     // sys_unlink(path)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1959,7 +1960,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                37 => {
+                Some(SyscallNum::Rename) => {
                     // sys_rename(old_path, new_path)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -1982,7 +1983,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                40 => {
+                Some(SyscallNum::Link) => {
                     // sys_link(target_path, link_path)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -2005,7 +2006,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                41 => {
+                Some(SyscallNum::BlockRead) => {
                     // sys_block_read(block_id) -> (bytes_read, data...)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -2030,7 +2031,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     need_reply = r_reply;
                     manual_reply = r_manual;
                 }
-                42 => {
+                Some(SyscallNum::BlockWrite) => {
                     // sys_block_write(block_id, 512-byte block)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -2054,7 +2055,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                43 => {
+                Some(SyscallNum::BlockInfo) => {
                     // sys_block_info() -> (sector_count, is_rotational)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -2078,7 +2079,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                44 => {
+                Some(SyscallNum::GetUnixTime) => {
                     // sys_get_unix_time() -> unix_timestamp
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -2102,7 +2103,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                45 => {
+                Some(SyscallNum::ServiceSetReady) => {
                     // sys_service_set_ready (MR0=len, MR1..=name)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -2126,7 +2127,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                46 => {
+                Some(SyscallNum::FsViewEpoch) => {
                     // sys_fs_view_epoch() -> current epoch
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -2150,7 +2151,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                50 => {
+                Some(SyscallNum::Shutdown) => {
                     // sys_shutdown
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -2170,7 +2171,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     };
                     handlers::service::handle_shutdown(&mut ctx);
                 }
-                5 => {
+                Some(SyscallNum::VmFault) => {
                     // seL4_Fault_VMFault
                     let fault_addr = mrs[1] as usize;
                     let ip = mrs[0] as usize;
@@ -2293,14 +2294,14 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         need_reply = false;
                     }
                 }
-                6 => {
+                Some(SyscallNum::GetTime) => {
                     // sys_get_time
                     let (r_info, r_mrs, r_reply) = handlers::service::handle_get_time(system_tick);
                     reply_info = r_info;
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                10 => {
+                Some(SyscallNum::Sleep) => {
                     // sys_sleep (MR0 = ticks)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -2332,7 +2333,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                         }
                     }
                 }
-                11 => {
+                Some(SyscallNum::ShmAlloc) => {
                     // sys_shm_alloc(size)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -2355,7 +2356,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                12 => {
+                Some(SyscallNum::ShmMap) => {
                     // sys_shm_map(key, vaddr)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -2378,7 +2379,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                38 => {
+                Some(SyscallNum::MmapShared) => {
                     // sys_mmap_shared(size) -> vaddr(0 on error)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -2401,7 +2402,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                39 => {
+                Some(SyscallNum::MunmapShared) => {
                     // sys_munmap_shared(vaddr, size) -> 0 on success
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -2424,7 +2425,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                30 => {
+                Some(SyscallNum::ServiceRegister) => {
                     // sys_service_register (MR0=len, MR1..=name, ExtraCap=service)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -2448,7 +2449,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     reply_mrs = r_mrs;
                     need_reply = r_reply;
                 }
-                31 => {
+                Some(SyscallNum::ServiceLookup) => {
                     // sys_service_lookup (MR0=len, MR1..=name)
                     let mut ctx = handlers::SyscallContext {
                         pid,
@@ -2473,7 +2474,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     need_reply = r_reply;
                 }
 
-                13 => {
+                Some(SyscallNum::Send) => {
                     // sys_send (MR0=TargetPID, MR1..3=Msg)
                     let target_pid = mrs[0] as usize;
                     let msg_content = [mrs[1], mrs[2], mrs[3], 0];

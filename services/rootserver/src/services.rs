@@ -2,7 +2,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-use libnova::fs_ipc::{FS_LABEL_PING, FS_PROTO_V1, FS_STATUS_READY};
+use libnova::fs_ipc::{FsLabel, FS_PROTO_V1, FS_STATUS_READY};
 use libnova::ipc;
 use sel4_sys::{seL4_CPtr, seL4_Word};
 use spin::Mutex;
@@ -145,17 +145,17 @@ pub fn list() -> Vec<(String, seL4_CPtr, ServiceState)> {
 }
 
 pub fn note_fs_forward(label: seL4_Word) {
-    match label {
-        libnova::fs_ipc::FS_LABEL_OPEN => {
+    match FsLabel::from_u64(label) {
+        Some(FsLabel::Open) => {
             FS_FWD_OPEN.fetch_add(1, Ordering::Relaxed);
         }
-        libnova::fs_ipc::FS_LABEL_CLOSE => {
+        Some(FsLabel::Close) => {
             FS_FWD_CLOSE.fetch_add(1, Ordering::Relaxed);
         }
-        libnova::fs_ipc::FS_LABEL_READ => {
+        Some(FsLabel::Read) => {
             FS_FWD_READ.fetch_add(1, Ordering::Relaxed);
         }
-        libnova::fs_ipc::FS_LABEL_WRITE => {
+        Some(FsLabel::Write) => {
             FS_FWD_WRITE.fetch_add(1, Ordering::Relaxed);
         }
         _ => {}
@@ -181,7 +181,7 @@ pub fn ping(name: &str) -> Result<(seL4_Word, seL4_Word, seL4_Word, seL4_Word), 
         return Err("service-not-found");
     };
 
-    match ipc::call(endpoint, ipc::MessageInfo::new(FS_LABEL_PING, 0, 0, 0)) {
+    match ipc::call(endpoint, ipc::MessageInfo::new(FsLabel::Ping.as_word(), 0, 0, 0)) {
         Ok(_) => Ok((
             ipc::get_mr(0),
             ipc::get_mr(1),

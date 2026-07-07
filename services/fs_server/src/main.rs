@@ -10,11 +10,7 @@ use alloc::string::ToString;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 use libnova::fs_ipc::{
-    fs_err_not_implemented_word, FS_LABEL_CHMOD, FS_LABEL_CHOWN, FS_LABEL_CLOSE, FS_LABEL_DECRYPT,
-    FS_LABEL_ENCRYPT, FS_LABEL_LINK, FS_LABEL_LIST, FS_LABEL_MKDIR, FS_LABEL_OPEN, FS_LABEL_PING,
-    FS_LABEL_READ, FS_LABEL_REFRESH, FS_LABEL_RENAME, FS_LABEL_STAT, FS_LABEL_SYMLINK,
-    FS_LABEL_SYNC, FS_LABEL_TRUNCATE, FS_LABEL_UNLINK, FS_LABEL_WRITE, FS_LABEL_WRITETEST,
-    FS_PROTO_V1, FS_STATUS_READY,
+    fs_err_not_implemented_word, FsLabel, FS_PROTO_V1, FS_STATUS_READY,
 };
 use libnova::ipc;
 use libnova::syscall::{
@@ -717,8 +713,8 @@ pub extern "C" fn _start(
         let (_badge, info) = ipc::recv(service_ep_cap);
         let label = info.label();
 
-        match label {
-            FS_LABEL_PING => {
+        match FsLabel::from_u64(label) {
+            Some(FsLabel::Ping) => {
                 ipc::set_mr(
                     0,
                     if current_fs().is_some() {
@@ -736,7 +732,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(3, pack_u32_pair(read, write));
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 4));
             }
-            FS_LABEL_REFRESH => {
+            Some(FsLabel::Refresh) => {
                 let res = match refresh_local_fs(syscall_ep_cap) {
                     Ok(()) => 0,
                     Err(e) => {
@@ -747,7 +743,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_OPEN => {
+            Some(FsLabel::Open) => {
                 let path_len = ipc::get_mr(0) as usize;
                 let mode = ipc::get_mr(1);
                 let mut path_buf = [0u8; MAX_PATH_LEN];
@@ -810,7 +806,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, fd);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_CLOSE => {
+            Some(FsLabel::Close) => {
                 let fd = ipc::get_mr(0);
                 let Some(idx) = fd.checked_sub(3).and_then(|v| usize::try_from(v).ok()) else {
                     ipc::set_mr(0, FS_ERR_BADF as u64);
@@ -836,7 +832,7 @@ pub extern "C" fn _start(
                 }
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_UNLINK => {
+            Some(FsLabel::Unlink) => {
                 let path_len = ipc::get_mr(0) as usize;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
                 let actual_len =
@@ -855,7 +851,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_MKDIR => {
+            Some(FsLabel::Mkdir) => {
                 let path_len = ipc::get_mr(0) as usize;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
                 let actual_len =
@@ -879,7 +875,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_TRUNCATE => {
+            Some(FsLabel::Truncate) => {
                 let path_len = ipc::get_mr(0) as usize;
                 let size = ipc::get_mr(1);
                 let mut path_buf = [0u8; MAX_PATH_LEN];
@@ -904,7 +900,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_CHMOD => {
+            Some(FsLabel::Chmod) => {
                 let path_len = ipc::get_mr(0) as usize;
                 let mode = ipc::get_mr(1) as u16;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
@@ -929,7 +925,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_CHOWN => {
+            Some(FsLabel::Chown) => {
                 let path_len = ipc::get_mr(0) as usize;
                 let uid = ipc::get_mr(1) as u32;
                 let gid = ipc::get_mr(2) as u32;
@@ -955,7 +951,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_SYNC => {
+            Some(FsLabel::Sync) => {
                 if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
                     ipc::set_mr(0, FS_ERR_IO as u64);
                     ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
@@ -965,7 +961,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_LIST => {
+            Some(FsLabel::List) => {
                 let path_len = ipc::get_mr(0) as usize;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
                 let actual_len =
@@ -989,7 +985,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_STAT => {
+            Some(FsLabel::Stat) => {
                 let path_len = ipc::get_mr(0) as usize;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
                 let actual_len =
@@ -1008,7 +1004,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_ENCRYPT => {
+            Some(FsLabel::Encrypt) => {
                 let path_len = ipc::get_mr(0) as usize;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
                 let actual_len =
@@ -1032,7 +1028,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_DECRYPT => {
+            Some(FsLabel::Decrypt) => {
                 let path_len = ipc::get_mr(0) as usize;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
                 let actual_len =
@@ -1056,7 +1052,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_RENAME => {
+            Some(FsLabel::Rename) => {
                 let old_len = ipc::get_mr(0) as usize;
                 let new_len = ipc::get_mr(1) as usize;
                 if old_len == 0 || old_len > MAX_PATH_LEN || new_len == 0 || new_len > MAX_PATH_LEN
@@ -1107,7 +1103,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_LINK => {
+            Some(FsLabel::Link) => {
                 let target_len = ipc::get_mr(0) as usize;
                 let link_len = ipc::get_mr(1) as usize;
                 if target_len == 0
@@ -1162,7 +1158,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_SYMLINK => {
+            Some(FsLabel::Symlink) => {
                 let target_len = ipc::get_mr(0) as usize;
                 let link_len = ipc::get_mr(1) as usize;
                 if target_len == 0
@@ -1217,7 +1213,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_WRITE => {
+            Some(FsLabel::Write) => {
                 let fd = ipc::get_mr(0);
                 let len = ipc::get_mr(1) as usize;
                 let Some(idx) = fd.checked_sub(3).and_then(|v| usize::try_from(v).ok()) else {
@@ -1283,7 +1279,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, written as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_WRITETEST => {
+            Some(FsLabel::Writetest) => {
                 let path_len = ipc::get_mr(0) as usize;
                 let size_kb = ipc::get_mr(1) as usize;
                 let mut path_buf = [0u8; MAX_PATH_LEN];
@@ -1315,7 +1311,7 @@ pub extern "C" fn _start(
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
-            FS_LABEL_READ => {
+            Some(FsLabel::Read) => {
                 let fd = ipc::get_mr(0);
                 let len = ipc::get_mr(1) as usize;
                 let Some(idx) = fd.checked_sub(3).and_then(|v| usize::try_from(v).ok()) else {

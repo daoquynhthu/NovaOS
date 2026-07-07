@@ -306,3 +306,27 @@
 > 5. `docs/TASK.md`、`docs/INDEX.md`、`docs/ISSUE.md` 已同步：ISSUE-51 标记为“已修复（已验证）”，INDEX.md 修正 `syscall.rs`/`fs_ipc.rs` 行号，TASK-5 状态改为已完成。
 >
 > **TASK-5 再审计：零问题，满足闭环条件。**
+
+---
+
+## TASK-6 审计详情
+
+> **审计时间**: 2026-07-07
+> **审计范围**: `libs/libnova/src/syscall.rs`、`libs/libnova/src/fs_ipc.rs`、`services/rootserver/src/main.rs`、`services/rootserver/src/tests.rs`、`services/rootserver/src/services.rs`、`services/rootserver/src/handlers/fs.rs`、`services/fs_server/src/main.rs`、`docs/INDEX.md`、`docs/TASK.md`
+> **验证命令**:
+> - `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+> - `cargo test -p libnova --features std --target x86_64-pc-windows-msvc` — 21 项全过（含 `syscall::tests` 2 项、`fs_ipc::tests` 2 项）
+> - `cargo clippy -p libnova --target x86_64-unknown-none` — 8 个 warning 均为历史债务（`env.rs`、`ipc.rs`、`syscall.rs:183`、`tcb.rs`），`syscall.rs`/`fs_ipc.rs` 本次修改区域零新增 clippy warning
+> - `cargo clippy -p rootserver --target x86_64-unknown-none` — 64 个 error 均为 rootserver 历史债务，不在 `main.rs` syscall dispatch 区域（1440–2524）、`services.rs`、`handlers/fs.rs`、`tests.rs` 本次修改区域
+> - `cargo clippy -p fs_server --target x86_64-unknown-none` — 1 个 error（`not_unsafe_ptr_arg_deref` at `_start` arg parsing）与 2 个 warning 均为历史债务，不在 `FsLabel` dispatch 区域（716–1371）
+>
+> **审计结论**:
+> 1. `SyscallNum` 枚举值（1–15、20–46、50）与 `FsLabel` 枚举值（20–38、0xF500）与既有运行时 ABI 完全一致。
+> 2. `syscall.rs` client stubs 全部使用 `SyscallNum::X.as_word()`；`fs_ipc.rs` helpers 全部使用 `FsLabel::X.as_word()`。
+> 3. RootServer syscall dispatch（`main.rs:1440`）与 test dispatch（`tests.rs:223`）均使用 `SyscallNum::from_u64(label)` 并匹配 enum variants。
+> 4. `services.rs` 的 `note_fs_forward` / `ping` 与 `handlers/fs.rs` 的 FS forwarding 均使用 `FsLabel::from_u64` / `FsLabel::X.as_word()`。
+> 5. fs_server dispatch（`main.rs:716`）使用 `FsLabel::from_u64(label)` 并匹配 enum variants。
+> 6. `libs/libnova/src/syscall.rs` 与 `libs/libnova/src/fs_ipc.rs` 各新增 2 项 host 测试，覆盖所有枚举值的数值稳定性与 `from_u64` roundtrip。
+> 7. `docs/INDEX.md` 与 `docs/TASK.md` 已同步，描述 `SyscallNum` / `FsLabel` 为单一真相源。
+>
+> **TASK-6 审计：零问题，满足闭环条件。**

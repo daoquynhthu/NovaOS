@@ -4,6 +4,7 @@ use crate::memory::{FrameAllocator, ObjectAllocator, SlotAllocator, UntypedAlloc
 use crate::process::Process;
 use crate::vspace::VSpace;
 use libnova::cap::{cap_rights_new, CNode};
+use libnova::syscall::SyscallNum;
 use sel4_sys::seL4_RootCNodeCapSlots;
 use sel4_sys::seL4_X86_VMAttributes;
 use sel4_sys::{
@@ -219,8 +220,8 @@ fn test_user_hello_program(
     loop {
         let label = info.label();
 
-        match label {
-            1 => {
+        match SyscallNum::from_u64(label) {
+            Some(SyscallNum::Print) => {
                 // sys_write (debug_print)
                 // MR0..MR3 contain string chunks (8 bytes each)
                 let mut bytes = [0u8; 32];
@@ -245,12 +246,12 @@ fn test_user_hello_program(
                 sender_badge = new_badge;
                 mrs = new_mrs;
             }
-            2 => {
+            Some(SyscallNum::Exit) => {
                 // sys_exit
                 println!("[INFO] Process exited with code: {}", mrs[0]);
                 break;
             }
-            3 => {
+            Some(SyscallNum::Brk) => {
                 // sys_brk
                 // Mock sys_brk for test
                 println!("[TEST] sys_brk called. Returning success.");
@@ -262,7 +263,7 @@ fn test_user_hello_program(
                 sender_badge = new_badge;
                 mrs = new_mrs;
             }
-            4 => {
+            Some(SyscallNum::Yield) => {
                 // sys_yield
                 println!("[TEST] Process yielded.");
                 let (new_info, new_badge, new_mrs) = syscall_ep
@@ -271,7 +272,7 @@ fn test_user_hello_program(
                 sender_badge = new_badge;
                 mrs = new_mrs;
             }
-            9 => {
+            Some(SyscallNum::GetPid) => {
                 // sys_get_pid
                 // Return non-zero so this self-test instance follows child path
                 // and exits quickly without running the full suite again.

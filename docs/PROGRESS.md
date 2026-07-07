@@ -291,3 +291,28 @@
 - 审计观察项（非正式 issue）：`services/fs_server/src/main.rs` 与 `services/rootserver/src/handlers/service.rs` 仍有本地打包/解包 helper，建议作为后续 TASK（TASK-6 或独立小任务）继续迁移，以完整实现"统一 IPC 字节打包"愿景。
 
 **关联**：`TASK-5` 全部子任务
+
+## 2026-07-07: TASK-6 闭环 — SyscallNum/FsLabel 枚举替代魔术数字
+
+**完成项**：
+- 在 `libnova::syscall` 中定义 `SyscallNum` `#[repr(u64)]` 枚举，覆盖全部 29 个 syscall 标签。
+- 在 `libnova::fs_ipc` 中定义 `FsLabel` `#[repr(u64)]` 枚举，覆盖全部 20 个 fs_server 协议标签。
+- 两个枚举均提供 `as_u64`/`as_word`/`from_u64` 辅助方法。
+- 替换 `libs/libnova/src/syscall.rs` 中 29 处 client stub 魔术数字为 `SyscallNum::X.as_word()`。
+- 替换 `libs/libnova/src/fs_ipc.rs` 中 20 处 `FS_LABEL_*` 常量为 `FsLabel::X.as_word()`。
+- 替换 RootServer `main.rs`/`tests.rs`/`services.rs`/`handlers/fs.rs` 中 40+ 处魔术数字 dispatch 为 `SyscallNum::from_u64(label)` 枚举匹配。
+- 替换 `services/fs_server/src/main.rs` 中 20 处 `FS_LABEL_*` dispatch 为 `FsLabel::from_u64(label)` 枚举匹配。
+- 编写 syscall label 值稳定性测试（`syscall::tests` 2 项）与 fs label 值稳定性测试（`fs_ipc::tests` 2 项），共计 4 项新增测试。
+- 经独立子 Agent 审计零问题。
+
+**验证**：
+- `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+- `cargo test -p libnova --features std --target x86_64-pc-windows-msvc` — 21 passed（17 原有 + 4 新增）
+- `cargo test -p novafs-core --features std --target x86_64-pc-windows-msvc` — 4 passed
+- `cargo clippy -p libnova --target x86_64-unknown-none` — 无新增 clippy 告警
+
+**说明**：
+- 按照 `AGENT.md` Step 4–6，TASK-6 已完成审计闭环。
+- INDEX.md 原 "Key architectural constraint #7 (Magic syscall numbers)" 已标记为 RESOLVED。
+
+**关联**：`TASK-6` 全部子任务

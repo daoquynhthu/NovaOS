@@ -27,7 +27,7 @@
 | ID | 任务 | 对应 PLAN | 说明 | 状态 |
 |----|------|-----------|------|------|
 | TASK-5 | 统一 IPC 字节打包到 `libnova::ipc` | P2.3 | 已完成，审计闭环 | ✅ |
-| TASK-6 | 定义 `SyscallNum` 枚举 | P2.4 | 替代 client/server 中分散的魔术数字 | 🟡 执行中 |
+| TASK-6 | 定义 `SyscallNum` 枚举 | P2.4 | 替代 client/server 中分散的魔术数字 | ✅ 已完成 |
 | TASK-7 | 共享分配器模块到 `libnova::allocator` | P2.5 | RootServer/fs_server 共用同一套 allocator 抽象 | ⬜ 待开始 |
 | TASK-8 | 移除 fs_server `#![allow(dead_code)]` | P2.6 | crate 级豁免已移除；函数级豁免待后续清理 | ✅ 已完成 |
 | TASK-9 | NovaOS 权能模型文档 | P2.7 | 定义每个服务/进程拥有的 CSpace 条目清单 | ⬜ 待开始 |
@@ -60,12 +60,17 @@
 
 | # | 子任务 | 状态 | RED test | GREEN test |
 |---|--------|------|----------|------------|
-| 6.1 | 在 `libnova` 中定义 `SyscallNum` 与 `FsLabel` `#[repr(u64)]` 枚举，覆盖所有当前标签 | ⬜ | 无枚举 | 枚举存在且可编译 |
-| 6.2 | 替换 `libnova/src/syscall.rs` client stubs 中的魔术数字 | ⬜ | stubs 使用魔术数字 | 使用枚举 |
-| 6.3 | 替换 `libnova/src/fs_ipc.rs` 中的 `FS_LABEL_*` 常量 | ⬜ | 常量存在 | 使用枚举 |
-| 6.4 | 替换 RootServer `main.rs` dispatch 中的魔术数字 | ⬜ | dispatch 使用魔术数字 | 使用枚举 |
-| 6.5 | 更新 `docs/INDEX.md` 标签映射，引用枚举定义 | ⬜ | 映射使用裸数字 | 引用枚举 |
-| 6.6 | `cargo check --workspace --target x86_64-unknown-none` | ⬜ | — | 全绿通过 |
+| 6.1 | 在 `libnova` 中定义 `SyscallNum` 与 `FsLabel` `#[repr(u64)]` 枚举，覆盖所有当前标签 | ✅ | 无枚举 | 枚举存在，含 `as_u64`/`as_word`/`from_u64` |
+| 6.2 | 替换 `libnova/src/syscall.rs` client stubs 中的魔术数字 | ✅ | stubs 使用魔术数字 | 全部使用 `SyscallNum::*` |
+| 6.3 | 替换 `libnova/src/fs_ipc.rs` 中的 `FS_LABEL_*` 常量 | ✅ | 常量存在 | 全部使用 `FsLabel::*` |
+| 6.4 | 替换 RootServer `main.rs`/`tests.rs`、fs_server `main.rs`、rootserver `services.rs`/`handlers/fs.rs` 中的魔术数字 | ✅ | dispatch 使用魔术数字 | 全部使用枚举 |
+| 6.5 | 更新 `docs/INDEX.md` 标签映射，引用枚举定义 | ✅ | 映射使用裸数字 | 引用 `SyscallNum`/`FsLabel` |
+| 6.6 | `cargo check --workspace --target x86_64-unknown-none` 与 host 测试 | ✅ | — | `cargo check --workspace` 全绿；`cargo test -p libnova` 21 passed |
+
+### Step-4 审计结论
+
+> **审计时间**: 2026-07-07  
+> **结果**: TASK-6 审计零问题。ABI 数值完全保留，所有 syscall/FS dispatch 点均已改用 `SyscallNum` / `FsLabel` 枚举，无遗留魔术 dispatch 标签；新增枚举值稳定性与 roundtrip 测试；相关文档已同步。详见 `docs/ISSUE.md`「TASK-6 审计详情」。
 
 ### 风险与依赖
 

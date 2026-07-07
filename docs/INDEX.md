@@ -40,7 +40,7 @@
 | `log` — leveled logging | `log.rs` | domain-gated `log_debug!`, `log_trace!` |
 | `tcb` — TCB config | `tcb.rs` | TCB setup wrappers |
 | `env` — arg iterator | `env.rs` | Early arg parsing |
-| Syscall label map | `syscall.rs` | yield=4, exit=2, print=1, open=20, read=21, write=22, close=23, spawn=8, brk=3, ... (see file) |
+| Syscall label map | `syscall.rs` | `SyscallNum` enum: `Print=1`, `Exit=2`, `Brk=3`, `Yield=4`, `Open=20`, `Read=21`, `Write=22`, `Close=23`, `Spawn=8`, ... (see `libnova::syscall::SyscallNum`) |
 
 ### 4. Services
 
@@ -267,10 +267,7 @@ libnova/
 `std` feature: enables host-native `cargo test` (provides `__sel4_ipc_buffer` stub in `sel4-sys`).
 ```
 
-**Key architectural note**: Syscall numbers are magic numbers scattered in code:
-- `MessageInfo::new(1, ..)` = sys_print
-- `MessageInfo::new(20, ..)` = sys_open
-- No shared `#[repr(u64)]` enum exists — client stubs and server dispatch both hardcode the same numbers
+**Key architectural note**: Syscall numbers are now centralized in `libnova::syscall::SyscallNum` and fs_server protocol labels in `libnova::fs_ipc::FsLabel`; both are `#[repr(u64)]` enums with `as_u64()` / `as_word()` / `from_u64()` helpers. RootServer dispatch and fs_server dispatch convert the incoming label to the enum before matching.
 
 ### Layer 4: Services
 
@@ -286,6 +283,7 @@ The initial user-mode process. RootServer is the **syscall dispatch center** + *
 - `handlers/service.rs`: service registry + time + shutdown handlers extracted
 - Input validation helpers live in `libnova::validate` and are host-tested
 - `handlers/core.rs`, `handlers/fs.rs`, `handlers/metadata.rs`, `handlers/service.rs` now call `validate_message_length` / `validate_mr_index` / `validate_cap_index` at handler entry
+- Dispatch converts `label` to `libnova::syscall::SyscallNum` via `SyscallNum::from_u64(label)` before matching
 - Labels 20-23: FS (open, read, write, close)
 - Labels 24-27: FS (chmod, chown, symlink, readlink)
 - Labels 28-29: metadata (getuid, setuid)
@@ -319,29 +317,29 @@ File system service. **Current state**: syscall-backed persistent proxy, NOT the
 - `ENSURE_LOCAL_FS_FRESH` pattern: before handling FS requests, checks if RootServer's `FS_VIEW_EPOCH` has changed; if so, re-mounts NovaFS from block device (lazy epoch-based refresh)
 - **Not yet the persistence authority** — RootServer's local NovaFS is still the real data plane
 
-**Protocol** (all via seL4 IPC Call):
+**Protocol** (all via seL4 IPC Call, labels defined by `libnova::fs_ipc::FsLabel`):
 | Label | Operation | Handler line |
 |-------|-----------|-------------|
-| 0xF500 | `FS_LABEL_PING` — health check | 724 |
-| 28 | `FS_LABEL_REFRESH` — re-mount FS | 735 |
-| 20 | `FS_LABEL_OPEN` | 746 |
-| 23 | `FS_LABEL_CLOSE` | 803 |
-| 24 | `FS_LABEL_UNLINK` | 829 |
-| 29 | `FS_LABEL_MKDIR` | 845 |
-| 30 | `FS_LABEL_TRUNCATE` | 866 |
-| 31 | `FS_LABEL_CHMOD` | 890 |
-| 32 | `FS_LABEL_CHOWN` | 914 |
-| 33 | `FS_LABEL_SYNC` | 939 |
-| 36 | `FS_LABEL_LIST` | 949 |
-| 38 | `FS_LABEL_STAT` | 970 |
-| 34 | `FS_LABEL_ENCRYPT` | 986 |
-| 35 | `FS_LABEL_DECRYPT` | 1009 |
-| 25 | `FS_LABEL_RENAME` | 1032 |
-| 26 | `FS_LABEL_LINK` | 1077 |
-| 27 | `FS_LABEL_SYMLINK` | 1122 |
-| 22 | `FS_LABEL_WRITE` | 1167 |
-| 37 | `FS_LABEL_WRITETEST` | 1237 |
-| 21 | `FS_LABEL_READ` | 1265 |
+| 0xF500 | `FsLabel::Ping` — health check | 724 |
+| 28 | `FsLabel::Refresh` — re-mount FS | 735 |
+| 20 | `FsLabel::Open` | 746 |
+| 23 | `FsLabel::Close` | 803 |
+| 24 | `FsLabel::Unlink` | 829 |
+| 29 | `FsLabel::Mkdir` | 845 |
+| 30 | `FsLabel::Truncate` | 866 |
+| 31 | `FsLabel::Chmod` | 890 |
+| 32 | `FsLabel::Chown` | 914 |
+| 33 | `FsLabel::Sync` | 939 |
+| 36 | `FsLabel::List` | 949 |
+| 38 | `FsLabel::Stat` | 970 |
+| 34 | `FsLabel::Encrypt` | 986 |
+| 35 | `FsLabel::Decrypt` | 1009 |
+| 25 | `FsLabel::Rename` | 1032 |
+| 26 | `FsLabel::Link` | 1077 |
+| 27 | `FsLabel::Symlink` | 1122 |
+| 22 | `FsLabel::Write` | 1167 |
+| 37 | `FsLabel::Writetest` | 1237 |
+| 21 | `FsLabel::Read` | 1265 |
 
 #### 4c. serial_server (45 lines)
 
@@ -428,7 +426,7 @@ NovaFS implementation now lives in `libs/novafs-core/` and is consumed by both R
 
 6. **QEMU-only**: Never booted on real hardware. ATA PIO driver assumes emulated disk, no AHCI/NVMe.
 
-7. **Magic syscall numbers**: No shared enum for syscall labels — labels are numeric constants duplicated in both client stubs (`syscall.rs`) and server dispatch (`main.rs`).
+7. ~~**Magic syscall numbers**~~ **RESOLVED**: `libnova::syscall::SyscallNum` and `libnova::fs_ipc::FsLabel` enums provide a single source of truth for syscall and fs_server protocol labels.
 
 8. **Build split across platforms**: Kernel must be built on Linux (WSL/native). Rust services on Windows. The `build.sh` workflow bridges this.
 

@@ -1,26 +1,70 @@
 use crate::ipc;
 use sel4_sys::{seL4_CPtr, seL4_Word};
 
-pub const FS_LABEL_OPEN: seL4_Word = 20;
-pub const FS_LABEL_READ: seL4_Word = 21;
-pub const FS_LABEL_WRITE: seL4_Word = 22;
-pub const FS_LABEL_CLOSE: seL4_Word = 23;
-pub const FS_LABEL_UNLINK: seL4_Word = 24;
-pub const FS_LABEL_RENAME: seL4_Word = 25;
-pub const FS_LABEL_LINK: seL4_Word = 26;
-pub const FS_LABEL_SYMLINK: seL4_Word = 27;
-pub const FS_LABEL_REFRESH: seL4_Word = 28;
-pub const FS_LABEL_MKDIR: seL4_Word = 29;
-pub const FS_LABEL_TRUNCATE: seL4_Word = 30;
-pub const FS_LABEL_CHMOD: seL4_Word = 31;
-pub const FS_LABEL_CHOWN: seL4_Word = 32;
-pub const FS_LABEL_SYNC: seL4_Word = 33;
-pub const FS_LABEL_ENCRYPT: seL4_Word = 34;
-pub const FS_LABEL_DECRYPT: seL4_Word = 35;
-pub const FS_LABEL_LIST: seL4_Word = 36;
-pub const FS_LABEL_WRITETEST: seL4_Word = 37;
-pub const FS_LABEL_STAT: seL4_Word = 38;
-pub const FS_LABEL_PING: seL4_Word = 0xF500;
+/// NovaOS direct fs_server IPC protocol labels.
+///
+/// These are sent directly to the `fs.v1` endpoint by user-mode helpers; they
+/// are distinct from the syscall labels used for RootServer dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u64)]
+pub enum FsLabel {
+    Open = 20,
+    Read = 21,
+    Write = 22,
+    Close = 23,
+    Unlink = 24,
+    Rename = 25,
+    Link = 26,
+    Symlink = 27,
+    Refresh = 28,
+    Mkdir = 29,
+    Truncate = 30,
+    Chmod = 31,
+    Chown = 32,
+    Sync = 33,
+    Encrypt = 34,
+    Decrypt = 35,
+    List = 36,
+    Writetest = 37,
+    Stat = 38,
+    Ping = 0xF500,
+}
+
+impl FsLabel {
+    pub const fn as_u64(self) -> u64 {
+        self as u64
+    }
+
+    pub const fn as_word(self) -> seL4_Word {
+        self as u64 as seL4_Word
+    }
+
+    pub const fn from_u64(v: u64) -> Option<Self> {
+        match v {
+            20 => Some(Self::Open),
+            21 => Some(Self::Read),
+            22 => Some(Self::Write),
+            23 => Some(Self::Close),
+            24 => Some(Self::Unlink),
+            25 => Some(Self::Rename),
+            26 => Some(Self::Link),
+            27 => Some(Self::Symlink),
+            28 => Some(Self::Refresh),
+            29 => Some(Self::Mkdir),
+            30 => Some(Self::Truncate),
+            31 => Some(Self::Chmod),
+            32 => Some(Self::Chown),
+            33 => Some(Self::Sync),
+            34 => Some(Self::Encrypt),
+            35 => Some(Self::Decrypt),
+            36 => Some(Self::List),
+            37 => Some(Self::Writetest),
+            38 => Some(Self::Stat),
+            0xF500 => Some(Self::Ping),
+            _ => None,
+        }
+    }
+}
 
 pub const FS_STATUS_READY: seL4_Word = 0x4653_5256;
 pub const FS_PROTO_V1: seL4_Word = 1;
@@ -59,7 +103,7 @@ pub fn open_direct(fs_ep: seL4_CPtr, path: &str, mode: usize) -> isize {
         return -1;
     }
     let path_words = len.div_ceil(8);
-    let info = ipc::MessageInfo::new(FS_LABEL_OPEN, 0, 0, (2 + path_words) as seL4_Word);
+    let info = ipc::MessageInfo::new(FsLabel::Open.as_word(), 0, 0, (2 + path_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
@@ -68,7 +112,7 @@ pub fn open_direct(fs_ep: seL4_CPtr, path: &str, mode: usize) -> isize {
 
 pub fn close_direct(fs_ep: seL4_CPtr, fd: usize) -> isize {
     ipc::set_mr(0, fd as seL4_Word);
-    match ipc::call(fs_ep, ipc::MessageInfo::new(FS_LABEL_CLOSE, 0, 0, 1)) {
+    match ipc::call(fs_ep, ipc::MessageInfo::new(FsLabel::Close.as_word(), 0, 0, 1)) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
     }
@@ -85,7 +129,7 @@ pub fn write_direct(fs_ep: seL4_CPtr, fd: usize, buf: &[u8]) -> isize {
         return -1;
     }
     let data_words = buf.len().div_ceil(8);
-    let info = ipc::MessageInfo::new(FS_LABEL_WRITE, 0, 0, (2 + data_words) as seL4_Word);
+    let info = ipc::MessageInfo::new(FsLabel::Write.as_word(), 0, 0, (2 + data_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
@@ -99,7 +143,7 @@ pub fn read_direct(fs_ep: seL4_CPtr, fd: usize, buf: &mut [u8]) -> isize {
 
     ipc::set_mr(0, fd as seL4_Word);
     ipc::set_mr(1, buf.len() as seL4_Word);
-    let info = ipc::MessageInfo::new(FS_LABEL_READ, 0, 0, 2);
+    let info = ipc::MessageInfo::new(FsLabel::Read.as_word(), 0, 0, 2);
     match ipc::call(fs_ep, info) {
         Ok(reply) => {
             let mut r = ipc::pack::MessageReader::new(reply.length() as usize);
@@ -128,7 +172,7 @@ pub fn unlink_direct(fs_ep: seL4_CPtr, path: &str) -> isize {
         return -1;
     }
     let path_words = len.div_ceil(8);
-    let info = ipc::MessageInfo::new(FS_LABEL_UNLINK, 0, 0, (1 + path_words) as seL4_Word);
+    let info = ipc::MessageInfo::new(FsLabel::Unlink.as_word(), 0, 0, (1 + path_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
@@ -153,7 +197,7 @@ pub fn rename_direct(fs_ep: seL4_CPtr, old_path: &str, new_path: &str) -> isize 
     }
 
     let path_words = (old_len + new_len).div_ceil(8);
-    let info = ipc::MessageInfo::new(FS_LABEL_RENAME, 0, 0, (2 + path_words) as seL4_Word);
+    let info = ipc::MessageInfo::new(FsLabel::Rename.as_word(), 0, 0, (2 + path_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
@@ -182,7 +226,7 @@ pub fn link_direct(fs_ep: seL4_CPtr, target_path: &str, link_path: &str) -> isiz
     }
 
     let path_words = (target_len + link_len).div_ceil(8);
-    let info = ipc::MessageInfo::new(FS_LABEL_LINK, 0, 0, (2 + path_words) as seL4_Word);
+    let info = ipc::MessageInfo::new(FsLabel::Link.as_word(), 0, 0, (2 + path_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
@@ -211,7 +255,7 @@ pub fn symlink_direct(fs_ep: seL4_CPtr, target: &str, link_path: &str) -> isize 
     }
 
     let path_words = (target_len + link_len).div_ceil(8);
-    let info = ipc::MessageInfo::new(FS_LABEL_SYMLINK, 0, 0, (2 + path_words) as seL4_Word);
+    let info = ipc::MessageInfo::new(FsLabel::Symlink.as_word(), 0, 0, (2 + path_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
@@ -219,7 +263,7 @@ pub fn symlink_direct(fs_ep: seL4_CPtr, target: &str, link_path: &str) -> isize 
 }
 
 pub fn refresh_direct(fs_ep: seL4_CPtr) -> isize {
-    match ipc::call(fs_ep, ipc::MessageInfo::new(FS_LABEL_REFRESH, 0, 0, 0)) {
+    match ipc::call(fs_ep, ipc::MessageInfo::new(FsLabel::Refresh.as_word(), 0, 0, 0)) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
     }
@@ -236,7 +280,7 @@ pub fn mkdir_direct(fs_ep: seL4_CPtr, path: &str) -> isize {
         return -1;
     }
     let path_words = len.div_ceil(8);
-    let info = ipc::MessageInfo::new(FS_LABEL_MKDIR, 0, 0, (1 + path_words) as seL4_Word);
+    let info = ipc::MessageInfo::new(FsLabel::Mkdir.as_word(), 0, 0, (1 + path_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
@@ -255,7 +299,7 @@ pub fn truncate_direct(fs_ep: seL4_CPtr, path: &str, size: u64) -> isize {
         return -1;
     }
     let path_words = len.div_ceil(8);
-    let info = ipc::MessageInfo::new(FS_LABEL_TRUNCATE, 0, 0, (2 + path_words) as seL4_Word);
+    let info = ipc::MessageInfo::new(FsLabel::Truncate.as_word(), 0, 0, (2 + path_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
@@ -274,7 +318,7 @@ pub fn chmod_direct(fs_ep: seL4_CPtr, path: &str, mode: u16) -> isize {
         return -1;
     }
     let path_words = len.div_ceil(8);
-    let info = ipc::MessageInfo::new(FS_LABEL_CHMOD, 0, 0, (2 + path_words) as seL4_Word);
+    let info = ipc::MessageInfo::new(FsLabel::Chmod.as_word(), 0, 0, (2 + path_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
@@ -294,7 +338,7 @@ pub fn chown_direct(fs_ep: seL4_CPtr, path: &str, uid: u32, gid: u32) -> isize {
         return -1;
     }
     let path_words = len.div_ceil(8);
-    let info = ipc::MessageInfo::new(FS_LABEL_CHOWN, 0, 0, (3 + path_words) as seL4_Word);
+    let info = ipc::MessageInfo::new(FsLabel::Chown.as_word(), 0, 0, (3 + path_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
@@ -302,7 +346,7 @@ pub fn chown_direct(fs_ep: seL4_CPtr, path: &str, uid: u32, gid: u32) -> isize {
 }
 
 pub fn sync_direct(fs_ep: seL4_CPtr) -> isize {
-    match ipc::call(fs_ep, ipc::MessageInfo::new(FS_LABEL_SYNC, 0, 0, 0)) {
+    match ipc::call(fs_ep, ipc::MessageInfo::new(FsLabel::Sync.as_word(), 0, 0, 0)) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
     }
@@ -319,7 +363,7 @@ pub fn encrypt_direct(fs_ep: seL4_CPtr, path: &str) -> isize {
         return -1;
     }
     let path_words = len.div_ceil(8);
-    let info = ipc::MessageInfo::new(FS_LABEL_ENCRYPT, 0, 0, (1 + path_words) as seL4_Word);
+    let info = ipc::MessageInfo::new(FsLabel::Encrypt.as_word(), 0, 0, (1 + path_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
@@ -337,7 +381,7 @@ pub fn decrypt_direct(fs_ep: seL4_CPtr, path: &str) -> isize {
         return -1;
     }
     let path_words = len.div_ceil(8);
-    let info = ipc::MessageInfo::new(FS_LABEL_DECRYPT, 0, 0, (1 + path_words) as seL4_Word);
+    let info = ipc::MessageInfo::new(FsLabel::Decrypt.as_word(), 0, 0, (1 + path_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
@@ -355,7 +399,7 @@ pub fn list_direct(fs_ep: seL4_CPtr, path: &str) -> isize {
         return -1;
     }
     let path_words = len.div_ceil(8);
-    let info = ipc::MessageInfo::new(FS_LABEL_LIST, 0, 0, (1 + path_words) as seL4_Word);
+    let info = ipc::MessageInfo::new(FsLabel::List.as_word(), 0, 0, (1 + path_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
@@ -373,7 +417,7 @@ pub fn stat_direct(fs_ep: seL4_CPtr, path: &str) -> isize {
         return -1;
     }
     let path_words = len.div_ceil(8);
-    let info = ipc::MessageInfo::new(FS_LABEL_STAT, 0, 0, (1 + path_words) as seL4_Word);
+    let info = ipc::MessageInfo::new(FsLabel::Stat.as_word(), 0, 0, (1 + path_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
@@ -392,9 +436,53 @@ pub fn writetest_direct(fs_ep: seL4_CPtr, path: &str, size_kb: usize) -> isize {
         return -1;
     }
     let path_words = len.div_ceil(8);
-    let info = ipc::MessageInfo::new(FS_LABEL_WRITETEST, 0, 0, (2 + path_words) as seL4_Word);
+    let info = ipc::MessageInfo::new(FsLabel::Writetest.as_word(), 0, 0, (2 + path_words) as seL4_Word);
     match ipc::call(fs_ep, info) {
         Ok(_) => ipc::get_mr(0) as isize,
         Err(_) => -1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FsLabel;
+
+    #[test]
+    fn fs_label_values_are_stable() {
+        // These values are part of the direct fs_server IPC ABI.
+        assert_eq!(FsLabel::Open.as_u64(), 20);
+        assert_eq!(FsLabel::Read.as_u64(), 21);
+        assert_eq!(FsLabel::Write.as_u64(), 22);
+        assert_eq!(FsLabel::Close.as_u64(), 23);
+        assert_eq!(FsLabel::Unlink.as_u64(), 24);
+        assert_eq!(FsLabel::Rename.as_u64(), 25);
+        assert_eq!(FsLabel::Link.as_u64(), 26);
+        assert_eq!(FsLabel::Symlink.as_u64(), 27);
+        assert_eq!(FsLabel::Refresh.as_u64(), 28);
+        assert_eq!(FsLabel::Mkdir.as_u64(), 29);
+        assert_eq!(FsLabel::Truncate.as_u64(), 30);
+        assert_eq!(FsLabel::Chmod.as_u64(), 31);
+        assert_eq!(FsLabel::Chown.as_u64(), 32);
+        assert_eq!(FsLabel::Sync.as_u64(), 33);
+        assert_eq!(FsLabel::Encrypt.as_u64(), 34);
+        assert_eq!(FsLabel::Decrypt.as_u64(), 35);
+        assert_eq!(FsLabel::List.as_u64(), 36);
+        assert_eq!(FsLabel::Writetest.as_u64(), 37);
+        assert_eq!(FsLabel::Stat.as_u64(), 38);
+        assert_eq!(FsLabel::Ping.as_u64(), 0xF500);
+    }
+
+    #[test]
+    fn fs_label_roundtrip_via_from_u64() {
+        for label in [
+            FsLabel::Open,
+            FsLabel::Read,
+            FsLabel::Write,
+            FsLabel::Ping,
+        ] {
+            let v = label.as_u64();
+            assert_eq!(FsLabel::from_u64(v), Some(label));
+        }
+        assert_eq!(FsLabel::from_u64(99), None);
     }
 }
