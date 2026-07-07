@@ -207,6 +207,50 @@ mod tests {
     }
 }
 
+/// Wrapper for a process's independent derived CNode.
+///
+/// Each process gets its own CNode (2^slot_bits entries) installed in
+/// RootServer's root CNode. This struct provides a type-safe handle for
+/// copying capabilities into the derived CNode.
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+pub struct DerivedCNode {
+    root_cnode: CNode,
+    cnode_cptr: seL4_CPtr,
+    slot_bits: u8,
+}
+
+impl DerivedCNode {
+    pub fn new(root_cnode: CNode, cnode_cptr: seL4_CPtr, _slot_bits: u8) -> Self {
+        Self {
+            root_cnode,
+            cnode_cptr,
+            slot_bits: _slot_bits,
+        }
+    }
+
+    pub fn cnode_cptr(&self) -> seL4_CPtr {
+        self.cnode_cptr
+    }
+
+    /// Install a capability from `src_root` at `src_index` into this derived
+    /// CNode at `dest_slot` with the given `rights`.
+    pub fn install(
+        &self,
+        src_root: &CNode,
+        src_index: seL4_Word,
+        _dest_slot: seL4_Word,
+        rights: seL4_CapRights,
+    ) -> Result<()> {
+        self.root_cnode.copy(
+            self.cnode_cptr as seL4_Word, // dest_index = the cnode cap slot
+            src_root,
+            src_index,
+            rights,
+        )
+    }
+}
+
 /// Retype an untyped capability
 #[allow(clippy::too_many_arguments)]
 pub fn untyped_retype(

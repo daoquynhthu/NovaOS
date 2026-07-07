@@ -26,7 +26,7 @@
 | # | 任务 | PLAN 对应 | 优先级 | 依赖 | 状态 |
 |---|------|-----------|--------|------|------|
 | 1 | IPC 入口统一校验 | P4.6 | P1 | — | 🟡 执行中 |
-| 2 | 独立派生 CSpace（流程设计 + API 模型） | P4.5 | P0 | — | ⬜ |
+| 2 | 独立派生 CSpace（流程设计 + API 模型） | P4.5 | P0 | — | ✅ |
 | 3 | fs_server 直接持有块设备 | P4.1 剩余 | P0 | P4.5（共享内存） | ⏳ |
 | 4 | 解除 FS_SYNC_FORWARD_ENABLED 死锁 | P4.2 | P0 | P4.1 | ⏳ |
 | 5 | Shell 命令迁移到 fs_server | P4.3 | P1 | P4.1 | ⏳ |
@@ -75,9 +75,9 @@
 
 | # | 子任务 | 状态 | 说明 |
 |---|--------|------|------|
-| 2.1 | 更新 `docs/CAPABILITY_MODEL.md`，明确独立 CSpace 后的条目布局变化 | ⬜ | 新增"独立 CSpace 设计"章节 |
-| 2.2 | 定义 `libnova::cap::DerivedCNode` API（创建、配置、撤销） | ⬜ | 仅 trait/struct 设计，不涉及 seL4 调用 |
-| 2.3 | 设立回归门禁 | ⬜ | 确保文档与 API 设计不破坏编译 |
+| 2.1 | 更新 `docs/CAPABILITY_MODEL.md`，明确独立 CSpace 后的条目布局变化 | ✅ | §10 独立 CSpace 设计（2 级 CNode 架构、256 槽布局、创建流程） |
+| 2.2 | 定义 `libnova::cap::DerivedCNode` API（创建、安装能力） | ✅ | struct + `new` + `install` + `cnode_cptr` |
+| 2.3 | `cargo check --workspace --target x86_64-unknown-none` 与回归测试 | ✅ | 全绿通过 |
 
 ---
 

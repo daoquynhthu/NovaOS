@@ -164,11 +164,82 @@ libnova 使用 seL4 标准权限掩码（`seL4_CapRights`）：
 
 ---
 
-## 10. 未来计划（Phase 4）
+## 10. 独立 CSpace 设计（Phase 4.5）
+
+### 10.1 动机
+
+当前所有进程共享 RootServer 的根 CNode（slot 0）。这意味着：
+- 一个进程可以意外释放另一个进程的能力（如果知道 slot 索引）。
+- 进程退出后 slot 回收可能影响其他进程的能力映射。
+- RootServer 的 CSpace 槽位可能被耗尽（4096 个槽 — 其中约 2000+ 已用于运行中进程）。
+
+### 10.2 设计
+
+每个进程在创建时获得一个**独立派生 2 级 CNode**：
+
+```
+Root CNode (size=12, 4096 槽)
+  ├── [0..N-1] RootServer 内部能力
+  ├── [slot_X] 子进程 1 的 CNode (2^8 = 256 槽)
+  │   ├── [0] Syscall endpoint
+  │   ├── [1] TCB
+  │   ├── [2] VSpace
+  │   ├── [3] IPC buffer frame
+  │   ├── [4..127] 已映射帧
+  │   └── [128..255] 空闲槽
+  ├── [slot_Y] 子进程 2 的 CNode
+  │   └── ...
+  └── ...
+```
+
+### 10.3 条目布局
+
+每个独立 CNode 的槽布局（256 槽 = 2^8）：
+
+| 槽 | 能力 | 说明 |
+|----|------|------|
+| 0 | Syscall endpoint (badged) | 回调 RootServer |
+| 1 | TCB | 自身线程控制块 |
+| 2 | VSpace (Page Table) | 自身页目录 |
+| 3 | IPC buffer frame | 映射到 `0x3000_0000` |
+| 4–7 | 保留（前 4K 页） | ELF 加载 |
+| 8–127 | 动态帧映射 | mmap / heap / stack |
+| 128–255 | 空闲槽 | 可动态分配 |
+
+### 10.4 创建流程
+
+```
+Process::spawn:
+  1. 从 UntypedAllocator 分配一个新的 CNode (2^8 槽)
+  2. 将新 CNode 安装到 RootServer 的 CNode (slot = slot_allocator.alloc())
+  3. 在新 CNode 中创建条目: Endpoint, TCB, VSpace, IPC buffer
+  4. 子进程的门禁 cptr = 派生 CNode 的 slot 编号
+```
+
+### 10.5 API 模型
+
+`libnova::cap::DerivedCNode` 封装子进程的 CNode：
+
+```rust
+pub struct DerivedCNode {
+    root_cnode: CNode,     // RootServer 的根 CNode
+    cnode_cptr: seL4_CPtr, // 子进程 CNode 在根 CNode 中的 slot
+    slot_bits: u8,         // 子进程 CNode 的大小位数 (8 → 256 槽)
+}
+```
+
+方法：
+- `new(root, cptr, slot_bits)` — 创建包装
+- `install(src_root, src_index, dest_slot, rights)` — 从指定源复制能力到派生 CNode
+- `list_installed()` — 遍历已安装的能力条目（仅文档，非功能）
+
+---
+
+## 11. 未来计划（Phase 4 剩余）
 
 | 项 | 计划 |
 |----|------|
-| 独立 CSpace | 每个进程获得独立派生 CNode，不再共享根 CNode |
 | 能力隔离 | fs_server 直接持有块设备 + NovaFS，RootServer 降权为编排角色 |
 | IPC 入口校验 | 统一检查消息长度、能力索引范围、权限位 |
 | 派生树追踪 | 建立权能派生链，支持级联撤销 |
+| 独立 CSpace 实现 | 将 10.2 的设计落实到 `Process::spawn` 中 |
