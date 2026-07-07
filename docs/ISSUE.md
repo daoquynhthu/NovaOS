@@ -75,9 +75,10 @@
 | ISSUE-38 | [P3] CMakeLists.txt 中定义了未使用的 *_SRC 变量 | 🟢 已修复 | 审计 [TASK-3.1]；已移除 `ROOTSERVER_SRC` 等未使用变量 |
 | ISSUE-39 | [P3] Phase 1 P1 二次审计通过，无新增问题 | ⚪ 已关闭 | 二次审计 [TASK-1]-[TASK-6]；ISSUE-36/37/38 已修复，cargo check 通过 |
 | ISSUE-43 | [P3] CI 未配置 cargo/seL4 构建缓存，每次运行全量重建 | 🟢 已修复 | 审计 [TASK-2.3]；已添加 `actions/cache@v4` 缓存 `~/.cargo`、`target`、`build` |
-| ISSUE-44 | [P3] Phase 1 P2 二次审计通过，无新增问题 | ⚪ 已关闭 | 二次审计 [TASK-1]/[TASK-2]；ISSUE-40/41/42/43/25 已修复，cargo check 通过 |
+| ISSUE-44 | [P3] Phase 1 P2 二次审计通过，无新增问题 | ⚪ 已关闭 | 审计 [TASK-1]/[TASK-2]；ISSUE-40/41/42/43/25 已修复，cargo check 通过 |
 | ISSUE-48 | [P3] `docs/INDEX.md` 中 syscall label 映射与 `main.rs` dispatch 不一致 | 🟢 已修复 | 审计 [TASK-4] |
 | ISSUE-49 | [P3] service handlers 读取 name payload 时未校验 message length 是否覆盖完整名称 | 🟢 已修复 | 审计 [TASK-4.8]/[TASK-4.9] |
+| ISSUE-52 | [P3] `docs/CAPABILITY_MODEL.md` 中 SlotAllocator 引用指向已迁移的文件 | 🟢 已修复（已验证） | 审计 [TASK-9]；已改为引用 `libs/libnova/src/allocator.rs` |
 
 ---
 
@@ -88,8 +89,8 @@
 | P0 | 3 | 1 | 1 | 1 | 0 |
 | P1 | 13 | 4 | 0 | 7 | 2 |
 | P2 | 23 | 8 | 0 | 14 | 1 |
-| P3 | 12 | 3 | 0 | 7 | 2 |
-| **合计** | **51** | **16** | **1** | **29** | **5** |
+| P3 | 13 | 4 | 0 | 7 | 2 |
+| **合计** | **52** | **17** | **1** | **29** | **5** |
 
 ---
 
@@ -349,3 +350,45 @@
 > 5. `docs/INDEX.md` 与 `docs/TASK.md` 对 TASK-7 的描述与实际代码状态一致。
 >
 > **TASK-7 审计：零问题，满足闭环条件。**
+
+---
+
+## TASK-9 审计详情
+
+> **审计时间**: 2026-07-07
+> **审计范围**: `docs/CAPABILITY_MODEL.md`、`docs/INDEX.md`、`docs/TASK.md`
+> **验证命令**:
+> - `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+>
+> **验证结果**:
+> 1. RootServer 持有 syscall endpoint、fs_server IPC endpoint、IRQ handlers — ✅ 代码确认（main.rs:917 syscall_ep, main.rs:934 fs endpoint, main.rs:693-1247 IRQ handlers）
+> 2. fs_server 为"持久代理"模式，`FS_SYNC_FORWARD_ENABLED=false` — ✅ 代码确认（main.rs:61）
+> 3. serial_server ~45 行 — ✅ 代码确认（main.rs 48 行，~45 合理近似）
+> 4. user_app 使用 syscall endpoint + fs_server IPC endpoint（通过 envp `NOVA_FS_SERVICE_EP`） — ✅ 代码确认
+> 5. `MAX_CSPACE_SLOTS = 4096` 来自 `libnova::allocator` — ✅ `libs/libnova/src/allocator.rs:10`
+> 6. `SlotAllocator` 来自 `libnova::allocator` — ✅
+> 7. 文档引用 `ARCH-NOVAOS-PROPOSAL-001` — ✅ 行 2, 8
+> 8. 文档匹配当前代码状态（标记为"草案"，注明 2026-07-07） — ✅
+> 9. `docs/INDEX.md` 列出 `CAPABILITY_MODEL.md` — ✅ 行 215
+> 10. `cargo check --workspace --target x86_64-unknown-none` — ✅ 全绿
+>
+> ### ISSUE-52: `docs/CAPABILITY_MODEL.md` 中 SlotAllocator 引用指向已迁移的文件
+>
+> - **Severity**: P3
+> - **Location**: `docs/CAPABILITY_MODEL.md:8`
+> - **Problem**: 文档引用 `services/rootserver/src/memory.rs` 作为 SlotAllocator 参考位置。但 TASK-7 已将 SlotAllocator 实现迁移到 `libs/libnova/src/allocator.rs`，`services/rootserver/src/memory.rs` 现在仅为 re-export 兼容层。参考应指向实际实现文件。
+> - **Suggested fix**: 将 `services/rootserver/src/memory.rs` 替换为 `libs/libnova/src/allocator.rs`
+> - **Status**: 🔴 待修复
+>
+> **审计结论**: 1 个 P3 问题（ISSUE-52）；非阻塞，不影响理解，但建议修复以保持文档准确性。
+
+## TASK-9 再审计记录（第二次审计）
+
+> **再审计时间**: 2026-07-07
+> **再审计范围**: `docs/CAPABILITY_MODEL.md`、`docs/ISSUE.md`
+> **验证结果**:
+> 1. `docs/CAPABILITY_MODEL.md:8` 引用 `libs/libnova/src/allocator.rs`（SlotAllocator）— ✅ 已修复，不再指向 `services/rootserver/src/memory.rs`
+> 2. `docs/ISSUE.md:81` ISSUE-52 状态为 "🟢 已修复（已验证）" — ✅ 已同步
+> 3. 审计范围内无其他引用不一致
+>
+> **TASK-9 再审计：零问题，满足闭环条件。**

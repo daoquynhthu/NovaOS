@@ -316,3 +316,23 @@
 - INDEX.md 原 "Key architectural constraint #7 (Magic syscall numbers)" 已标记为 RESOLVED。
 
 **关联**：`TASK-6` 全部子任务
+
+## 2026-07-07: TASK-7 闭环 — allocator 模块迁移
+
+**完成项**：
+- 创建 `libs/libnova/src/allocator.rs`，移入 SlotAllocator/ObjectAllocator/UntypedAllocator/FrameAllocator/MemoryRegion 及相关常量
+- `services/rootserver/src/memory.rs` 改为 re-export 兼容层
+- 独立审计零问题
+
+**验证**：`cargo check --workspace` 全绿；`cargo test -p libnova` 21 passed
+**关联**：`TASK-7`
+
+## 2026-07-07: TASK-9 闭环 — 权能模型文档
+
+**完成项**：
+- 创建 `docs/CAPABILITY_MODEL.md`，定义 RootServer/fs_server/serial_server/user_app 的 CSpace 条目清单
+- 覆盖 seL4 能力类型、CSpace 结构、未来计划
+- 独立审计发现 ISSUE-52（引用已迁移文件），修复后再审计零问题
+
+**验证**：`cargo check --workspace` 全绿
+**关联**：`TASK-9`

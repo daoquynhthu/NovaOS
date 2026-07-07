@@ -28,10 +28,33 @@
 | ID | 任务 | 对应 PLAN | 说明 | 状态 |
 |----|------|-----------|------|------|
 | TASK-7 | 共享分配器模块到 `libnova::allocator` | P2.5 | RootServer/fs_server 共用同一套 allocator 抽象 | ✅ 已完成 |
-| TASK-9 | NovaOS 权能模型文档 | P2.7 | 定义每个服务/进程拥有的 CSpace 条目清单 | ⬜ 待开始 |
+| TASK-9 | NovaOS 权能模型文档 | P2.7 | 定义每个服务/进程拥有的 CSpace 条目清单 | ✅ |
 | TASK-10 | 服务接口契约文档 | P2.8 | fs_server/serial_server/user_app 的请求/响应/不变量 | ⬜ 待开始 |
 | TASK-11 | `test.ps1` 支持 `-StageRange` | P1.5.3 | 拆分快速 smoke 与完整回归 | ⬜ 待开始 |
 | TASK-12 | 分配器逻辑测试 | P1.5.4 | SlotAllocator/UntypedAllocator/FrameAllocator bitmap 逻辑 | ⬜ 待开始 |
+
+---
+
+## TASK-9: NovaOS 权能模型文档
+
+**目标**: 定义 NovaOS 当前已实现的权能分配模型，涵盖 RootServer、fs_server、serial_server、user_app 的 CSpace 条目清单，为 Phase 4 能力隔离做准备。
+
+**对应 PLAN**: [PLAN-P2.7](./PLAN.md#phase-2-代码结构去债务与安全基线)
+
+**涉及文件**:
+- `docs/CAPABILITY_MODEL.md` — 新文档
+
+**核心设计约束**:
+- 必须引用 `ARCH-NOVAOS-PROPOSAL-001` 中的安全原则。
+- 必须与当前代码实现一致（反映实际 CSpace 布局，而非理想设计）。
+- 属于纯文档类别，无需 RED/GREEN。
+
+### 子任务
+
+| # | 子任务 | 状态 | 说明 |
+|---|--------|------|------|
+| 9.1 | 创建 `docs/CAPABILITY_MODEL.md`，覆盖 RootServer/fs_server/serial_server/user_app 的 CSpace 条目 | 🟡 | 已创建，含当前所有服务的能力清单 |
+| 9.2 | 文档引用 `ARCH-NOVAOS-PROPOSAL-001` 安全原则 | ✅ | 已引用 |
 
 ---
 

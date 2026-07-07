@@ -212,6 +212,7 @@
 | `docs/NovaOS_Syscall_Design.md` | Syscall design notes |
 | `docs/NovaOS_Verification_Spec.md` | Verification spec |
 | `docs/NovaOS_Memory_Error_Spec.md` | Memory error spec |
+| `docs/CAPABILITY_MODEL.md` | Capability model — CSpace layout per service |
 | `skills/NovaOS_Project/SKILL.md` | opencode skill for NovaOS development |
 
 ---
