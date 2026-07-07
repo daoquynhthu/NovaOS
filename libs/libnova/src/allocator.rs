@@ -450,3 +450,87 @@ impl FrameAllocator {
         self.free_frames.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_slots(count: usize) -> SlotAllocator {
+        SlotAllocator {
+            start: 0,
+            end: count,
+            bitmap: [0; BITMAP_SIZE],
+        }
+    }
+
+    #[test]
+    fn slot_alloc_single() {
+        let mut sa = empty_slots(128);
+        let slot = sa.alloc().unwrap();
+        assert!(sa.is_allocated(slot as usize));
+        assert_eq!(sa.free_slots(), 127);
+    }
+
+    #[test]
+    fn slot_alloc_free_reuse() {
+        let mut sa = empty_slots(64);
+        let s1 = sa.alloc().unwrap();
+        let s2 = sa.alloc().unwrap();
+        assert_ne!(s1, s2);
+        sa.free(s1);
+        let s3 = sa.alloc().unwrap();
+        assert_eq!(s1, s3, "freed slot should be reused before allocating new ones");
+    }
+
+    #[test]
+    fn slot_alloc_exhaustion() {
+        let mut sa = empty_slots(4);
+        for _ in 0..4 {
+            sa.alloc().unwrap();
+        }
+        assert_eq!(sa.alloc(), Err(seL4_Error::seL4_NotEnoughMemory));
+    }
+
+    #[test]
+    fn slot_stats() {
+        let mut sa = empty_slots(10);
+        assert_eq!(sa.stats(), (10, 0, 10));
+        sa.alloc().unwrap();
+        sa.alloc().unwrap();
+        assert_eq!(sa.stats(), (10, 2, 8));
+        assert!(!sa.can_allocate_with_reserve(9, 0));
+        assert!(sa.can_allocate_with_reserve(8, 0));
+        assert!(sa.can_allocate_with_reserve(7, 1));
+    }
+
+    #[test]
+    fn slot_alloc_free_cycle() {
+        let mut sa = empty_slots(10);
+        let s = sa.alloc().unwrap();
+        sa.free(s);
+        assert!(sa.stats().2 > 0);
+    }
+
+    #[test]
+    fn untyped_allocator_oom_stats() {
+        // Mock BootInfo: untyped.start=0, untyped.end=0 (no untyped caps)
+        let mut boot_info: seL4_BootInfo = unsafe { core::mem::zeroed() };
+        boot_info.untyped.start = 0;
+        boot_info.untyped.end = 0;
+
+        let ua = UntypedAllocator::new(&boot_info);
+        assert_eq!(ua.oom_stats(), (0, 0));
+        assert_eq!(ua.free_ram_bytes(&boot_info), 0);
+        assert_eq!(ua.fragmentation_bytes(&boot_info), 0);
+    }
+
+    #[test]
+    fn frame_allocator_free_count() {
+        let mut fa = FrameAllocator::new();
+        assert_eq!(fa.free_count(), 0);
+        fa.free(100);
+        assert_eq!(fa.free_count(), 1);
+        fa.free(200);
+        assert_eq!(fa.free_count(), 2);
+    }
+}

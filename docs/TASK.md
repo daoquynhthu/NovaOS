@@ -31,7 +31,7 @@
 | TASK-9 | NovaOS 权能模型文档 | P2.7 | 定义每个服务/进程拥有的 CSpace 条目清单 | ✅ |
 | TASK-10 | 服务接口契约文档 | P2.8 | fs_server/serial_server/user_app 的请求/响应/不变量 | ✅ |
 | TASK-11 | `test.ps1` 支持 `-StageRange` | P1.5.3 | 拆分快速 smoke 与完整回归 | ✅ |
-| TASK-12 | 分配器逻辑测试 | P1.5.4 | SlotAllocator/UntypedAllocator/FrameAllocator bitmap 逻辑 | ⬜ 待开始 |
+| TASK-12 | 分配器逻辑测试 | P1.5.4 | SlotAllocator/UntypedAllocator/FrameAllocator bitmap 逻辑 | 🟡 执行中 |
 
 ---
 

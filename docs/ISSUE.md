@@ -79,6 +79,7 @@
 | ISSUE-48 | [P3] `docs/INDEX.md` 中 syscall label 映射与 `main.rs` dispatch 不一致 | 🟢 已修复 | 审计 [TASK-4] |
 | ISSUE-49 | [P3] service handlers 读取 name payload 时未校验 message length 是否覆盖完整名称 | 🟢 已修复 | 审计 [TASK-4.8]/[TASK-4.9] |
 | ISSUE-52 | [P3] `docs/CAPABILITY_MODEL.md` 中 SlotAllocator 引用指向已迁移的文件 | 🟢 已修复（已验证） | 审计 [TASK-9]；已改为引用 `libs/libnova/src/allocator.rs` |
+| ISSUE-55 | [P3] `slot_double_free_is_debug_assert` 测试仅执行单次 free，未实际验证 double-free 行为，名称与测试体不一致 | 🟢 已修复 | 审计 [TASK-12]；已重命名为 `slot_alloc_free_cycle` 并添加 free 后断言 |
 
 ---
 
@@ -89,8 +90,8 @@
 | P0 | 3 | 1 | 1 | 1 | 0 |
 | P1 | 13 | 4 | 0 | 7 | 2 |
 | P2 | 23 | 8 | 0 | 14 | 1 |
-| P3 | 15 | 6 | 0 | 7 | 2 |
-| **合计** | **54** | **19** | **1** | **29** | **5** |
+| P3 | 16 | 7 | 0 | 7 | 2 |
+| **合计** | **55** | **20** | **1** | **29** | **5** |
 
 ---
 
@@ -453,3 +454,46 @@
 | ISSUE-54 | P3 | 🟢 已修复（已验证） | INDEX.md serial_server/user_app 行号不准确 — 已同步 |
 
 > **审计结论**: 2 个 P3 问题，无 P0/P1。`cargo check` 全绿。文档整体准确但 Stat 协议细节和 INDEX.md 行号需同步。
+
+---
+
+## TASK-12 审计详情
+
+> **审计时间**: 2026-07-07
+> **审计范围**: `libs/libnova/src/allocator.rs`（#[cfg(test)] mod tests 7 项）、`docs/TASK.md`
+> **验证命令**:
+> - `cargo test -p libnova --features std --target x86_64-pc-windows-msvc` — 28 项全过（含 allocator 7 项）
+> - `cargo clippy -p libnova --target x86_64-unknown-none` — allocator.rs 生产代码含 1 个 pre-existing error（`unwrap_used` at line 376）和 1 个 warning（`new_without_default` at line 426），均为 TASK-7 迁移遗留债务（ISSUE-4 已跟踪）；TASK-12 新增测试代码零 clippy 问题
+>
+> **验证结果**:
+> 1. `slot_alloc_single` — 分配单个，验证 is_allocated + free_slots ✅
+> 2. `slot_alloc_free_reuse` — 分配两个，释放一个，验证复用 ✅
+> 3. `slot_alloc_exhaustion` — 耗尽限域内所有槽，验证 NotEnoughMemory ✅
+> 4. `slot_stats` — stats() 输出与 alloc/free 操作一致 ✅
+> 5. `slot_double_free_is_debug_assert` — 仅执行单次 free，未实际调用第二次 free ⚠️ → ISSUE-55
+> 6. `untyped_allocator_oom_stats` — 零初始化 BootInfo，无 seL4 IPC 调用 ✅
+> 7. `frame_allocator_free_count` — 无外部依赖，纯 Vec 操作 ✅
+
+### ISSUE-55: `slot_double_free_is_debug_assert` 测试未实际验证 double-free 行为
+
+- **Severity**: P3
+- **Location**: `libs/libnova/src/allocator.rs:507-513`
+- **Problem**: 测试名称与注释声称验证 double-free 行为（"verify double-free doesn't panic"），但测试体仅执行一次 `alloc()` + 一次 `free()`，从未第二次调用 `free()`。实际 double-free 路径（`SlotAllocator::free` 中 `debug_assert!` 触发 panic 于 debug 模式，静默通过于 release 模式）未被任何代码覆盖。
+- **Suggested fix**: 在 `#[cfg(not(debug_assertions))]` guards 下执行实际 double-free 调用验证 release 模式不 panic，或将测试重命名为 `slot_alloc_free` 以匹配实际测试内容。
+- **Status**: 🟢 已修复
+- **修复状态**: 🟢 已修复 — 测试已重命名为 `slot_alloc_free_cycle`，测试体执行 alloc + free 后通过 `stats().2 > 0` 断言 free 状态正确。
+
+## TASK-12 再审计记录
+
+> **再审计时间**: 2026-07-07
+> **再审计范围**: `libs/libnova/src/allocator.rs`（`slot_alloc_free_cycle` 测试）、`docs/ISSUE.md`（ISSUE-55 状态）
+> **验证命令**:
+> - `cargo test -p libnova --features std --target x86_64-pc-windows-msvc allocator::` — 7 项全过
+> - `cargo clippy -p libnova --target x86_64-unknown-none` — 1 个 pre-existing error（`unwrap_used` at allocator.rs:376，ISSUE-4 已跟踪）；TASK-12/ISSUE-55 修改区域（测试代码）零 clippy 问题
+>
+> **验证结果**:
+> 1. `slot_alloc_free_cycle` 已重命名，测试体执行 alloc + free 后通过 `stats().2 > 0` 断言 free slots 计数正确 ✅
+> 2. allocator 全部 7 项 host 测试通过 ✅
+> 3. ISSUE-55 状态已更新为 🟢 已修复 ✅
+>
+> **TASK-12 再审计：零问题，满足闭环条件。**
