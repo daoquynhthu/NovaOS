@@ -136,7 +136,7 @@
 
 | What | File | Line |
 |---|---|---|
-| Entry (`_start`) | `main.rs` | 13 |
+| Entry (`_start`) | `main.rs` | 16 |
 | Register `serial.v1` | `main.rs` | 23 |
 | Mark ready | `main.rs` | 24 |
 | Idle loop (`sys_yield`) | `main.rs` | 37-39 |
@@ -145,7 +145,7 @@
 
 | What | File | Line |
 |---|---|---|
-| Entry (`_start`) | `main.rs` | 1288 |
+| Entry (`_start`) | `main.rs` | 1301 |
 | `EarlyArgs` struct | `main.rs` | 43-98 |
 | FS helper: `run_fs_touch` | `main.rs` | 739 |
 | FS helper: `run_fs_cat` | `main.rs` | 767 |
@@ -213,6 +213,7 @@
 | `docs/NovaOS_Verification_Spec.md` | Verification spec |
 | `docs/NovaOS_Memory_Error_Spec.md` | Memory error spec |
 | `docs/CAPABILITY_MODEL.md` | Capability model — CSpace layout per service |
+| `docs/SERVICE_CONTRACTS.md` | Service interface contracts — fs_server/serial_server/user_app IPC protocols |
 | `skills/NovaOS_Project/SKILL.md` | opencode skill for NovaOS development |
 
 ---

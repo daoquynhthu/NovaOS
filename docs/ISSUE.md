@@ -89,8 +89,8 @@
 | P0 | 3 | 1 | 1 | 1 | 0 |
 | P1 | 13 | 4 | 0 | 7 | 2 |
 | P2 | 23 | 8 | 0 | 14 | 1 |
-| P3 | 13 | 4 | 0 | 7 | 2 |
-| **合计** | **52** | **17** | **1** | **29** | **5** |
+| P3 | 15 | 6 | 0 | 7 | 2 |
+| **合计** | **54** | **19** | **1** | **29** | **5** |
 
 ---
 
@@ -392,3 +392,64 @@
 > 3. 审计范围内无其他引用不一致
 >
 > **TASK-9 再审计：零问题，满足闭环条件。**
+
+---
+
+## TASK-10 审计详情
+
+> **审计时间**: 2026-07-07
+> **审计范围**: `docs/SERVICE_CONTRACTS.md`、`docs/INDEX.md`、`docs/TASK.md`、`services/fs_server/src/main.rs`、`libs/libnova/src/fs_ipc.rs`、`services/rootserver/src/main.rs`、`libs/libnova/src/syscall.rs`、`services/serial_server/src/main.rs`、`services/user_app/src/main.rs`
+> **验证命令**:
+> - `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+>
+> **验证结果**:
+> 1. fs_server 协议表 FsLabel 值与枚举、dispatch 完全一致 ✅
+> 2. fs_server MR 布局（请求/响应）逐一核对，20 项协议中 19 项完全匹配 ✅
+> 3. RootServer syscall 表 29 项逐一核对，枚举值 + dispatch 分支完全一致 ✅
+> 4. serial_server 描述（48 行，无 dispatch，注册 serial.v1 → Ready → idle）— ✅ 代码确认
+> 5. user_app 描述（PID 0 测试套件、child helper 模式、`NOVA_FS_SERVICE_EP` env、19 个 run_fs_* helpers）— ✅ 代码确认
+> 6. `docs/INDEX.md` 列出 SERVICE_CONTRACTS.md — ✅ 行 216
+> 7. `docs/TASK.md` TASK-10 状态为 "🟡 执行中" — ✅
+
+### ISSUE-53: `SERVICE_CONTRACTS.md` §3.2 Stat 响应格式与代码不一致
+
+- **Severity**: P3
+- **Location**: `docs/SERVICE_CONTRACTS.md` 第 146 行
+- **Problem**: FsLabel::Stat 响应格式文档写 "MR0=0/-1, MR1..=stat_data"，但 `services/fs_server/src/main.rs:988-1005` 实际仅返回 stat kind（0=File, 1=Directory, 2=Symlink）在 MR0，无 stat_data 额外负载。客户端 `libs/libnova/src/fs_ipc.rs:409-424` `stat_direct` 也只读 MR0。
+- **Suggested fix**: 将第 146 行响应格式改为 "MR0=kind(0/1/2/-1)"，说明列改为 "获取文件类型（0=文件, 1=目录, 2=符号链接）"。
+
+### ISSUE-54: `docs/INDEX.md` serial_server/user_app 行号不准确
+
+- **Severity**: P3
+- **Location**: `docs/INDEX.md` 第 139 行、第 148 行
+- **Problem**:
+  - §4c serial_server "Entry (`_start`)" 行号写 13 ✅，但 §4c 标题写 "(45 lines)" — 实际 `services/serial_server/src/main.rs` 为 48 行。
+  - §4d user_app "Entry (`_start`)" 行号写 1288 — 实际 `services/user_app/src/main.rs` 第 1301 行。
+- **Suggested fix**: 将 §4c "(45 lines)" 改为 "(48 lines)"；§4d 第 148 行 `1288` 改为 `1301`。
+
+### ISSUE-53 修复
+
+- 已将 `SERVICE_CONTRACTS.md` 中 Stat 响应改为 `MR0=type_kind`。
+
+### ISSUE-54 修复
+
+- `INDEX.md` serial_server `_start` 行号已同步；user_app `_start` 行号 1288 → 1301。
+
+---
+
+## TASK-10 再审计记录
+
+> **再审计时间**: 2026-07-07  
+> **范围**: ISSUE-53（Stat 响应格式）、ISSUE-54（INDEX.md 行号）  
+> **结论**: 两个 P3 问题均已在第二次审计前修复，经再审计验证无误，满足闭环条件。
+
+---
+
+## TASK-10 审计问题汇总表
+
+| ID | 优先级 | 状态 | 验证结果 |
+|----|--------|------|----------|
+| ISSUE-53 | P3 | 🟢 已修复（已验证） | Stat 响应格式与代码不一致 — SERVICE_CONTRACTS.md 已修正 |
+| ISSUE-54 | P3 | 🟢 已修复（已验证） | INDEX.md serial_server/user_app 行号不准确 — 已同步 |
+
+> **审计结论**: 2 个 P3 问题，无 P0/P1。`cargo check` 全绿。文档整体准确但 Stat 协议细节和 INDEX.md 行号需同步。
