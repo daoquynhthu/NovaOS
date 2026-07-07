@@ -693,6 +693,14 @@ pub extern "C" fn _start(
         let (_badge, info) = ipc::recv(service_ep_cap);
         let label = info.label();
 
+        // P4.6: Validate minimum message length before dispatching.
+        let min_w = libnova::validate::fs_min_words(label);
+        if (info.length() as usize) < min_w {
+            ipc::set_mr(0, FS_ERR_INVAL as u64);
+            ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
+            continue;
+        }
+
         match FsLabel::from_u64(label) {
             Some(FsLabel::Ping) => {
                 ipc::set_mr(

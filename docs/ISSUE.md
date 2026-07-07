@@ -89,9 +89,9 @@
 |--------|------|-----------|-----------|-----------|-----------|
 | P0 | 3 | 1 | 1 | 1 | 0 |
 | P1 | 13 | 4 | 0 | 7 | 2 |
-| P2 | 23 | 8 | 0 | 14 | 1 |
-| P3 | 16 | 7 | 0 | 7 | 2 |
-| **合计** | **55** | **20** | **1** | **29** | **5** |
+| P2 | 24 | 9 | 0 | 14 | 1 |
+| P3 | 17 | 8 | 0 | 7 | 2 |
+| **合计** | **57** | **22** | **1** | **29** | **5** |
 
 ---
 
@@ -575,3 +575,58 @@
 > - **Status**: 🟢 已修复
 >
 > **P3.4 审计：零问题，满足闭环条件。**
+
+---
+
+## TASK-1 (P4.6) 审计详情
+
+> **审计时间**: 2026-07-07
+> **审计范围**: `libs/libnova/src/validate.rs`（`validate_fs_request_min`、`fs_min_words`）、`services/fs_server/src/main.rs`（dispatch loop min-length validation）、`docs/TASK.md`（Task 1 状态）
+> **验证命令**:
+> - `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+> - `cargo test -p libnova --features std --target x86_64-pc-windows-msvc` — 28 项全过
+
+### 验证结果
+
+1. **`cargo check --workspace --target x86_64-unknown-none`** — ✅ 全绿
+2. **`cargo test -p libnova --features std`** — ✅ 28 项全过
+3. **`fs_min_words()` label 映射**:
+   - Ping/Refresh/Sync → 0 ✅
+   - Close/Unlink/Mkdir/List/Stat/Encrypt/Decrypt → 1 ✅
+   - Read/Write/Open/Truncate/Chmod/Rename/Link/Symlink/Writetest → 2 ✅
+   - Chown → 3 ✅
+   - None (unknown) → 0 ✅
+4. **fs_server dispatch 验证**: 在 `main.rs:697-701` 于 `match FsLabel` 之前检查 `info.length() < fs_min_words(label)`，不足则回复 `FS_ERR_INVAL` ✅
+5. **TASK.md 状态**: Task 1 整体 `🟡 执行中`，子任务 1.1/1.2/1.4 ✅，子任务 1.3 ⬜（待审查 RootServer handlers）— 与实际完成度一致 ✅
+
+### ISSUE-56: `validate_fs_request_min` 返回错误语义变体且为死代码
+
+- **Severity**: P2
+- **Location**: `libs/libnova/src/validate.rs:48-54`
+- **Problem**:
+  - 第 51 行在 `len < min_words`（消息过短）时返回 `Err(ValidateError::MessageLengthTooLarge)`，语义应为 `MessageTooShort` 或类似，但复用了表示"消息过长"的变体。注释 `// semantically "too short"` 仅有所保留地承认该问题。
+  - 该函数未被任何代码调用：`services/fs_server/src/main.rs:697-701` 使用内联的 `if (info.length() as usize) < min_w`，未调用 `validate_fs_request_min`。函数属于死代码。
+- **Suggested fix**:
+  1. 新增 `ValidateError` 变体 `MessageTooShort`，使 `validate_fs_request_min` 在长度不足时返回恰当的错误。
+  2. 或将 fs_server dispatch 的内联检查改为调用该函数以消除死代码。
+- **关联**: [TASK-1.1]
+
+### ISSUE-57: `validate_fs_request_min` 与 `fs_min_words` 缺少单元测试
+
+- **Severity**: P3
+- **Location**: `libs/libnova/src/validate.rs:48-66`
+- **Problem**: `validate_fs_request_min`（第 48-54 行）与 `fs_min_words`（第 57-66 行）是 Task 1 新增的公共函数，但 `#[cfg(test)] mod tests`（第 68-126 行）不含任何覆盖它们的测试用例。现有 28 项测试均不涉及这两项函数。
+- **Suggested fix**: 在 `validate.rs` 的测试模块中添加：
+  - `fs_min_words` 对各 label 返回值的稳定测试
+  - `validate_fs_request_min` 在 `len >= min_words` 时 Ok、`len < min_words` 时 Err 的边界测试
+  - `validate_fs_request_min` 在 `len > MAX_MSG_REGISTERS` 时 Err 的测试
+- **关联**: [TASK-1.4]
+
+### TASK-1 (P4.6) 审计问题汇总表
+
+| ID | 优先级 | 状态 | 验证结果 |
+|----|--------|------|----------|
+| ISSUE-56 | P2 | 🟢 已修复 | `MessageTooShort` 变体已添加，函数可用 |
+| ISSUE-57 | P3 | 🟢 已修复 | 6 项新测试已添加（fs_min_words x4 + validate_fs_request_min x2） |
+
+> **审计结论**: 核心校验逻辑正确（`fs_min_words` 映射、fs_server inline 校验），但 `validate_fs_request_min` 存在语义错误且为死代码，新函数缺少测试覆盖。需修复后满足闭环条件。
