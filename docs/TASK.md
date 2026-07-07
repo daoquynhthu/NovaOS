@@ -81,7 +81,7 @@
 | # | 子任务 | 状态 | 说明 |
 |---|--------|------|------|
 | 4.1.1 | 移除 fs_server 的 epoch-based lazy refresh：删除 `ensure_local_fs_fresh`、`refresh_local_fs`、`LOCAL_FS_EPOCH` | ✅ | fs_server 从 boot 起直接持有 NovaFS，无需 epoch 同步 |
-| 4.1.2 | 在 `libnova` 或 `novafs-core` 中创建共享内存块设备，使 fs_server 与 RootServer 共享同一块设备数据 | ⬜ | 需要 `SharedMemoryBlockDevice` 或直接内存映射块设备 |
+| 4.1.2 | 在 `novafs-core` 中创建 `SharedMemoryBlockDevice`，使 fs_server 与 RootServer 共享同一块设备数据 | ✅ | `SharedMemoryBlockDevice` 已添加，支持 `shared_blocks()` 返回 `Arc<Mutex<Vec<...>>>` |
 | 4.1.3 | 将 fs_server 的 `RemoteBlockDevice` 替换为真实块设备，移除 `sys_block_read/write` 回调 | ⬜ | fs_server 直接持有块设备实例 |
 | 4.1.4 | 从 fs_server 移除 `Refresh` 标签处理器 | ✅ | 已删除（无 client 端影响，返回 not-implemented） |
 | 4.1.5 | `cargo check --workspace --target x86_64-unknown-none` 与回归测试 | 🟡 | 当前全绿通过 |
