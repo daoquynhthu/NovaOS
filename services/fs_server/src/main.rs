@@ -14,7 +14,7 @@ use libnova::fs_ipc::{
 };
 use libnova::ipc;
 use libnova::syscall::{
-    sys_block_info, sys_block_read, sys_block_write, sys_brk, sys_fs_view_epoch,
+    sys_block_info, sys_block_read, sys_block_write, sys_brk,
     sys_service_set_ready,
 };
 use novafs_core::{block_device::BlockDevice, FileSystem, FileType, Inode, NovaFS};
@@ -56,7 +56,8 @@ static WRITE_COUNT: AtomicU64 = AtomicU64::new(0);
 static CLOSE_COUNT: AtomicU64 = AtomicU64::new(0);
 static FS_STATE: Mutex<Option<FsState>> = Mutex::new(None);
 static DISK_FS: Mutex<Option<Arc<dyn FileSystem>>> = Mutex::new(None);
-static LOCAL_FS_EPOCH: AtomicU64 = AtomicU64::new(0);
+// LOCAL_FS_EPOCH retired in P4.1: fs_server now owns NovaFS from boot.
+// static LOCAL_FS_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 const FS_ERR_BADF: i64 = -9;
 const FS_ERR_NOENT: i64 = -2;
@@ -206,28 +207,7 @@ fn mount_local_fs(syscall_ep_cap: seL4_CPtr) -> Result<(), &'static str> {
     let fs_arc = Arc::new(fs.clone());
     let fs_trait: Arc<dyn FileSystem> = fs_arc;
     *DISK_FS.lock() = Some(fs_trait);
-    LOCAL_FS_EPOCH.store(sys_fs_view_epoch(syscall_ep_cap), Ordering::Relaxed);
-    Ok(())
-}
-
-fn refresh_local_fs(syscall_ep_cap: seL4_CPtr) -> Result<(), &'static str> {
-    {
-        let mut state = FS_STATE.lock();
-        *state = Some(FsState::new());
-    }
-    mount_local_fs(syscall_ep_cap)
-}
-
-fn ensure_local_fs_fresh(syscall_ep_cap: seL4_CPtr) -> Result<(), &'static str> {
-    let remote_epoch = sys_fs_view_epoch(syscall_ep_cap);
-    let local_epoch = LOCAL_FS_EPOCH.load(Ordering::Relaxed);
-    if remote_epoch != 0 && remote_epoch != local_epoch {
-        println!(
-            "[FS_SERVER] refreshing stale view local_epoch={} remote_epoch={}",
-            local_epoch, remote_epoch
-        );
-        refresh_local_fs(syscall_ep_cap)?;
-    }
+    // P4.1: epoch tracking retired; fs_server owns NovaFS from boot.
     Ok(())
 }
 
@@ -732,17 +712,6 @@ pub extern "C" fn _start(
                 ipc::set_mr(3, pack_u32_pair(read, write));
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 4));
             }
-            Some(FsLabel::Refresh) => {
-                let res = match refresh_local_fs(syscall_ep_cap) {
-                    Ok(()) => 0,
-                    Err(e) => {
-                        println!("[FS_SERVER] refresh failed: {}", e);
-                        FS_ERR_IO
-                    }
-                };
-                ipc::set_mr(0, res as u64);
-                ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-            }
             Some(FsLabel::Open) => {
                 let path_len = ipc::get_mr(0) as usize;
                 let mode = ipc::get_mr(1);
@@ -757,11 +726,7 @@ pub extern "C" fn _start(
                         continue;
                     }
                 };
-                if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
-                    ipc::set_mr(0, FS_ERR_IO as u64);
-                    ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                    continue;
-                }
+
                 println!("[FS_SERVER] open path={} mode={}", path_str, mode);
 
                 let Some(fs) = current_fs() else {
@@ -864,11 +829,7 @@ pub extern "C" fn _start(
                         continue;
                     }
                 };
-                if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
-                    ipc::set_mr(0, FS_ERR_IO as u64);
-                    ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                    continue;
-                }
+
                 let res = current_fs()
                     .map(|fs| local_mkdir(&fs, path_str))
                     .unwrap_or(FS_ERR_IO);
@@ -889,11 +850,7 @@ pub extern "C" fn _start(
                         continue;
                     }
                 };
-                if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
-                    ipc::set_mr(0, FS_ERR_IO as u64);
-                    ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                    continue;
-                }
+
                 let res = current_fs()
                     .map(|fs| local_truncate(&fs, path_str, size))
                     .unwrap_or(FS_ERR_IO);
@@ -914,11 +871,7 @@ pub extern "C" fn _start(
                         continue;
                     }
                 };
-                if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
-                    ipc::set_mr(0, FS_ERR_IO as u64);
-                    ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                    continue;
-                }
+
                 let res = current_fs()
                     .map(|fs| local_chmod(&fs, path_str, mode))
                     .unwrap_or(FS_ERR_IO);
@@ -940,11 +893,7 @@ pub extern "C" fn _start(
                         continue;
                     }
                 };
-                if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
-                    ipc::set_mr(0, FS_ERR_IO as u64);
-                    ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                    continue;
-                }
+
                 let res = current_fs()
                     .map(|fs| local_chown(&fs, path_str, uid, gid))
                     .unwrap_or(FS_ERR_IO);
@@ -952,11 +901,7 @@ pub extern "C" fn _start(
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
             }
             Some(FsLabel::Sync) => {
-                if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
-                    ipc::set_mr(0, FS_ERR_IO as u64);
-                    ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                    continue;
-                }
+
                 let res = current_fs().map(|fs| local_sync(&fs)).unwrap_or(FS_ERR_IO);
                 ipc::set_mr(0, res as u64);
                 ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
@@ -974,11 +919,7 @@ pub extern "C" fn _start(
                         continue;
                     }
                 };
-                if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
-                    ipc::set_mr(0, FS_ERR_IO as u64);
-                    ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                    continue;
-                }
+
                 let res = current_fs()
                     .map(|fs| local_ls(&fs, path_str))
                     .unwrap_or(FS_ERR_IO);
@@ -1017,11 +958,7 @@ pub extern "C" fn _start(
                         continue;
                     }
                 };
-                if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
-                    ipc::set_mr(0, FS_ERR_IO as u64);
-                    ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                    continue;
-                }
+
                 let res = current_fs()
                     .map(|fs| local_encrypt(&fs, path_str))
                     .unwrap_or(FS_ERR_IO);
@@ -1041,11 +978,7 @@ pub extern "C" fn _start(
                         continue;
                     }
                 };
-                if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
-                    ipc::set_mr(0, FS_ERR_IO as u64);
-                    ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                    continue;
-                }
+
                 let res = current_fs()
                     .map(|fs| local_decrypt(&fs, path_str))
                     .unwrap_or(FS_ERR_IO);
@@ -1092,11 +1025,7 @@ pub extern "C" fn _start(
                     }
                 };
 
-                if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
-                    ipc::set_mr(0, FS_ERR_IO as u64);
-                    ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                    continue;
-                }
+
                 let res = current_fs()
                     .map(|fs| local_rename(&fs, old_path, new_path))
                     .unwrap_or(FS_ERR_IO);
@@ -1147,11 +1076,7 @@ pub extern "C" fn _start(
                         }
                     };
 
-                if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
-                    ipc::set_mr(0, FS_ERR_IO as u64);
-                    ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                    continue;
-                }
+
                 let res = current_fs()
                     .map(|fs| local_link(&fs, target_path, link_path))
                     .unwrap_or(FS_ERR_IO);
@@ -1202,11 +1127,7 @@ pub extern "C" fn _start(
                         }
                     };
 
-                if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
-                    ipc::set_mr(0, FS_ERR_IO as u64);
-                    ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                    continue;
-                }
+
                 let res = current_fs()
                     .map(|fs| local_symlink(&fs, target, link_path))
                     .unwrap_or(FS_ERR_IO);
@@ -1294,11 +1215,7 @@ pub extern "C" fn _start(
                     }
                 };
 
-                if ensure_local_fs_fresh(syscall_ep_cap).is_err() {
-                    ipc::set_mr(0, FS_ERR_IO as u64);
-                    ipc::reply(ipc::MessageInfo::new(0, 0, 0, 1));
-                    continue;
-                }
+
 
                 println!(
                     "[FS_SERVER] writetest begin path={} size_kb={}",
