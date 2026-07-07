@@ -19,7 +19,7 @@
 | 架构文档归档 | ✅ | 四份 docs/*.md 加 ARCH-ID |
 | `test_output.txt` 清理 | ✅ | git rm + .gitignore |
 
-## Phase 1: 构建系统统一化
+## Phase 1: 构建系统统一化 ✅（已完成）
 
 **目标**: 消除跨平台脚本碎片、统一构建目录、补齐基础设施配置。
 
@@ -103,13 +103,13 @@
 
 | ID | 项 | 优先级 | 依赖 |
 |----|-----|--------|------|
-| P4.1 | fs_server 直接持有块设备 + NovaFS 实例 | P0 | P2.1 |
-| P4.2 | 解除 FS_SYNC_FORWARD_ENABLED=false 死锁 | P0 | P4.1 |
-| P4.3 | Shell 命令全部迁移到 fs_server | P1 | P4.1 |
-| P4.4 | RootServer 降权收口（仅保留最小编排职责） | P2 | P4.2 |
-| P4.5 | 每个用户态进程/服务获得独立派生 CSpace，不再共享根 CNode | P0 | P2.7 |
+| P4.1 | 每个用户态进程/服务获得独立派生 CSpace，不再共享根 CNode（实现阶段） | P0 | P2.7 |
+| P4.2 | fs_server 直接持有块设备 + NovaFS 实例 | P0 | P4.1 |
+| P4.3 | 解除 FS_SYNC_FORWARD_ENABLED=false 死锁 | P0 | P4.2 |
+| P4.4 | Shell 命令全部迁移到 fs_server | P1 | P4.2 |
+| P4.5 | RootServer 降权收口（仅保留最小编排职责） | P2 | P4.3 |
 | P4.6 | IPC 入口统一校验：消息长度、 capability 索引范围、权限位 | P1 | P2.8 |
-| P4.7 | 关闭或过滤内核 debug syscall（`seL4_SysDebugHalt` 等） | P1 | P4.4 |
+| P4.7 | 关闭或过滤内核 debug syscall（`seL4_SysDebugHalt` 等） | P1 | P4.5 |
 
 ## Phase 5: 安全强化与审计
 
@@ -122,7 +122,7 @@
 | P5.1 | 替换自定义 ChaCha20 为 `chacha20poly1305` 审计实现 | P0 | P4.1 |
 | P5.2 | 每文件独立随机 nonce，替换 inode 派生 nonce | P0 | P5.1 |
 | P5.3 | NovaFS 多操作并发锁保护（inode bitmap、superblock race） | P1 | P4.1 |
-| P5.4 | `fork` 不继承父进程 fd 表，子进程重新初始化 | P1 | P4.6 |
+| P5.4 | `fork` 不继承父进程 fd 表，子进程重新初始化 | P1 | P4.6 (new) |
 | P5.5 | IPC 消息解析 fuzz 测试 + 边界覆盖 | P1 | P1.5.2 |
 | P5.6 | 安全审计清单：CSpace、IPC、加密、并发、debug syscall | P2 | P5.1 |
 
