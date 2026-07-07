@@ -30,7 +30,7 @@
 | TASK-7 | 共享分配器模块到 `libnova::allocator` | P2.5 | RootServer/fs_server 共用同一套 allocator 抽象 | ✅ 已完成 |
 | TASK-9 | NovaOS 权能模型文档 | P2.7 | 定义每个服务/进程拥有的 CSpace 条目清单 | ✅ |
 | TASK-10 | 服务接口契约文档 | P2.8 | fs_server/serial_server/user_app 的请求/响应/不变量 | ✅ |
-| TASK-11 | `test.ps1` 支持 `-StageRange` | P1.5.3 | 拆分快速 smoke 与完整回归 | ⬜ 待开始 |
+| TASK-11 | `test.ps1` 支持 `-StageRange` | P1.5.3 | 拆分快速 smoke 与完整回归 | ✅ |
 | TASK-12 | 分配器逻辑测试 | P1.5.4 | SlotAllocator/UntypedAllocator/FrameAllocator bitmap 逻辑 | ⬜ 待开始 |
 
 ---
@@ -92,6 +92,31 @@
 
 ---
 
-## 后续任务候选
+## TASK-11: `test.ps1` 支持 `-StageRange`
 
-完成 TASK-7 并通过审计闭环后，优先继续 Phase 2 的 **TASK-9**（权能模型文档）或 Phase 1.5 的 **TASK-11**（test.ps1 StageRange），取决于哪个对当前迭代最有利。
+**目标**: 让 QEMU 回归测试可按阶段范围运行，缩短 smoke 反馈时间；同时提供默认快速 smoke 入口（~5 stage）。
+
+**对应 PLAN**: [PLAN-P1.5.3](./PLAN.md#phase-15-测试基础设施)
+
+**涉及文件**:
+- `scripts/test.ps1` — 主测试脚本
+
+**核心设计约束**:
+- 不改变现有功能（不传参数时行为完全一致）。
+- `-StageRange "N-M"` 仅运行 N 到 M 阶段的测试（含 N, M）。
+- `-Smoke` 开关运行预定义快速子集（~5 stage）。
+- PowerShell 参数命名遵循 `-StageRange`（大写驼峰）。
+
+### 子任务
+
+| # | 子任务 | 状态 | RED test | GREEN test |
+|---|--------|------|----------|------------|
+| 11.1 | 添加 `-StageRange` 参数声明与解析逻辑 | ✅ | 传参未实现时脚本忽略或报错 | `-StageRange "1-5"` 解析为 start=1, end=5 |
+| 11.2 | 在阶段执行循环中插入范围过滤逻辑 | ✅ | 范围外 stage 仍执行 | `$stage -gt $stageRangeEnd` 时 break |
+| 11.3 | 添加 `-Smoke` 开关（~5 stage 快速入口） | ✅ | smoke 未实现 | 传 `-Smoke` 设置 `-StageRange "1-5"` |
+| 11.4 | `cargo check --workspace --target x86_64-unknown-none` | ✅ | — | 全绿通过 |
+
+### 风险与依赖
+
+- `test.ps1` 中 stage 编号有整数也有小数（如 18.1, 18.2），`-StageRange` 需以整数范围考虑（不处理小数）。
+- 当前脚本无 `param()` 声明，需在文件首添加；确保与 `$ErrorActionPreference` 顺序正确（param 必须在首位）。

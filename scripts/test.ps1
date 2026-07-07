@@ -1,4 +1,30 @@
+param(
+    [string]$StageRange = "",
+    [switch]$Smoke = $false
+)
+
 $ErrorActionPreference = "Stop"
+
+# Parse stage range
+$stageRangeStart = 0
+$stageRangeEnd = 999
+
+if ($Smoke) {
+    $StageRange = "1-5"
+}
+
+if ($StageRange -ne "") {
+    $match = [regex]::Match($StageRange, '^(\d+)-(\d+)$')
+    if (-not $match.Success) {
+        Write-Error "-StageRange format: N-M (e.g. '1-5')"
+        exit 1
+    }
+    $stageRangeStart = [int]$match.Groups[1].Value
+    $stageRangeEnd = [int]$match.Groups[2].Value
+}
+
+$script:stageRangeStart = $stageRangeStart
+$script:stageRangeEnd = $stageRangeEnd
 
 # Set up environment variables
 $root = Split-Path $PSScriptRoot -Parent
@@ -262,6 +288,9 @@ $qemuArgs += @(
     "-accel", $accel
 )
 
+if ($StageRange -ne "") {
+    Write-Host "Stage range: $StageRange (start=$stageRangeStart, end=$stageRangeEnd)" -ForegroundColor DarkGray
+}
 Write-Host "Starting QEMU (Port $serialPort)..."
 $process = Start-Process -FilePath $qemu -ArgumentList $qemuArgs -PassThru -NoNewWindow
 
@@ -382,6 +411,11 @@ try {
             }
             Write-Host "Buffer Dump:"
             Write-Host $buffer
+            break
+        }
+
+        if ($stage -gt $script:stageRangeEnd) {
+            $testPassed = $true
             break
         }
 
