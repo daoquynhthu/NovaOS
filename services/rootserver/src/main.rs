@@ -2182,7 +2182,8 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
 
                     if fault_addr >= DEMAND_PAGING_START && fault_addr < DEMAND_PAGING_END {
                         let aligned_addr = fault_addr & !0xFFF; // Align to 4K
-                        println!(
+                        log_debug!(
+                            libnova::log::DOM_PAGING,
                             "[KERNEL] Demand Paging(pid={}): Mapping 0x{:x} (IP: 0x{:x}, Prefetch: {}) for fault at 0x{:x}",
                             pid,
                             aligned_addr,

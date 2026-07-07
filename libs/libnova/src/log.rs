@@ -31,6 +31,7 @@ pub const DOM_APIC: u32 = 1 << 12; // APIC/IOAPIC config
 pub const DOM_PCI: u32 = 1 << 13; // PCI enumeration
 pub const DOM_DISK: u32 = 1 << 14; // Disk/ATA I/O
 pub const DOM_IPC: u32 = 1 << 15; // IPC tracing
+pub const DOM_PAGING: u32 = 1 << 16; // Demand paging / page faults
 
 // Domain mask (enables/disables specific domains)
 static DOMAIN_MASK: AtomicU32 = AtomicU32::new(0xFFFF_FFFF);

@@ -24,7 +24,7 @@
 | P3.1 | sync + 重启 + 一致性校验回归测试 | P3.1 | 持久化、重启恢复、一致性检查 host 测试 | ✅ |
 | P3.2 | 目录项/位图/inode 一致性检查 | P3.2 | 通过 P3.1 的 `check_consistency()` 实现，已完成 | ✅ |
 | P3.3 | 异常中断后恢复验证 | P3.3 | 在 `novafs_host.rs` 中添加 crash + snapshot 回滚测试 | ✅ |
-| P3.4 | 日志分级治理 | P3.4 | 为 RootServer demand paging 场景配置日志分级 | ⬜ 待开始 |
+| P3.4 | 日志分级治理 | P3.4 | 为 RootServer demand paging 场景配置日志分级 | ✅ |
 
 ---
 
@@ -51,3 +51,23 @@
 | 3.1.2 | 在 `novafs_host.rs` 添加写入→sync→快照→重启→验证测试 | ✅ | 无此测试 | `sync_and_reboot` 通过 |
 | 3.1.3 | 在 `novafs_host.rs` 添加一致性检查回归测试（正常 FS + 空 FS） | ✅ | 无此测试 | `consistency_check_ok`、`consistency_check_empty` 通过 |
 | 3.1.4 | `cargo test -p novafs-core --features std` | ✅ | — | 7 项全部通过 |
+
+---
+
+## P3.4: 日志分级治理 — Demand Paging 节流
+
+**目标**: 将 RootServer demand paging 处理中的 verbose `println!` 迁移到 gated `log_debug!` 宏，使用专门的 `DOM_PAGING` 域，使其可通过 `NOVA_LOG_LEVEL` 环境变量控制。
+
+**对应 PLAN**: [PLAN-P3.4](./PLAN.md#phase-3-novafs-耐久性与一致性)
+
+**涉及文件**:
+- `libs/libnova/src/log.rs` — 新增 `DOM_PAGING` 域常量
+- `services/rootserver/src/main.rs` — demand paging `println!` 改为 `log_debug!`
+
+### 子任务
+
+| # | 子任务 | 状态 | 说明 |
+|---|--------|------|------|
+| 3.4.1 | 在 `log.rs` 添加 `DOM_PAGING` 域 | ✅ | 已添加 |
+| 3.4.2 | 将 `main.rs` demand paging `println!` 改为 `log_debug!(DOM_PAGING, ...)` | ✅ | 已替换 |
+| 3.4.3 | `cargo check --workspace --target x86_64-unknown-none` | ✅ | 全绿通过 |

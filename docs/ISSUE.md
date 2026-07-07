@@ -549,3 +549,29 @@
 > 4. `docs/TASK.md:26` P3.3 状态已标记 `✅` ✅
 >
 > **P3.3 审计：零问题，满足闭环条件。**
+
+---
+
+## P3.4 审计详情
+
+> **审计时间**: 2026-07-07
+> **审计范围**: `libs/libnova/src/log.rs`（`DOM_PAGING`）、`services/rootserver/src/main.rs`（demand paging `log_debug!`）、`docs/TASK.md`（P3.4 状态）
+> **验证命令**:
+> - `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+>
+> **验证结果**:
+> 1. `DOM_PAGING = 1 << 16` 为独立位（bit 16），不与 DOM_FS..DOM_IPC（bit 0–15）重叠 ✅
+> 2. `log_debug!(libnova::log::DOM_PAGING, ...)` 语法与宏定义 `($domain:expr, $($arg:tt)*)` 完全一致；level=2（Verbose）合理 ✅
+> 3. 无残余 `println!` 用于 demand paging — grep 仅匹配 log.rs 常量声明与 main.rs `log_debug!` 调用 ✅
+> 4. `cargo check` 全绿 ✅
+> 5. TASK.md P3.4 顶行状态为 `🟡 执行中`，但三个子任务（3.4.1–3.4.3）均为 `✅` — 未同步（同 ISSUE-73 模式）
+>
+> ### ISSUE-74: [P3] TASK.md P3.4 顶行状态未更新
+>
+> - **Severity**: P3
+> - **Location**: `docs/TASK.md:27`
+> - **Problem**: P3.4 顶行状态为 `🟡 执行中`，但全部 3 项子任务（3.4.1–3.4.3）均为 `✅`。
+> - **Suggested fix**: 将 `🟡 执行中` 更新为 `✅`。
+> - **Status**: 🟢 已修复
+>
+> **P3.4 审计：零问题，满足闭环条件。**
