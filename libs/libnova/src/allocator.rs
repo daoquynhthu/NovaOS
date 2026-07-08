@@ -184,7 +184,10 @@ impl UntypedAllocator {
         crate::ipc::set_mr(5, num_objects);
 
         let dest_info = crate::ipc::call(service, info);
-        seL4_Error::from(dest_info.expect("Untyped retype IPC failed").label() as i32)
+        match dest_info {
+            Ok(msg) => seL4_Error::from(msg.label() as i32),
+            Err(e) => e,
+        }
     }
 
     pub fn print_info(&self, boot_info: &seL4_BootInfo) {

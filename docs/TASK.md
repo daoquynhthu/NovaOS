@@ -23,7 +23,7 @@
 | 1 | Shell 迁移到 fs_server | P4.4 (new) | P1 | P4.2 | ⏳ |
 | 2 | RootServer 降权收口 | P4.5 (new) | P2 | P4.3, P4.4 | ⏳ |
 | 3 | 关闭 debug syscall | P4.7 (new) | P1 | P4.5 | ⏳ |
-| D1 | QEMU 回归验证 | P4 债务 | P0 | 全部修复 | ⏳ |
+| D1 | QEMU 回归验证 | P4 债务 | P0 | 全部修复 | ✅ |
 | D2 | clippy 债务削减 | P4 债务 | P1 | — | ⏳ |
 | D3 | ISSUE-83 决策 | P4 债务 | P3 | — | ⏳ |
 

@@ -528,15 +528,25 @@ impl Process {
             .map_err(Error::from)?;
 
         // 1b. Allocate independent CNode (CapTable) for this process's CSpace.
-        //     Size bits match the root CNode (4096 entries) for full compatibility.
-        let cspace_cap = allocator
-            .allocate(
-                boot_info,
-                api_object_seL4_CapTableObject.into(),
-                sel4_sys::CONFIG_ROOT_CNODE_SIZE_BITS.into(),
-                slots,
-            )
-            .map_err(Error::from)?;
+        //     256 entries (size_bits=8, 4KB) is enough for any service.
+        //     Each service needs only: syscall endpoint (slot 0),
+        //     optional ATA ports (slots 1-2), and a few frame caps.
+        //     Falls back to root CNode if untyped memory is exhausted.
+        let cspace_cap = match allocator.allocate(
+            boot_info,
+            api_object_seL4_CapTableObject.into(),
+            8,
+            slots,
+        ) {
+            Ok(cap) => cap,
+            Err(_) => {
+                println!(
+                    "[Process] Warning: Could not allocate independent CNode for '{}', using root CNode.",
+                    name
+                );
+                0
+            }
+        };
 
         // 2. Create TCB
         let tcb_cap = allocator

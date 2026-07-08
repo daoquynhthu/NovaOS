@@ -400,3 +400,20 @@
 **说明**：
 - 本次是用户授权的 PLAN.md 有限修改（仅修正 P4.6 描述）
 - 权限检查架构未变：handler 内部 `check_permission` 是真正生效的检查
+
+## 2026-07-08: D1 QEMU 回归验证完成
+
+**完成项**：
+- 在 WSL 中重建 kernel 并修复 PCID 不兼容问题（`KernelSupportPCID=OFF`）
+- 修复 `UntypedAllocator::untyped_retype` 在 OOM 时 panic（改为返回错误传播）
+- 缩小 P4.1 独立 CNode 尺寸（12→8 bits，4096→256 slots，64KB→4KB）
+- 为 `Process::create` 添加 CNode 分配失败后回退到 root CNode 的逻辑
+- 验证 QEMU Smoke 测试（stage 1-5）：内核启动 → Shell → 用户程序运行 → FS 测试通过
+
+**已知问题**：
+- ISSUE-88: fs_server 启动后 TCB Illegal operation（P3，待修复）
+
+**验证**：
+- `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+- `cargo test -p libnova --features std --target x86_64-pc-windows-msvc` — 34 passed
+- `test.ps1 -Smoke` — 内核启动成功，Shell 就绪，用户程序执行并退出

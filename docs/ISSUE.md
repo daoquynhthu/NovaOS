@@ -868,3 +868,34 @@ P4.2(2.1) 审计：零问题，满足闭环条件。
 - **问题**: `handle_read` 限制 `len` 为 `MAX_READ_LEN (900)`，但 `handle_write` 原样使用 `ctx.mrs[1]`，然后 `alloc::vec![0u8; len]`。与 `handle_read` 不对称，且 SERVICE_CONTRACTS.md 声明最大读写长度 = 900。
 - **修复**: 添加 `let len = if raw_len > MAX_READ_LEN { MAX_READ_LEN } else { raw_len };`。
 - **状态**: 🟢 已修复（`49745d7`）
+
+---
+
+## D1 QEMU 回归修复审计（2026-07-08）
+
+### ISSUE-85 [P0] kernel 编译 `SUPPORT_PCID=ON` 导致 QEMU TCG 中 halt
+
+- **位置**: `kernel/seL4/src/arch/x86/64/head.S:153-171`
+- **问题**: 内核需要 PCID（CPUID.01H:ECX bit 17），但 QEMU TCG 不支持。`pcid_check` 打印错误后调用 `hang` halt CPU。
+- **修复**: cmake 配置添加 `-DKernelSupportPCID=OFF`。
+- **状态**: 🟢 已修复
+
+### ISSUE-86 [P1] `UntypedAllocator::untyped_retype` 在 IPC 错误时 `expect()` 引发 panic
+
+- **位置**: `libs/libnova/src/allocator.rs:186-187`
+- **问题**: `seL4_Call` 返回 `Err(NotEnoughMemory)` 时 `dest_info.expect()` 直接 panic，阻止上层 fallback。
+- **修复**: 用 `match dest_info { Ok(msg) => ..., Err(e) => e }` 替代 `expect()`。
+- **状态**: 🟢 已修复
+
+### ISSUE-87 [P1] P4.1 独立 CNode 位宽 12 导致 64KB 分配耗尽 untyped
+
+- **位置**: `services/rootserver/src/process.rs:532-539`
+- **问题**: `Process::create` 使用 `CONFIG_ROOT_CNODE_SIZE_BITS(12)` 的 CapTableObject（64KB），3 boot + POST 耗尽 untyped，阻塞所有 `Process::spawn`。
+- **修复**: CNode size_bits 降至 8（256 项，4KB），untyped 耗尽时回退 root CNode。
+- **状态**: 🟢 已修复
+
+### ISSUE-88 [P3] fs_server 启动后 TCB Illegal operation
+
+- **位置**: `spawn_boot_process` 启动 fs_server 后
+- **问题**: fs_server 启动后内核报 `decodeTCBInvocation: TCB: Illegal operation`。可能是 root CNode fallback 下 authority 传递异常。
+- **状态**: 🔴 待修复
