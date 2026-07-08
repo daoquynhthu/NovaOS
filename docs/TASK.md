@@ -11,10 +11,8 @@
 ## 前置状态
 
 - Phase 0–3 已全部完成。
-- P4.1 进展：
-  - ✅ fs_server epoch-based lazy refresh 移除
-  - ✅ `SharedMemoryBlockDevice` 类型就绪
-  - ⏳ `RemoteBlockDevice` 替换阻塞于 seL4 共享内存帧机制（纳入后续独立阶段）
+- P4.1 (new) 独立 CSpace 实现已完成（CapTable CNode 分配 + `cspace_cap` 字段 + `configure` 使用独立 CSpace + `terminate` 回收）。
+- Phase 4 按修订后 PLAN 线性推进。
 - 详情见 [PROGRESS.md](./PROGRESS.md) 与 [INDEX.md](./INDEX.md)。
 
 ---
@@ -25,13 +23,39 @@
 
 | # | 任务 | PLAN | 优先级 | 依赖 | 状态 |
 |---|------|------|--------|------|------|
-| 1 | 独立派生 CSpace（实现阶段） | P4.1 (new) | P0 | — | ✅ |
-| 2 | fs_server 持有块设备 | P4.2 (new) | P0 | P4.1 | ⏳ |
-| 3 | 解除 FS_SYNC_FORWARD 死锁 | P4.3 (new) | P0 | P4.2 | ⏳ |
-| 4 | Shell 迁移到 fs_server | P4.4 (new) | P1 | P4.2 | ⏳ |
-| 5 | RootServer 降权收口 | P4.5 (new) | P2 | P4.3 | ⏳ |
-| 6 | IPC 入口校验（剩余 1.3） | P4.6 (new) | P1 | — | 🟡 |
+| # | 任务 | PLAN | 优先级 | 依赖 | 状态 |
+|---|------|------|--------|------|------|
+| 1 | 独立派生 CSpace | P4.1 (new) | P0 | — | ✅ |
+| 2 | fs_server 持有块设备 | P4.2 (new) | P0 | P4.1 | 🟡 执行中 |
+| 3 | 解除死锁 | P4.3 (new) | P0 | P4.2 | ⏳ |
+| 4 | Shell 迁移 | P4.4 (new) | P1 | P4.2 | ⏳ |
+| 5 | RootServer 降权 | P4.5 (new) | P2 | P4.3 | ⏳ |
+| 6 | IPC 入口校验（收尾） | P4.6 (new) | P1 | — | 🟡 |
 | 7 | 关闭 debug syscall | P4.7 (new) | P1 | P4.5 | ⏳ |
+
+---
+
+## 任务 2: fs_server 持有块设备（P4.2 new）
+
+**目标**: 利用 P4.1 的独立 CSpace 机制，将块设备能力从 RootServer 转移到 fs_server，替换 `RemoteBlockDevice`，使 fs_server 直接读写块设备而不再回调 RootServer 的 `sys_block_read/write`。
+
+**当前状态**:
+- P4.1 已完成：每个进程拥有独立 CNode，`DerivedCNode::install` 可用于安装能力。
+- `RemoteBlockDevice` 仍在使用（fs_server 通过 syscall 回调 RootServer 做块 I/O）。
+- `SharedMemoryBlockDevice` 已就绪作为共享块设备类型。
+
+**核心依赖**: 需要将 ATA PIO 端口能力或块设备共享帧安装到 fs_server 的独立 CNode 中。
+
+**对应 PLAN**: [PLAN-P4.2 (new)](./PLAN.md#phase-4-微内核化推进)
+
+### 子任务
+
+| # | 子任务 | 状态 | 说明 |
+|---|--------|------|------|
+| 2.1 | 用 `DerivedCNode::install` 将 fs_server 所需能力（syscall EP、块设备访问）安装到其独立 CNode | ⬜ | 在 `Process::spawn` 中 fs_server 分支安装能力 |
+| 2.2 | 替换 `RemoteBlockDevice` 为 `SharedMemoryBlockDevice` 或直接 ATA 包装 | ⬜ | fs_server 不再通过 syscall 回调 RootServer |
+| 2.3 | 移除 `sys_block_read/write` 在 fs_server 中的回调依赖 | ⬜ | 清理 `RemoteBlockDevice` 及相关代码 |
+| 2.4 | `cargo check --workspace --target x86_64-unknown-none` 与 QEMU 回归 | ⬜ | 全绿通过 |
 
 ---
 
@@ -56,10 +80,10 @@
 
 | # | 子任务 | 状态 | 说明 |
 |---|--------|------|------|
-| 1.1 | 在 `validate.rs` 添加 `validate_fs_request_min()` 和 `fs_min_words()` 函数 | ✅ | 按 label 校验最小消息字数 |
-| 1.2 | 在 `fs_server/src/main.rs` 主循环添加集中式消息长度校验 | ✅ | 在 `match FsLabel` 之前拒绝 format 错误的请求 |
-| 1.3 | 审查 RootServer 现有 `handlers/*.rs` 校验覆盖 | ⬜ | 确保每个 syscall handler 调用所有适用的 validate 函数 |
-| 1.4 | `cargo check --workspace --target x86_64-unknown-none` 与 host 测试 | ✅ | 全绿通过 |
+| 6.1 | 在 `validate.rs` 添加 `validate_fs_request_min()` 和 `fs_min_words()` 函数 | ✅ | 按 label 校验最小消息字数 |
+| 6.2 | 在 `fs_server/src/main.rs` 主循环添加集中式消息长度校验 | ✅ | 在 `match FsLabel` 之前拒绝 format 错误的请求 |
+| 6.3 | 审查 RootServer 现有 `handlers/*.rs` 校验覆盖 | ⬜ | 确保每个 syscall handler 调用所有适用的 validate 函数 |
+| 6.4 | `cargo check --workspace --target x86_64-unknown-none` 与 host 测试 | ✅ | 全绿通过 |
 
 ---
 
@@ -80,14 +104,4 @@
 | 1.3 | 在 `Process::spawn` 中落实独立 CNode 创建与条目安装 | ✅ | CNode 分配 + `cspace_cap` 字段 + `configure` 使用独立 CSpace |
 | 1.4 | `cargo check --workspace --target x86_64-unknown-none` 与回归测试 | ✅ | 全绿通过 |
 
----
 
-## 任务 3+: 后续阻塞任务
-
-| # | 任务 | 入口条件 |
-|---|------|----------|
-| 3 | fs_server 持有块设备 | 需要 seL4 共享帧映射机制（P4.5 实现后提供能力转移基础） |
-| 4 | 解除 FS_SYNC_FORWARD_ENABLED 死锁 | P4.1 完成后 |
-| 5 | Shell 迁移到 fs_server | P4.1 完成后 |
-| 6 | RootServer 降权收口 | P4.2 完成后 |
-| 7 | 关闭 debug syscall | P4.4 完成后 |
