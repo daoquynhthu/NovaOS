@@ -2497,6 +2497,12 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
 
                 Some(SyscallNum::Send) => {
                     // sys_send (MR0=TargetPID, MR1..3=Msg)
+                    if (info.length() as usize) < 4 {
+                        reply_mrs[0] = 1;
+                        reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
+                        need_reply = true;
+                        continue;
+                    }
                     let target_pid = mrs[0] as usize;
                     let msg_content = [mrs[1], mrs[2], mrs[3], 0];
 

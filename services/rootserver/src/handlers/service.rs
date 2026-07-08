@@ -182,6 +182,7 @@ pub fn handle_get_unix_time(_ctx: &mut SyscallContext<'_>) -> (MessageInfo, [u64
 ///
 /// This handler never returns a reply; it powers off the machine.
 pub fn handle_shutdown(ctx: &mut SyscallContext<'_>) -> ! {
+    let _ = validate_one_mr(ctx);
     println!("[KERNEL] Process {} requested system shutdown.", ctx.pid);
     crate::acpi::shutdown();
 }

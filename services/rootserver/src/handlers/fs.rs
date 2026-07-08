@@ -565,7 +565,8 @@ pub fn handle_write(ctx: &mut SyscallContext<'_>) -> FsHandlerResult {
     }
 
     let fd = ctx.mrs[0] as usize;
-    let len = ctx.mrs[1] as usize;
+    let raw_len = ctx.mrs[1] as usize;
+    let len = if raw_len > MAX_READ_LEN { MAX_READ_LEN } else { raw_len };
 
     if let Err(e) = validate_payload_fits(ctx, 2, len) {
         return error_reply(e);
@@ -1354,7 +1355,7 @@ pub fn handle_block_read(ctx: &mut SyscallContext<'_>) -> FsHandlerResult {
 
 /// Handle `sys_block_write(block_id, 512-byte block) -> 0/-1`.
 pub fn handle_block_write(ctx: &mut SyscallContext<'_>) -> FsHandlerResult {
-    if let Err(e) = validate_message_only(ctx) {
+    if let Err(e) = validate_two_mrs(ctx) {
         return error_reply(e);
     }
 

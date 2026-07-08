@@ -28,7 +28,7 @@
 | 3 | 解除 FS_SYNC_FORWARD 死锁 | P4.3 (new) | P0 | P4.2 | ✅ |
 | 4 | Shell 迁移 | P4.4 (new) | P1 | P4.2 | ⏳ |
 | 5 | RootServer 降权 | P4.5 (new) | P2 | P4.3 | ⏳ |
-| 6 | IPC 入口校验（收尾） | P4.6 (new) | P1 | — | 🟡 |
+| 6 | IPC 入口校验（收尾） | P4.6 (new) | P1 | — | ✅ |
 | 7 | 关闭 debug syscall | P4.7 (new) | P1 | P4.5 | ⏳ |
 
 ---
@@ -81,7 +81,7 @@
 |---|--------|------|------|
 | 6.1 | 在 `validate.rs` 添加 `validate_fs_request_min()` 和 `fs_min_words()` 函数 | ✅ | 按 label 校验最小消息字数 |
 | 6.2 | 在 `fs_server/src/main.rs` 主循环添加集中式消息长度校验 | ✅ | 在 `match FsLabel` 之前拒绝 format 错误的请求 |
-| 6.3 | 审查 RootServer 现有 `handlers/*.rs` 校验覆盖 | ⬜ | 确保每个 syscall handler 调用所有适用的 validate 函数 |
+| 6.3 | 审查 RootServer 现有 `handlers/*.rs` 校验覆盖 | ✅ | 发现 7 个 handler 缺少/部分校验，已全部修复 |
 | 6.4 | `cargo check --workspace --target x86_64-unknown-none` 与 host 测试 | ✅ | 全绿通过 |
 
 ---

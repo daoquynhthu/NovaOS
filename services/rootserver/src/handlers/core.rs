@@ -300,6 +300,9 @@ pub fn handle_spawn(ctx: &mut SyscallContext<'_>) -> (MessageInfo, [u64; 4], boo
     if let Err(e) = validate_message_only(ctx) {
         return error_reply(e);
     }
+    if let Err(e) = validate_two_mrs(ctx) {
+        return error_reply(e);
+    }
 
     let pid = ctx.pid;
     let msg_len = ctx.info.length() as usize;
@@ -566,6 +569,9 @@ pub fn handle_spawn(ctx: &mut SyscallContext<'_>) -> (MessageInfo, [u64; 4], boo
 
 /// Handle `sys_fork()`.
 pub fn handle_fork(ctx: &mut SyscallContext<'_>) -> (MessageInfo, [u64; 4], bool) {
+    if let Err(e) = validate_message_only(ctx) {
+        return error_reply(e);
+    }
     let pid = ctx.pid;
     let fork_res = {
         let pm = get_process_manager();

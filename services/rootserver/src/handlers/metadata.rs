@@ -22,6 +22,9 @@ fn error_reply() -> (MessageInfo, [u64; 4], bool) {
 
 /// Handle `sys_getuid() -> uid`.
 pub fn handle_getuid(ctx: &mut SyscallContext<'_>) -> (MessageInfo, [u64; 4], bool) {
+    if let Err(_e) = validate_one_mr(ctx) {
+        return error_reply();
+    }
     let mut reply_mrs = [0u64; 4];
     reply_mrs[0] = get_process_manager()
         .get_process(ctx.pid)
@@ -51,6 +54,9 @@ pub fn handle_setuid(ctx: &mut SyscallContext<'_>) -> (MessageInfo, [u64; 4], bo
 
 /// Handle `sys_getgid() -> gid`.
 pub fn handle_getgid(ctx: &mut SyscallContext<'_>) -> (MessageInfo, [u64; 4], bool) {
+    if let Err(_e) = validate_one_mr(ctx) {
+        return error_reply();
+    }
     let mut reply_mrs = [0u64; 4];
     reply_mrs[0] = get_process_manager()
         .get_process(ctx.pid)
