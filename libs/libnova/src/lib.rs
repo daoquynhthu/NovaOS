@@ -7,6 +7,7 @@
 extern crate alloc;
 
 pub mod allocator;
+pub mod arch;
 pub mod cap;
 pub mod console;
 pub mod env;

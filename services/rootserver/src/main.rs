@@ -209,6 +209,26 @@ pub(crate) fn spawn_boot_process(
         Ok(mut process) => {
             if process_name == "fs_server" {
                 process.fs_forwarding_enabled = false;
+                // P4.2: Install ATA I/O port capability into fs_server's independent CNode
+                if process.cspace_cap != 0 {
+                    let ata_control = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapIOPortControl as sel4_sys::seL4_CPtr;
+                    let _ = libnova::arch::x86_64::port_io::issue_ioport_cap(
+                        ata_control,
+                        0x1F0,
+                        0x1F7,
+                        process.cspace_cap,
+                        1,
+                        64,
+                    );
+                    let _ = libnova::arch::x86_64::port_io::issue_ioport_cap(
+                        ata_control,
+                        0x3F6,
+                        0x3F7,
+                        process.cspace_cap,
+                        2,
+                        64,
+                    );
+                }
             }
             match get_process_manager().add_process_at(pid, process) {
                 Ok(_) => {

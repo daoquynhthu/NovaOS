@@ -929,7 +929,16 @@ impl Process {
             process.syscall_ep_cap = endpoint_cap;
             let fault_ep_cap = endpoint_cap;
 
+            // P4.2: install syscall endpoint into the process's own CNode at slot 0
             let effective_cspace = if process.cspace_cap != 0 {
+                let root_cnode = CNode::new(cspace_root, 64);
+                let proc_cnode = CNode::new(process.cspace_cap, 64);
+                let _ = proc_cnode.copy(
+                    0, // dest slot: 0 in process's CNode
+                    &root_cnode,
+                    endpoint_cap,
+                    cap_rights_new(false, false, true, true),
+                );
                 process.cspace_cap
             } else {
                 cspace_root
@@ -946,13 +955,15 @@ impl Process {
             println!("[Process] Setting registers: Entry={:x}, SP={:x}, Argc={}, Argv={:x}, EP={}, Envp={:x}", 
                 entry, sp, args.len(), argv_start_vaddr, endpoint_cap, envp_start_vaddr);
 
+            // If process has its own CNode, the endpoint is at slot 0 of that CNode.
+            let process_ep = if process.cspace_cap != 0 { 0 } else { endpoint_cap };
             process.write_registers_ext(
                 entry as seL4_Word,
                 sp as seL4_Word,
                 0x202,
                 args.len() as seL4_Word,
                 argv_start_vaddr as seL4_Word,
-                endpoint_cap as seL4_Word,
+                process_ep as seL4_Word,
                 envp_start_vaddr as seL4_Word,
             )?;
             process.resume()?;
@@ -1130,6 +1141,14 @@ impl Process {
 
             child.ipc_buffer_cap = child_ipc_frame_cap;
             let eff_cspace = if child.cspace_cap != 0 {
+                let root_cnode = CNode::new(cspace_root, 64);
+                let child_cnode = CNode::new(child.cspace_cap, 64);
+                let _ = child_cnode.copy(
+                    0,
+                    &root_cnode,
+                    child.syscall_ep_cap,
+                    cap_rights_new(false, false, true, true),
+                );
                 child.cspace_cap
             } else {
                 cspace_root

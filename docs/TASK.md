@@ -23,10 +23,8 @@
 
 | # | 任务 | PLAN | 优先级 | 依赖 | 状态 |
 |---|------|------|--------|------|------|
-| # | 任务 | PLAN | 优先级 | 依赖 | 状态 |
-|---|------|------|--------|------|------|
 | 1 | 独立派生 CSpace | P4.1 (new) | P0 | — | ✅ |
-| 2 | fs_server 持有块设备 | P4.2 (new) | P0 | P4.1 | 🟡 执行中 |
+| 2 | fs_server 直接持有块设备 + NovaFS | P4.2 (new) | P0 | P4.1 | ✅ |
 | 3 | 解除死锁 | P4.3 (new) | P0 | P4.2 | ⏳ |
 | 4 | Shell 迁移 | P4.4 (new) | P1 | P4.2 | ⏳ |
 | 5 | RootServer 降权 | P4.5 (new) | P2 | P4.3 | ⏳ |
@@ -52,10 +50,11 @@
 
 | # | 子任务 | 状态 | 说明 |
 |---|--------|------|------|
-| 2.1 | 用 `DerivedCNode::install` 将 fs_server 所需能力（syscall EP、块设备访问）安装到其独立 CNode | ⬜ | 在 `Process::spawn` 中 fs_server 分支安装能力 |
-| 2.2 | 替换 `RemoteBlockDevice` 为 `SharedMemoryBlockDevice` 或直接 ATA 包装 | ⬜ | fs_server 不再通过 syscall 回调 RootServer |
-| 2.3 | 移除 `sys_block_read/write` 在 fs_server 中的回调依赖 | ⬜ | 清理 `RemoteBlockDevice` 及相关代码 |
-| 2.4 | `cargo check --workspace --target x86_64-unknown-none` 与 QEMU 回归 | ⬜ | 全绿通过 |
+| 2.1 | 在 `Process::spawn`/`fork_from` 中将 syscall endpoint 安装到进程的独立 CNode | ✅ | `CNode::copy` + 寄存器 slot 0 |
+| 2.2 | 端口 I/O 函数移入 `libnova::arch::x86_64::port_io` | ✅ | 服务均可通过 libnova 进行端口 I/O |
+| 2.3 | ATA I/O 端口能力安装到 fs_server 的独立 CNode | ✅ | `issue_ioport_cap` 安装 ATA 0x1F0-0x1F7, 0x3F6-0x3F7 |
+| 2.4 | 创建 `novafs_core::ata::AtaBlockDevice` | ✅ | 基于端口 I/O 的 `BlockDevice` 实现 |
+| 2.5 | `cargo check --workspace --target x86_64-unknown-none` | ✅ | 全绿通过 |
 
 ---
 

@@ -4,6 +4,7 @@ extern crate alloc;
 #[macro_use]
 extern crate libnova;
 
+pub mod ata;
 pub mod block_cache;
 pub mod block_device;
 pub mod crypto;
