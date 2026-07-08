@@ -108,7 +108,7 @@
 | P4.3 | 解除 FS_SYNC_FORWARD_ENABLED=false 死锁 | P0 | P4.2 |
 | P4.4 | Shell 命令全部迁移到 fs_server | P1 | P4.2 |
 | P4.5 | RootServer 降权收口（仅保留最小编排职责） | P2 | P4.3 |
-| P4.6 | IPC 入口统一校验：消息长度、 capability 索引范围、权限位 | P1 | P2.8 |
+| P4.6 | IPC 入口统一校验：消息长度、capability 索引范围（文件权限检查在 handler 内部由 `novafs_core::check_permission` 完成；syscall 级授权归属 P4.5 降权） | P1 | P2.8 |
 | P4.7 | 关闭或过滤内核 debug syscall（`seL4_SysDebugHalt` 等） | P1 | P4.5 |
 
 ## Phase 5: 安全强化与审计

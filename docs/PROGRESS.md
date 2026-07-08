@@ -388,3 +388,15 @@
 - `cargo test -p libnova --features std --target x86_64-pc-windows-msvc` — 34 passed
 
 **关联**：`TASK-6` 全部子任务
+
+## 2026-07-08: ISSUE-83 关闭 — PLAN.md 权限位描述修正
+
+**完成项**：
+- PLAN.md P4.6 移除"权限位"描述，替换为明确的分层职责说明
+- 文件权限检查由 `novafs_core::check_permission` 在 handler 内部完成
+- syscall 级授权归属 P4.5 降权
+- ISSUE-83 ⚪ 已关闭
+
+**说明**：
+- 本次是用户授权的 PLAN.md 有限修改（仅修正 P4.6 描述）
+- 权限检查架构未变：handler 内部 `check_permission` 是真正生效的检查
