@@ -25,7 +25,7 @@
 
 | # | 任务 | PLAN | 优先级 | 依赖 | 状态 |
 |---|------|------|--------|------|------|
-| 1 | 独立派生 CSpace（实现阶段） | P4.1 (new) | P0 | — | ⬜ |
+| 1 | 独立派生 CSpace（实现阶段） | P4.1 (new) | P0 | — | ✅ |
 | 2 | fs_server 持有块设备 | P4.2 (new) | P0 | P4.1 | ⏳ |
 | 3 | 解除 FS_SYNC_FORWARD 死锁 | P4.3 (new) | P0 | P4.2 | ⏳ |
 | 4 | Shell 迁移到 fs_server | P4.4 (new) | P1 | P4.2 | ⏳ |
@@ -77,8 +77,8 @@
 |---|--------|------|------|
 | 1.1 | 更新 `docs/CAPABILITY_MODEL.md`，明确独立 CSpace 后的条目布局变化 | ✅ | Phase 4.5 设计阶段完成 |
 | 1.2 | 定义 `libnova::cap::DerivedCNode` API（创建、安装能力） | ✅ | struct + `new` + `install` + `cnode_cptr` |
-| 1.3 | 在 `Process::spawn` 中落实独立 CNode 创建与条目安装 | ⬜ | 实际 seL4 CNode 分配 + 能力槽初始化 |
-| 1.4 | `cargo check --workspace --target x86_64-unknown-none` 与回归测试 | ⬜ | 全绿通过 |
+| 1.3 | 在 `Process::spawn` 中落实独立 CNode 创建与条目安装 | ✅ | CNode 分配 + `cspace_cap` 字段 + `configure` 使用独立 CSpace |
+| 1.4 | `cargo check --workspace --target x86_64-unknown-none` 与回归测试 | ✅ | 全绿通过 |
 
 ---
 

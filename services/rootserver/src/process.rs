@@ -5,7 +5,8 @@ use libnova::syscall::{Error, Result};
 use libnova::tcb::Tcb;
 #[allow(unused_imports)]
 use sel4_sys::{
-    api_object_seL4_EndpointObject, api_object_seL4_TCBObject, seL4_BootInfo, seL4_CPtr,
+    api_object_seL4_CapTableObject, api_object_seL4_EndpointObject, api_object_seL4_TCBObject,
+    seL4_BootInfo, seL4_CPtr,
     seL4_CapRights, seL4_EndpointBits, seL4_RootCNodeCapSlots, seL4_TCBBits, seL4_UserContext,
     seL4_Word, seL4_X86_VMAttributes,
 };
@@ -280,6 +281,7 @@ pub struct Process {
     pub fs_forwarding_enabled: bool,
     pub tcb_cap: seL4_CPtr,
     pub vspace: VSpace,
+    pub cspace_cap: seL4_CPtr, // P4.1: independent CNode for this process
     pub fault_ep_cap: seL4_CPtr,
     pub syscall_ep_cap: seL4_CPtr,
     pub ipc_buffer_cap: seL4_CPtr,
@@ -525,6 +527,17 @@ impl Process {
         let vspace = VSpace::new_from_scratch(allocator, slots, boot_info, asid_pool)
             .map_err(Error::from)?;
 
+        // 1b. Allocate independent CNode (CapTable) for this process's CSpace.
+        //     Size bits match the root CNode (4096 entries) for full compatibility.
+        let cspace_cap = allocator
+            .allocate(
+                boot_info,
+                api_object_seL4_CapTableObject.into(),
+                sel4_sys::CONFIG_ROOT_CNODE_SIZE_BITS.into(),
+                slots,
+            )
+            .map_err(Error::from)?;
+
         // 2. Create TCB
         let tcb_cap = allocator
             .allocate(
@@ -545,6 +558,7 @@ impl Process {
             fs_forwarding_enabled: true,
             tcb_cap,
             vspace,
+            cspace_cap,
             fault_ep_cap: 0,
             syscall_ep_cap: 0,
             ipc_buffer_cap: 0,
@@ -572,6 +586,7 @@ impl Process {
             fs_forwarding_enabled: true,
             tcb_cap,
             vspace,
+            cspace_cap: 0, // P4.1: 0 = root CNode (fallback)
             fault_ep_cap: 0,
             syscall_ep_cap: 0,
             ipc_buffer_cap: 0,
@@ -724,7 +739,8 @@ impl Process {
         gid: u32,
     ) -> Result<Self> {
         let asid_pool = seL4_RootCNodeCapSlots::seL4_CapInitThreadASIDPool as seL4_CPtr;
-        let cspace_root = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+        let root_cnode = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+        let cspace_root = root_cnode;
         let authority = seL4_RootCNodeCapSlots::seL4_CapInitThreadTCB as seL4_CPtr;
 
         let mut process = match Self::create(allocator, slots, boot_info, asid_pool, name, uid, gid)
@@ -913,8 +929,13 @@ impl Process {
             process.syscall_ep_cap = endpoint_cap;
             let fault_ep_cap = endpoint_cap;
 
+            let effective_cspace = if process.cspace_cap != 0 {
+                process.cspace_cap
+            } else {
+                cspace_root
+            };
             process.configure(
-                cspace_root,
+                effective_cspace,
                 fault_ep_cap,
                 ipc_vaddr as seL4_Word,
                 ipc_frame_cap,
@@ -1056,7 +1077,8 @@ impl Process {
         parent_pid: usize,
     ) -> Result<Self> {
         let asid_pool = seL4_RootCNodeCapSlots::seL4_CapInitThreadASIDPool as seL4_CPtr;
-        let cspace_root = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+        let root_cnode = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
+        let cspace_root = root_cnode;
         let authority = seL4_RootCNodeCapSlots::seL4_CapInitThreadTCB as seL4_CPtr;
 
         let mut child = Self::create(
@@ -1107,8 +1129,13 @@ impl Process {
             }
 
             child.ipc_buffer_cap = child_ipc_frame_cap;
+            let eff_cspace = if child.cspace_cap != 0 {
+                child.cspace_cap
+            } else {
+                cspace_root
+            };
             child.configure(
-                cspace_root,
+                eff_cspace,
                 child.fault_ep_cap,
                 IPC_BUFFER_VADDR as seL4_Word,
                 child_ipc_frame_cap,
@@ -1370,6 +1397,13 @@ impl Process {
             let _ = root.delete(self.saved_reply_cap);
             slots.free(self.saved_reply_cap);
             self.saved_reply_cap = 0;
+        }
+
+        // Free independent CNode (P4.1)
+        if self.cspace_cap != 0 {
+            let _ = root.delete(self.cspace_cap);
+            slots.free(self.cspace_cap);
+            self.cspace_cap = 0;
         }
 
         // Delete Syscall EP

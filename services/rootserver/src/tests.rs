@@ -316,6 +316,7 @@ fn test_process_manager() {
             paging_caps: [None; 32],
             paging_cap_count: 0,
         },
+        cspace_cap: 0,
         fault_ep_cap: 0,
         syscall_ep_cap: 0,
         ipc_buffer_cap: 0,

@@ -83,15 +83,63 @@
 
 ---
 
+---
+
+## P4.1 (new) 审计详情 — 独立派生 CSpace 实现
+
+> **审计时间**: 2026-07-08
+> **审计范围**: `services/rootserver/src/process.rs`（`cspace_cap` 字段、CNode 分配、独立 CSpace 使用）、`services/rootserver/src/tests.rs`（`cspace_cap: 0`）、`docs/TASK.md`（状态）
+> **验证命令**:
+> - `cargo check --workspace --target x86_64-unknown-none` — 全绿通过 ✅
+> - `cargo test -p libnova --features std --target x86_64-pc-windows-msvc` — 34 项全过 ✅
+
+### 验证结果
+
+1. **所有 Process 构造位置包含 `cspace_cap`** — ✅
+   - `Process::create` (process.rs:556-581) — `cspace_cap: cspace_cap`
+   - `Process::new` (process.rs:583-609) — `cspace_cap: 0`
+   - `test_process_manager` (tests.rs:310-338) — `cspace_cap: 0`
+2. **CNode 分配在 `create` 中** — ✅ `allocator.allocate(..., api_object_seL4_CapTableObject, ...)` at process.rs:532-539
+3. **独立 CSpace 用于 `configure`** — ✅
+   - `spawn` (process.rs:932-936): `effective_cspace = process.cspace_cap` 或 fallback `cspace_root`
+   - `fork_from` (process.rs:1132-1136): 同上
+4. **`cargo check --workspace --target x86_64-unknown-none`** — ✅ 全绿
+5. **`cargo test -p libnova --features std --target x86_64-pc-windows-msvc`** — ✅ 34 项全过
+6. **`docs/TASK.md` 状态** — ⚠️ 顶行状态 ⬜ → ✅（已同步）
+
+### 发现的问题
+
+#### ISSUE-60: `Process::terminate` 未释放 `cspace_cap`（资源泄漏）
+
+- **Severity**: P2
+- **Location**: `services/rootserver/src/process.rs:1330-1425`
+- **Problem**:
+  - `Process::create` 通过 `allocator.allocate` 分配了一个独立的 CNode（CapTable），其 capability 存在 `cspace_cap` 字段。
+  - `Process::terminate` 负责清理 TCB、VSpace、paging structures、fault EP、saved_reply_cap、syscall EP，但 **未删除或释放 `cspace_cap`**。
+  - 当 `cspace_cap != 0`（即进程拥有独立的 CNode）时，每次进程退出都会泄漏一个 CapTable 对象及其占用的 Untyped 内存和 CSpace slot。
+  - 当 `cspace_cap == 0`（使用根 CNode 回退）时无害。
+- **Suggested fix**: 在 `terminate` 尾部（`self.state = ProcessState::Terminated` 之前）添加：
+  ```rust
+  if self.cspace_cap != 0 {
+      let _ = root.delete(self.cspace_cap);
+      slots.free(self.cspace_cap);
+  }
+  ```
+- **Status**: 🔴 待修复
+
+### 审计结论
+
+1 个 P2 问题（`cspace_cap` 未在 `terminate` 中释放）；TASK.md 顶行状态已同步为 ✅。
+
 ## 汇总
 
 | 优先级 | 总数 | 🔴 待修复 | 🟡 修复中 | 🟢 已修复 | ⚪ 已关闭 |
 |--------|------|-----------|-----------|-----------|-----------|
 | P0 | 3 | 1 | 1 | 1 | 0 |
 | P1 | 13 | 4 | 0 | 7 | 2 |
-| P2 | 24 | 9 | 0 | 14 | 1 |
+| P2 | 25 | 10 | 0 | 14 | 1 |
 | P3 | 17 | 8 | 0 | 7 | 2 |
-| **合计** | **57** | **22** | **1** | **29** | **5** |
+| **合计** | **58** | **23** | **1** | **29** | **5** |
 
 ---
 
