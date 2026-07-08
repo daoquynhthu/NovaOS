@@ -336,3 +336,55 @@
 
 **验证**：`cargo check --workspace` 全绿
 **关联**：`TASK-9`
+
+## 2026-07-08: P4.1 闭环 — 独立派生 CSpace
+
+**完成项**：
+- 每个用户态进程/服务获得独立派生 CNode（`DerivedCNode` API），不再共享根 CNode
+- `Process::spawn`/`fork_from` 创建独立 CNode，`cspace_cap` 字段跟踪
+- `configure` 使用独立 CSpace，endpoint cap 安装在 slot 0
+- `terminate` 回收 CNode（`cnode.delete()` + `SlotAllocator::free`）
+
+**验证**：
+- `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+
+**关联**：`TASK-1` 全部子任务
+
+## 2026-07-08: P4.2 闭环 — fs_server 直接持有块设备
+
+**完成项**：
+- 端口 I/O 函数迁移到 `libnova::arch::x86_64::port_io`
+- ATA I/O 端口能力安装到 fs_server CNode（slots 1-2）
+- 创建 `novafs_core::ata::AtaBlockDevice`（基于 ATA PIO 的 `BlockDevice` 实现）
+
+**验证**：
+- `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+
+**关联**：`TASK-2` 全部子任务
+
+## 2026-07-08: P4.3 闭环 — 解除 FS_SYNC_FORWARD 死锁
+
+**完成项**：
+- fs_server 使用本地 ATA 启动（`AtaBlockDevice` 优先，失败回落 `RemoteBlockDevice`）
+- 更新 `FS_SYNC_FORWARD_ENABLED` 注释，说明死锁已解除
+
+**验证**：
+- `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+
+**关联**：`TASK-3` 全部子任务
+
+## 2026-07-08: P4.6 闭环 — IPC 入口统一校验
+
+**完成项**：
+- 审计发现 7 个 handler 缺少/部分校验，全部修复
+- `validate_fs_request_min` 替换 fs_server 内联检查
+- Send syscall 内联 handler 添加 `info.length() < 4` 校验
+- fs_server dispatch 添加 `validate_message_length` 上限检查
+- `handle_write` 添加 `MAX_READ_LEN` 上限
+- 4 个 code issue 已修复，1 个 P3 待决策（ISSUE-83: PLAN.md 权限位范围）
+
+**验证**：
+- `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+- `cargo test -p libnova --features std --target x86_64-pc-windows-msvc` — 34 passed
+
+**关联**：`TASK-6` 全部子任务

@@ -822,3 +822,47 @@ P4.2(2.1) 审计：零问题，满足闭环条件。
 ### 审计结论
 
 发现 **1 个 P1 问题**（ISSUE-75: AtaBlockDevice 端口寻址错误）和 **1 个 P3 问题**（ISSUE-76: TASK.md 状态未同步）。在 ISSUE-75 修复前，P4.2 不满足闭环条件。
+
+---
+
+## P4.6 审计（2026-07-08） — RootServer IPC 入口校验覆盖审查
+
+**审计范围**：
+- 检查所有 `handlers/*.rs` 中每个 syscall handler 的校验函数调用
+- 检查 `services/fs_server/src/main.rs` dispatch 校验
+- 检查 `libs/libnova/src/validate.rs` 函数状态
+- 交叉验证 SERVICE_CONTRACTS.md / PLAN.md / AGENT.md
+
+### ISSUE-80 [P1] `validate_fs_request_min` 死代码 — 定义但从未被调用
+
+- **位置**: `libs/libnova/src/validate.rs:49-55`
+- **问题**: `validate_fs_request_min` 已定义、有测试、返回正确的 `MessageTooShort`，但 `fs_server/main.rs:713-718` 使用内联检查 `if (info.length() as usize) < min_w` 代替。该函数从未被任何代码路径调用。之前 ISSUE-56 审计就认定是死代码，修复仅新增了错误变体但函数仍未被调用。
+- **修复**: 将 fs_server dispatch 的内联检查替换为 `validate_fs_request_min(&info, min_w).is_err()`，并同时添加 `validate_message_length(&info)` 上限检查。
+- **状态**: 🟢 已修复（`49745d7`）
+
+### ISSUE-81 [P2] `SyscallNum::Send` 内联处理程序零验证
+
+- **位置**: `services/rootserver/src/main.rs:2498-2539`
+- **问题**: `Send` syscall 在 dispatch `match` 中内联处理，直接读取 `mrs[0..3]` 而不检查 `info.length()`。未使用 `SyscallContext`，也未调用 `libnova::validate` 函数。
+- **修复**: 读取 `target_pid` 前添加 `if info.length() < 4` 校验。
+- **状态**: 🟢 已修复（`49745d7`）
+
+### ISSUE-82 [P2] fs_server dispatch 缺少最大消息长度上限检查
+
+- **位置**: `services/fs_server/src/main.rs:712-718`
+- **问题**: fs_server dispatch 只检查最小值，从未调用 `validate_message_length` 拒绝 `info.length() > 120`。
+- **修复**: 在 min-length 检查后添加 `validate_message_length(&info).is_err()` 调用。
+- **状态**: 🟢 已修复（`49745d7`）
+
+### ISSUE-83 [P3] PLAN.md P4.6 承诺"权限位"验证未交付
+
+- **位置**: `docs/PLAN.md:111`
+- **问题**: PLAN.md P4.6 写道"IPC 入口统一校验：消息长度、capability 索引范围、**权限位**"。现有的权限检查在 P4.6 推行之前就已经存在，本次里程碑没有添加新的权限位验证。
+- **状态**: 🔴 待决策 — 用户需确定是否缩小 PLAN.md 范围，或新增子任务实现权限位验证。
+
+### ISSUE-84 [P3] `handle_write` 缺少 `MAX_RW_LEN` 上限，与 `handle_read` 不一致
+
+- **位置**: `services/rootserver/src/handlers/fs.rs:562-568`
+- **问题**: `handle_read` 限制 `len` 为 `MAX_READ_LEN (900)`，但 `handle_write` 原样使用 `ctx.mrs[1]`，然后 `alloc::vec![0u8; len]`。与 `handle_read` 不对称，且 SERVICE_CONTRACTS.md 声明最大读写长度 = 900。
+- **修复**: 添加 `let len = if raw_len > MAX_READ_LEN { MAX_READ_LEN } else { raw_len };`。
+- **状态**: 🟢 已修复（`49745d7`）

@@ -40,7 +40,9 @@
 | `console` — print macros | `console.rs` | `print!` (80), `println!` (84), `DebugConsole` (14), `UserConsole` (51) |
 | `log` — leveled logging | `log.rs` | domain-gated `log_debug!`, `log_trace!` |
 | `tcb` — TCB config | `tcb.rs` | TCB setup wrappers |
+| `arch::x86_64::port_io` | `arch/x86_64/port_io.rs` | Port I/O functions migrated from RootServer `arch/x86_64/port_io.rs` (P4.2) |
 | `env` — arg iterator | `env.rs` | Early arg parsing |
+| `validate` — IPC message validation | `validate.rs` | `validate_message_length`, `validate_mr_index`, `validate_cap_index`, `validate_payload_fits`, `validate_one/two_mrs`, `validate_fs_request_min`, `fs_min_words`; 34 host tests (P4.6) |
 | Syscall label map | `syscall.rs` | `SyscallNum` enum: `Print=1`, `Exit=2`, `Brk=3`, `Yield=4`, `Open=20`, `Read=21`, `Write=22`, `Close=23`, `Spawn=8`, ... (see `libnova::syscall::SyscallNum`) |
 
 ### 4. Services
@@ -220,6 +222,10 @@
 
 ## II. Architecture Reality
 
+- `Main event loop（dispatch 部分）` 内联 Send handler 已添加 `info.length() < 4` 校验（P4.6）
+- ATA PIO 设备端口能力通过 `issue_ioport_cap` 安装到 fs_server CNode（P4.2）
+- RootServer 不再需要代理 fs_server 块 I/O 请求，`FS_SYNC_FORWARD_ENABLED` 死锁已解除（P4.3）
+
 ### Layer 0: Physical / Host
 
 ```
@@ -278,6 +284,8 @@ libnova/
 
 The initial user-mode process. RootServer is the **syscall dispatch center** + **NovaFS data plane** + **Shell** + **Process manager** + **Memory manager** + **Service registry**.
 
+**Process model** (P4.1): Each process now has an independent derived CNode (`cspace_cap` field). Syscall endpoint installed at slot 0. ATA I/O port caps installed at slots 1-2 for fs_server.
+
 **Syscall dispatch** (`main.rs:1366-3319`):
 - ~~Single 1953-line `match label` block~~ — split into `services/rootserver/src/handlers/`
 - `handlers/core.rs`: process lifecycle + memory handlers extracted
@@ -298,7 +306,7 @@ The initial user-mode process. RootServer is the **syscall dispatch center** + *
 - Labels 44-46: services/time (get_unix_time, set_ready, fs_view_epoch)
 - Label 50: system (shutdown)
 - Label 5: VM fault handler (still inline in `main.rs`)
-- Label 13: `sys_send` IPC (still inline in `main.rs`)
+- Label 13: `sys_send` IPC (still inline in `main.rs`, P4.6 added `info.length() < 4` validation)
 
 **Architecture constraint — FS forwarding deadlock** (`main.rs:65`):
 ```rust
@@ -312,13 +320,14 @@ RootServer cannot synchronously `Call` fs_server and have fs_server `Call` back 
 
 #### 4b. fs_server (1328 lines)
 
-File system service. **Current state**: syscall-backed persistent proxy, NOT the real data plane owner.
+File system service. **Current state**: has local ATA block device (P4.2), owns `AtaBlockDevice` with `AtaBlockDevice::new()` at init, deadlock resolved (P4.3). NOT yet the sole data plane authority — RootServer still hosts a parallel NovaFS instance.
 
 **Architecture reality**:
 - Depends on `libs/novafs-core/` as a normal crate dependency (no `include!()`)
 - Has its own `FdEntry` table (32 entries) mirrored from RootServer
 - `ENSURE_LOCAL_FS_FRESH` pattern: before handling FS requests, checks if RootServer's `FS_VIEW_EPOCH` has changed; if so, re-mounts NovaFS from block device (lazy epoch-based refresh)
-- **Not yet the persistence authority** — RootServer's local NovaFS is still the real data plane
+- **Not yet the sole persistence authority** — RootServer's local NovaFS is still active for Shell-originated file operations
+- ATA I/O port caps installed in CNode slots 1-2 (0x1F0-0x1F7, 0x3F6-0x3F7) during spawn
 
 **Protocol** (all via seL4 IPC Call, labels defined by `libnova::fs_ipc::FsLabel`):
 | Label | Operation | Handler line |
@@ -417,7 +426,7 @@ NovaFS implementation now lives in `libs/novafs-core/` and is consumed by both R
 
 ### Key Architectural Constraints
 
-1. **`FS_SYNC_FORWARD_ENABLED=false`**: RootServer cannot synchronously forward FS calls to fs_server because fs_server calls back into RootServer's syscall endpoint (same-thread deadlock). Architecturally unsolved.
+1. **`FS_SYNC_FORWARD_ENABLED=false`** (legacy flag): RootServer cannot synchronously forward FS calls to fs_server. **Deadlock condition resolved (P4.3)** — fs_server now has local ATA block device access via `AtaBlockDevice`, no longer calls back to RootServer for block I/O. The flag remains false because Shell still lives in RootServer (P4.4 pending).
 
 2. ~~`include!()` code sharing~~ **RESOLVED**: `fs_server` now depends on `libs/novafs-core/` as a normal crate. The `dead_code` lint exemption has been removed.
 
@@ -438,16 +447,20 @@ NovaFS implementation now lives in `libs/novafs-core/` and is consumed by both R
 ```
 [RootServer as FS authority] ──migrating──▶ [fs_server as FS authority]
          │                                           │
-         │  Owns NovaFS + block device               │  Persistent proxy only
-         │  Shell commands partially delegated        │  Real NovaFS via novafs-core crate
+         │  Owns NovaFS + block device               │  Owns ATA block device (local)
+         │  Shell commands partially delegated        │  NovaFS via novafs-core crate
          │   via /bin/hello helpers                   │  Epoch-based lazy refresh
-         │                                           │  Not yet direct block device owner
+         │  P4.4: Shell→fs_server (pending)           │  Deadlock resolved (P4.3)
+         │  P4.5: privilege reduction (pending)       │  NOT yet sole data authority
          └───────────────────────────────────────────┘
-                    FS_SYNC_FORWARD_ENABLED=false
-                    (architectural deadlock)
+                 FS_SYNC_FORWARD_ENABLED=false (legacy)
+                 (deadlock condition eliminated — fs_server no longer
+                  calls back for block I/O via RemoteBlockDevice)
 ```
 
 Service migration completed (shell commands via fs_server helper): `cat`, `touch`, `cp`, `mv`, `rm`, `ln` (hard+sym), `mkdir`, `truncate`, `chmod`, `chown`, `sync`, `echo > file`, `encrypt`, `decrypt`, `cd`.
+
+Phase 4 remaining: Shell→fs_server migration (P4.4), RootServer privilege reduction (P4.5), debug syscall shutdown (P4.7).
 
 ### Repository Structure (Post-Cleanup)
 
