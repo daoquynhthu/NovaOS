@@ -63,3 +63,6 @@ auditoration1.md
 .env
 
 output.txt
+
+# QEMU test output
+qemu_output*.txt
