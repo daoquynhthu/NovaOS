@@ -25,7 +25,7 @@
 |---|------|------|--------|------|------|
 | 1 | 独立派生 CSpace | P4.1 (new) | P0 | — | ✅ |
 | 2 | fs_server 直接持有块设备 + NovaFS | P4.2 (new) | P0 | P4.1 | ✅ |
-| 3 | 解除死锁 | P4.3 (new) | P0 | P4.2 | ⏳ |
+| 3 | 解除 FS_SYNC_FORWARD 死锁 | P4.3 (new) | P0 | P4.2 | ✅ |
 | 4 | Shell 迁移 | P4.4 (new) | P1 | P4.2 | ⏳ |
 | 5 | RootServer 降权 | P4.5 (new) | P2 | P4.3 | ⏳ |
 | 6 | IPC 入口校验（收尾） | P4.6 (new) | P1 | — | 🟡 |
@@ -102,5 +102,21 @@
 | 1.2 | 定义 `libnova::cap::DerivedCNode` API（创建、安装能力） | ✅ | struct + `new` + `install` + `cnode_cptr` |
 | 1.3 | 在 `Process::spawn` 中落实独立 CNode 创建与条目安装 | ✅ | CNode 分配 + `cspace_cap` 字段 + `configure` 使用独立 CSpace |
 | 1.4 | `cargo check --workspace --target x86_64-unknown-none` 与回归测试 | ✅ | 全绿通过 |
+
+---
+
+## 任务 3: 解除 FS_SYNC_FORWARD 死锁（P4.3 new）
+
+**目标**: P4.2（fs_server 直接 ATA 访问）已消除死锁条件：fs_server 不再因块 I/O 回调 RootServer。确认死锁解除并更新 `FS_SYNC_FORWARD_ENABLED` 注释。
+
+**对应 PLAN**: [PLAN-P4.3 (new)](./PLAN.md#phase-4-微内核化推进)
+
+### 子任务
+
+| # | 子任务 | 状态 | 说明 |
+|---|--------|------|------|
+| 3.1 | fs_server 使用本地 ATA 启动（AtaBlockDevice） | ✅ | `mount_local_fs` 优先 ATA，失败回落 RemoteBlockDevice |
+| 3.2 | 更新 `FS_SYNC_FORWARD_ENABLED` 注释 | ✅ | 说明死锁已解除，等待数据一致性审核 |
+| 3.3 | `cargo check --workspace --target x86_64-unknown-none` | ✅ | 全绿通过 |
 
 

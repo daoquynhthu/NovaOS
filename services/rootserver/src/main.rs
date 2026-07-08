@@ -55,9 +55,8 @@ static mut WORKER_STACK: [u8; 4096] = [0; 4096];
 const OOM_SLOT_RESERVE: usize = 64;
 const OOM_MIN_FREE_RAM_BYTES: u64 = 256 * 1024;
 pub(crate) const FS_READ_PREFER_SERVER: bool = true;
-// Keep synchronous syscall forwarding disabled while fs_server remains a
-// syscall-backed proxy. A RootServer thread that synchronously calls fs_server
-// would deadlock once fs_server calls back into the same syscall endpoint.
+// P4.3: fs_server now has direct ATA access (P4.2) so synchronous forwarding
+// no longer causes a deadlock. Keep disabled pending data-consistency review.
 pub(crate) const FS_SYNC_FORWARD_ENABLED: bool = false;
 
 pub(crate) fn deny_if_memory_pressure(
@@ -212,13 +211,14 @@ pub(crate) fn spawn_boot_process(
                 // P4.2: Install ATA I/O port capability into fs_server's independent CNode
                 if process.cspace_cap != 0 {
                     let ata_control = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapIOPortControl as sel4_sys::seL4_CPtr;
+                    let cnode_depth = sel4_sys::CONFIG_ROOT_CNODE_SIZE_BITS;
                     let _ = libnova::arch::x86_64::port_io::issue_ioport_cap(
                         ata_control,
                         0x1F0,
                         0x1F7,
                         process.cspace_cap,
                         1,
-                        64,
+                        cnode_depth.into(),
                     );
                     let _ = libnova::arch::x86_64::port_io::issue_ioport_cap(
                         ata_control,
@@ -226,7 +226,7 @@ pub(crate) fn spawn_boot_process(
                         0x3F7,
                         process.cspace_cap,
                         2,
-                        64,
+                        cnode_depth.into(),
                     );
                 }
             }

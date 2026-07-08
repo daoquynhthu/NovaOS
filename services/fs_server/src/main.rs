@@ -202,12 +202,28 @@ fn current_fs() -> Option<Arc<dyn FileSystem>> {
 fn mount_local_fs(syscall_ep_cap: seL4_CPtr) -> Result<(), &'static str> {
     rtc::set_syscall_ep(syscall_ep_cap);
     novafs_core::set_wall_clock(rtc::RtcDriver::new().get_unix_timestamp());
-    let device = Arc::new(RemoteBlockDevice::new(syscall_ep_cap)?);
-    let fs = NovaFS::new(device, 0)?;
-    let fs_arc = Arc::new(fs.clone());
-    let fs_trait: Arc<dyn FileSystem> = fs_arc;
-    *DISK_FS.lock() = Some(fs_trait);
-    // P4.1: epoch tracking retired; fs_server owns NovaFS from boot.
+
+    // P4.2: Try local ATA on slot 1 (installed by RootServer), fall back to RemoteBlockDevice.
+    let ata_slot: seL4_CPtr = 1;
+    libnova::arch::x86_64::port_io::init(ata_slot);
+
+    let mut ata = novafs_core::ata::AtaBlockDevice::new(0x1F0);
+    let fs: Arc<dyn FileSystem> = match ata.detect() {
+        Ok(()) if ata.sector_count > 0 => {
+            println!("[FS_SERVER] Local ATA detected, {} sectors", ata.sector_count);
+            let device = Arc::new(ata);
+            let nfs = NovaFS::new(device, 0)?;
+            Arc::new(nfs) as Arc<dyn FileSystem>
+        }
+        _ => {
+            println!("[FS_SERVER] Local ATA unavailable, using RemoteBlockDevice");
+            let device = Arc::new(RemoteBlockDevice::new(syscall_ep_cap)?);
+            let nfs = NovaFS::new(device, 0)?;
+            Arc::new(nfs) as Arc<dyn FileSystem>
+        }
+    };
+
+    *DISK_FS.lock() = Some(fs);
     Ok(())
 }
 
