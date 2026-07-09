@@ -2,7 +2,7 @@
 
 > **Purpose**: Quick code navigation (front) + layered architecture description for AI agent context (back).  
 > **Truth source**: Code only. If docs disagree with code, code wins.  
-> **Generated**: 2026-07-07
+> **Generated**: 2026-07-08 (updated for Phase 2-4)
 
 ---
 
@@ -260,23 +260,26 @@ Host (Windows 10 + WSL2 Ubuntu 24.04 or native Linux)
 
 ### Layer 3: Core Library (libnova)
 
-`libnova` is a `no_std` Rust library providing all user-space abstractions. It has an optional `std` feature for host-native unit tests:
+`libnova` is a `no_std` Rust library providing all user-space abstractions. Has `std` feature for host-native unit tests (34 tests across validate, allocator, syscall, fs_ipc, cap modules):
 
 ```
 libnova/
 ├── ipc.rs        — Raw seL4 IPC primitives (call/send/recv/reply/reply_recv)
-├── syscall.rs    — Per-syscall client stubs (sys_open, sys_read, etc.)
-├── fs_ipc.rs     — FS protocol direct-call helpers (open_direct, etc.)
+├── ipc/pack.rs   — Bounded message packing (MessageWriter/MessageReader, TASK-5)
+├── syscall.rs    — Syscall stubs + SyscallNum enum (29 variants, Phase 2)
+├── fs_ipc.rs     — FS protocol + FsLabel enum (20 variants) + *_direct() helpers
 ├── cap.rs        — CNode capability wrappers (copy/mint/move/delete/revoke)
-├── console.rs    — print!/println! macros (debug vs user console)
-├── log.rs        — Domain-gated logging (log_debug!, log_trace!)
+├── console.rs    — print!/println! macros (DebugConsole via seL4_DebugPutChar)
+├── log.rs        — Domain-gated logging (log_debug!, log_trace!) + DOM_PAGING (P3.4)
+├── allocator.rs  — SlotAllocator/UntypedAllocator/FrameAllocator (TASK-7)
+├── validate.rs   — IPC message validation (34 host tests, P4.6)
 ├── tcb.rs        — TCB configuration
-└── env.rs        — Argument iterator
+├── env.rs        — Argument iterator
+└── arch/x86_64/
+    └── port_io.rs — I/O port functions (P4.2, migrated from RootServer)
 
-`std` feature: enables host-native `cargo test` (provides `__sel4_ipc_buffer` stub in `sel4-sys`).
+`std` feature: enables host-native `cargo test` (provides `__sel4_ipc_buffer` stub).
 ```
-
-**Key architectural note**: Syscall numbers are now centralized in `libnova::syscall::SyscallNum` and fs_server protocol labels in `libnova::fs_ipc::FsLabel`; both are `#[repr(u64)]` enums with `as_u64()` / `as_word()` / `from_u64()` helpers. RootServer dispatch and fs_server dispatch convert the incoming label to the enum before matching.
 
 ### Layer 4: Services
 
@@ -284,29 +287,19 @@ libnova/
 
 The initial user-mode process. RootServer is the **syscall dispatch center** + **NovaFS data plane** + **Shell** + **Process manager** + **Memory manager** + **Service registry**.
 
-**Process model** (P4.1): Each process now has an independent derived CNode (`cspace_cap` field). Syscall endpoint installed at slot 0. ATA I/O port caps installed at slots 1-2 for fs_server.
+**Process model** (P4.1): Each process now has an independent CNode (`cspace_cap` field), 256 slots (size_bits=8, 4KB). Falls back to root CNode when untyped memory is exhausted. Syscall endpoint installed at slot 0. ATA I/O port caps installed at slots 1-2 for fs_server (root CNode fallback uses dynamically allocated slots).
 
-**Syscall dispatch** (`main.rs:1366-3319`):
-- ~~Single 1953-line `match label` block~~ — split into `services/rootserver/src/handlers/`
-- `handlers/core.rs`: process lifecycle + memory handlers extracted
-- `handlers/fs.rs`: FS handlers extracted (`open`, `read`, `write`, `close`, `chmod`, `chown`, `symlink`, `readlink`, `mkdir`, `rmdir`, `unlink`, `rename`, `link`, `block_*`)
-- `handlers/metadata.rs`: uid/gid handlers extracted
-- `handlers/service.rs`: service registry + time + shutdown handlers extracted
-- Input validation helpers live in `libnova::validate` and are host-tested
-- `handlers/core.rs`, `handlers/fs.rs`, `handlers/metadata.rs`, `handlers/service.rs` now call `validate_message_length` / `validate_mr_index` / `validate_cap_index` at handler entry
-- Dispatch converts `label` to `libnova::syscall::SyscallNum` via `SyscallNum::from_u64(label)` before matching
-- Labels 20-23: FS (open, read, write, close)
-- Labels 24-27: FS (chmod, chown, symlink, readlink)
-- Labels 28-29: metadata (getuid, setuid)
-- Labels 30-31: services (register, lookup)
-- Labels 32-33: metadata (getgid, setgid)
-- Labels 34-37: FS (mkdir, rmdir, unlink, rename)
-- Labels 38-39: memory (mmap_shared, munmap_shared)
-- Labels 40-43: FS/block (link, block_read, block_write, block_info)
-- Labels 44-46: services/time (get_unix_time, set_ready, fs_view_epoch)
-- Label 50: system (shutdown)
-- Label 5: VM fault handler (still inline in `main.rs`)
-- Label 13: `sys_send` IPC (still inline in `main.rs`, P4.6 added `info.length() < 4` validation)
+**Syscall dispatch** (`main.rs:~1366-2556`):
+- ~~Single 1953-line `match label` block~~ — split into `services/rootserver/src/handlers/` (TASK-4)
+- `handlers/core.rs`: process lifecycle + memory handlers (Phase 2)
+- `handlers/fs.rs`: FS handlers (open, read, write, close, chmod, chown, symlink, readlink, mkdir, rmdir, unlink, rename, link, block_*) (Phase 2)
+- `handlers/metadata.rs`: uid/gid handlers (Phase 2)
+- `handlers/service.rs`: service registry + time + shutdown handlers (Phase 2)
+- Input validation: `libnova::validate` with 34 host tests (P4.6)
+- Each handler calls `validate_message_length` / `validate_mr_index` / `validate_cap_index` at entry
+- Dispatch uses `SyscallNum::from_u64(label)` enum
+- P4.6: inline Send handler validated, fs_server dispatch validates message length
+- Non-FS Shell commands now use direct fs_server IPC fallback before spawn_fs_helper (P4.4)
 
 **Architecture constraint — FS forwarding deadlock** (`main.rs:65`):
 ```rust
@@ -320,14 +313,15 @@ RootServer cannot synchronously `Call` fs_server and have fs_server `Call` back 
 
 #### 4b. fs_server (1328 lines)
 
-File system service. **Current state**: has local ATA block device (P4.2), owns `AtaBlockDevice` with `AtaBlockDevice::new()` at init, deadlock resolved (P4.3). NOT yet the sole data plane authority — RootServer still hosts a parallel NovaFS instance.
+File system service. **Current state**: has local ATA block device (P4.2), owns `novafs_core::ata::AtaBlockDevice` at init, deadlock resolved (P4.3). Falls back to `RemoteBlockDevice` (syscall-based) when ATA port cap unavailable (root CNode fallback). NOT yet the sole data plane authority.
 
 **Architecture reality**:
 - Depends on `libs/novafs-core/` as a normal crate dependency (no `include!()`)
 - Has its own `FdEntry` table (32 entries) mirrored from RootServer
-- `ENSURE_LOCAL_FS_FRESH` pattern: before handling FS requests, checks if RootServer's `FS_VIEW_EPOCH` has changed; if so, re-mounts NovaFS from block device (lazy epoch-based refresh)
-- **Not yet the sole persistence authority** — RootServer's local NovaFS is still active for Shell-originated file operations
-- ATA I/O port caps installed in CNode slots 1-2 (0x1F0-0x1F7, 0x3F6-0x3F7) during spawn
+- `ENSURE_LOCAL_FS_FRESH`: lazy epoch-based refresh when RootServer's `FS_VIEW_EPOCH` changes
+- **Not yet sole persistence authority** — RootServer's local NovaFS still active
+- ATA I/O port caps installed at CNode slots 1-2 (independent CNode) or dynamic slots (root CNode fallback)
+- P4.6: IPC entry validated with `validate_fs_request_min` at dispatch entry
 
 **Protocol** (all via seL4 IPC Call, labels defined by `libnova::fs_ipc::FsLabel`):
 | Label | Operation | Handler line |
@@ -426,9 +420,9 @@ NovaFS implementation now lives in `libs/novafs-core/` and is consumed by both R
 
 ### Key Architectural Constraints
 
-1. **`FS_SYNC_FORWARD_ENABLED=false`** (legacy flag): RootServer cannot synchronously forward FS calls to fs_server. **Deadlock condition resolved (P4.3)** — fs_server now has local ATA block device access via `AtaBlockDevice`, no longer calls back to RootServer for block I/O. The flag remains false because Shell still lives in RootServer (P4.4 pending).
+1. **`FS_SYNC_FORWARD_ENABLED=false`** (legacy flag): RootServer cannot synchronously forward FS calls to fs_server. **Deadlock condition resolved (P4.3)** — fs_server now has local ATA access via `AtaBlockDevice` or falls back to `RemoteBlockDevice` via syscall. Shell FS commands being migrated to direct IPC with fs_server (P4.4), after which RootServer's local NovaFS mount will be removed.
 
-2. ~~`include!()` code sharing~~ **RESOLVED**: `fs_server` now depends on `libs/novafs-core/` as a normal crate. The `dead_code` lint exemption has been removed.
+2. ~~`include!()` code sharing~~ **RESOLVED** (Phase 2.1): `fs_server` depends on `libs/novafs-core/` as a normal crate.
 
 3. **No network stack**: All IPC is within a single host. No network drivers, sockets, or inter-host communication.
 
@@ -436,31 +430,32 @@ NovaFS implementation now lives in `libs/novafs-core/` and is consumed by both R
 
 5. **Static ELF only**: No PIE, no ASLR. Linker script, base addresses all hardcoded.
 
-6. **QEMU-only**: Never booted on real hardware. ATA PIO driver assumes emulated disk, no AHCI/NVMe.
+6. **QEMU TCG only**: QEMU TCG does not emulate PCID/INVPCID; kernel must be built with `-DKernelSupportPCID=OFF`. Haswell CPU model with pdpe1gb. Not tested on real hardware, KVM, or WHPX.
 
-7. ~~**Magic syscall numbers**~~ **RESOLVED**: `libnova::syscall::SyscallNum` and `libnova::fs_ipc::FsLabel` enums provide a single source of truth for syscall and fs_server protocol labels.
+7. ~~**Magic syscall numbers**~~ **RESOLVED** (Phase 2.4): `SyscallNum` and `FsLabel` enums in libnova.
 
-8. **Build split across platforms**: Kernel must be built on Linux (WSL/native). Rust services on Windows. The `build.sh` workflow bridges this.
+8. **Build split across platforms**: Kernel built in WSL/Linux. Rust services built on Windows. Shared target directory requires careful cargo lock management.
 
 ### Current Migration State (NovaFS-First)
 
 ```
-[RootServer as FS authority] ──migrating──▶ [fs_server as FS authority]
-         │                                           │
-         │  Owns NovaFS + block device               │  Owns ATA block device (local)
-         │  Shell commands partially delegated        │  NovaFS via novafs-core crate
-         │   via /bin/hello helpers                   │  Epoch-based lazy refresh
-         │  P4.4: Shell→fs_server (pending)           │  Deadlock resolved (P4.3)
-         │  P4.5: privilege reduction (pending)       │  NOT yet sole data authority
-         └───────────────────────────────────────────┘
+[RootServer as FS authority] ──P4.4──▶ [fs_server as FS authority]
+         │                                      │
+         │  Owns NovaFS + block device           │  Owns ATA block device (P4.2)
+         │  Shell FS ops: IPC fallback added     │  RemoteBlockDevice via syscall
+         │   (12/16 commands, P4.4 Phase 1)      │  Deadlock resolved (P4.3)
+         │  exec binary load: still VFS          │  NOT yet sole data authority
+         │  P4.5 privilege reduction (pending)   │  ⚠ Dual NovaFS instances active
+         └──────────────────────────────────────┘
                  FS_SYNC_FORWARD_ENABLED=false (legacy)
-                 (deadlock condition eliminated — fs_server no longer
-                  calls back for block I/O via RemoteBlockDevice)
-```
+                 (deadlock eliminated — fs_server no longer
+                  calls back for block I/O)
 
-Service migration completed (shell commands via fs_server helper): `cat`, `touch`, `cp`, `mv`, `rm`, `ln` (hard+sym), `mkdir`, `truncate`, `chmod`, `chown`, `sync`, `echo > file`, `encrypt`, `decrypt`, `cd`.
+Shell FS command migration status (P4.4 Phase 1): direct fs_server IPC → spawn_fs_helper → LOCAL_VFS.
+12 of 16 commands migrated. exec/runhello still via VFS (P4.4 Phase 2 pending).
 
-Phase 4 remaining: Shell→fs_server migration (P4.4), RootServer privilege reduction (P4.5), debug syscall shutdown (P4.7).
+Phase 4 remaining: exec IPC loading (P4.4.6), remove local NovaFS (P4.4.8),
+RootServer privilege reduction (P4.5), debug syscall shutdown (P4.7).
 
 ### Repository Structure (Post-Cleanup)
 
@@ -505,11 +500,12 @@ E:\System/
 | VirtIO (net/block) | Library exists (`libs/util_libs/libvirtio`) but unused |
 | PIE/ASLR support | Not started |
 | Multi-threaded RootServer | Not started |
-| fs_server as real data plane authority | In progress (blocked by deadlock) |
-| Shell command full service migration | In progress (basic commands done) |
-| Crash recovery / durability testing | Not automated |
-| CI/CD pipeline | Basic GitHub Actions workflow created (`.github/workflows/ci.yml`); fmt/check/clippy on Linux, fmt on Windows |
-| Host-native unit tests | `libnova` and `novafs-core` now compile/test on host via `std` feature; run with `--features std --target <host-triple>` |
+| fs_server as sole data plane authority | ⏳ P4.4 Phase 2 (exec IPC + local NovaFS removal) |
+| Shell command fs_server IPC | ✅ P4.4 Phase 1 (12/16 commands); ⏳ exec (Phase 2) |
+| clippy debt (rootserver ~64 errors) | ⏳ Debt task D2 |
+| Crash recovery / durability | P3.2/P3.3 host tests exist; not automated in CI |
+| CI/CD pipeline | Basic workflow exists (fmt/check on Linux + Windows); QEMU not in CI |
+| Host-native unit tests | ✅ 34 libnova tests + novafs-core tests |
 | Rust edition 2024 migration | Not done (file-level warnings) |
 | RISC-V port | Not started (config exists in seL4-sys) |
-| std environment | Not applicable for kernel/user-space; `std` feature exists only for host testing |
+| PCID/INVPCID kernel features | Disabled (`-DKernelSupportPCID=OFF`) for QEMU TCG compat |
