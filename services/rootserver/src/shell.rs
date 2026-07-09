@@ -1368,13 +1368,8 @@ impl Shell {
                 let filename = self.buffer[rest_start..end]
                     .iter()
                     .collect::<alloc::string::String>();
-                println!("DEBUG: encrypt command for '{}'", filename);
                 let path_str = self.resolve_path(&filename);
-                println!("DEBUG: resolved path '{}'", path_str);
-                if self.spawn_fs_helper("fs_encrypt", &path_str) {
-                    return;
-                }
-                if let Some((_, fs_ep, _)) = crate::services::lookup_latest_ready("fs") {
+                if let Some(fs_ep) = self.fs_endpoint() {
                     match fs_encrypt_direct(fs_ep, &path_str) {
                         0 => {
                             println!("File '{}' encrypted.", filename);
@@ -1386,8 +1381,9 @@ impl Shell {
                         }
                         e => println!("Failed to encrypt: {}", e),
                     }
-                } else {
-                    println!("encrypt: fs service unavailable");
+                }
+                if self.spawn_fs_helper("fs_encrypt", &path_str) {
+                    return;
                 }
             }
         } else if self.word_eq(word_start, word_end, "decrypt") {
@@ -1399,10 +1395,7 @@ impl Shell {
                     .iter()
                     .collect::<alloc::string::String>();
                 let path_str = self.resolve_path(&filename);
-                if self.spawn_fs_helper("fs_decrypt", &path_str) {
-                    return;
-                }
-                if let Some((_, fs_ep, _)) = crate::services::lookup_latest_ready("fs") {
+                if let Some(fs_ep) = self.fs_endpoint() {
                     match fs_decrypt_direct(fs_ep, &path_str) {
                         0 => {
                             println!("File '{}' decrypted.", filename);
@@ -1414,8 +1407,9 @@ impl Shell {
                         }
                         e => println!("Failed to decrypt: {}", e),
                     }
-                } else {
-                    println!("decrypt: fs service unavailable");
+                }
+                if self.spawn_fs_helper("fs_decrypt", &path_str) {
+                    return;
                 }
             }
         } else if self.word_eq(word_start, word_end, "history") {
@@ -1608,10 +1602,15 @@ impl Shell {
                 let path_str = self.resolve_path(&s);
 
                 if let Some(fs_ep) = self.fs_endpoint() {
-                    if fs_stat_direct(fs_ep, &path_str) >= 0 {
-                        self.pending_cd_path = Some(path_str.clone());
-                        return;
+                    match fs_stat_direct(fs_ep, &path_str) {
+                        1 => {
+                            self.pending_cd_path = Some(path_str.clone());
+                            return;
+                        }
+                        -2 => println!("cd: {}: No such file or directory", path_str),
+                        _ => println!("cd: not a directory: {}", path_str),
                     }
+                    return;
                 }
                 if self.spawn_fs_helper_args(&["fs_cd", &path_str]) {
                     self.pending_cd_path = Some(path_str);
@@ -1709,12 +1708,17 @@ impl Shell {
                     let fd = fs_open_direct(fs_ep, &path_str, 0);
                     if fd >= 0 {
                         let mut buf = vec![0u8; 4096];
-                        let n = fs_read_direct(fs_ep, fd as usize, &mut buf);
-                        if n > 0 {
-                            print!("{}", core::str::from_utf8(&buf[..n as usize]).unwrap_or("(binary)"));
-                            if !buf[..n as usize].ends_with(b"\n") {
-                                println!();
+                        let mut total = 0usize;
+                        loop {
+                            let n = fs_read_direct(fs_ep, fd as usize, &mut buf);
+                            if n <= 0 {
+                                break;
                             }
+                            total += n as usize;
+                            print!("{}", core::str::from_utf8(&buf[..n as usize]).unwrap_or("(binary)"));
+                        }
+                        if total == 0 || !buf[..1].ends_with(b"\n") {
+                            println!();
                         }
                         fs_close_direct(fs_ep, fd as usize);
                         return;
@@ -1847,16 +1851,24 @@ impl Shell {
                             let dest_fd = fs_open_direct(fs_ep, &dest_path, 1);
                             if dest_fd >= 0 {
                                 let mut buf = vec![0u8; 4096];
+                                let mut ok = true;
                                 loop {
                                     let n = fs_read_direct(fs_ep, src_fd as usize, &mut buf);
                                     if n <= 0 {
                                         break;
                                     }
-                                    fs_write_direct(fs_ep, dest_fd as usize, &buf[..n as usize]);
+                                    if fs_write_direct(fs_ep, dest_fd as usize, &buf[..n as usize]) < 0 {
+                                        ok = false;
+                                        break;
+                                    }
                                 }
                                 fs_close_direct(fs_ep, dest_fd as usize);
                                 fs_close_direct(fs_ep, src_fd as usize);
-                                println!("Copied '{}' to '{}'", src_path, dest_path);
+                                if ok {
+                                    println!("Copied '{}' to '{}'", src_path, dest_path);
+                                    return;
+                                }
+                                println!("cp: write error");
                                 return;
                             }
                             fs_close_direct(fs_ep, src_fd as usize);
@@ -1883,60 +1895,7 @@ impl Shell {
                     println!("Usage: cp <src> <dest>");
                 }
             }
-        } else if self.word_eq(word_start, word_end, "encrypt") {
-            let path_str = if rest_start < end {
-                let s = &self.buffer[rest_start..end];
-                let s = s.iter().collect::<alloc::string::String>();
-                self.resolve_path(&s)
-            } else {
-                println!("Usage: encrypt <file>");
-                return;
-            };
-            if self.spawn_fs_helper("fs_encrypt", &path_str) {
-                return;
-            }
-            if let Some((_, fs_ep, _)) = crate::services::lookup_latest_ready("fs") {
-                match fs_encrypt_direct(fs_ep, &path_str) {
-                    0 => {
-                        println!("File '{}' encrypted.", path_str);
-                        return;
-                    }
-                    1 => {
-                        println!("File '{}' is already encrypted.", path_str);
-                        return;
-                    }
-                    e => println!("Failed to encrypt: {}", e),
-                }
-            } else {
-                println!("encrypt: fs service unavailable");
-            }
-        } else if self.word_eq(word_start, word_end, "decrypt") {
-            let path_str = if rest_start < end {
-                let s = &self.buffer[rest_start..end];
-                let s = s.iter().collect::<alloc::string::String>();
-                self.resolve_path(&s)
-            } else {
-                println!("Usage: decrypt <file>");
-                return;
-            };
-            if self.spawn_fs_helper("fs_decrypt", &path_str) {
-                return;
-            }
-            if let Some((_, fs_ep, _)) = crate::services::lookup_latest_ready("fs") {
-                match fs_decrypt_direct(fs_ep, &path_str) {
-                    0 => {
-                        println!("File '{}' decrypted.", path_str);
-                        return;
-                    }
-                    1 => {
-                        println!("File '{}' is not encrypted.", path_str);
-                        return;
-                    }
-                    e => println!("Failed to decrypt: {}", e),
-                }
-            } else {
-                println!("decrypt: fs service unavailable");
-            }
+        } else if self.word_eq(word_start, word_end, "ln") {
         } else if self.word_eq(word_start, word_end, "ln") {
             let len = end - rest_start;
             if len == 0 {
@@ -2518,11 +2477,13 @@ impl Shell {
                 if let Some(fs_ep) = self.fs_endpoint() {
                     let fd = fs_open_direct(fs_ep, &path_str, 1);
                     if fd >= 0 {
-                        fs_write_direct(fs_ep, fd as usize, content_bytes);
+                        let ret = fs_write_direct(fs_ep, fd as usize, content_bytes);
                         fs_close_direct(fs_ep, fd as usize);
-                        println!("Written to {}", path_str);
-                        self.mark_fs_service_dirty();
-                        return;
+                        if ret >= 0 {
+                            println!("Written to {}", path_str);
+                            self.mark_fs_service_dirty();
+                            return;
+                        }
                     }
                 }
                 let helper_args = ["fs_write", path_str.as_str(), content_str.as_str()];

@@ -122,7 +122,10 @@ pub fn outw(port: u16, value: u16) {
     crate::ipc::set_mr(0, port as seL4_Word);
     crate::ipc::set_mr(1, value as seL4_Word);
     let info = crate::ipc::MessageInfo::new(X86_IO_PORT_OUT16, 0, 0, 2);
-    let _ = crate::ipc::call(cap, info);
+    match crate::ipc::call(cap, info) {
+        Ok(_) => {},
+        Err(_) => crate::println!("[PortIO] outw failed"),
+    }
 }
 
 pub fn inl(port: u16) -> u32 {
@@ -152,5 +155,8 @@ pub fn outl(port: u16, value: u32) {
     crate::ipc::set_mr(0, port as seL4_Word);
     crate::ipc::set_mr(1, value as seL4_Word);
     let info = crate::ipc::MessageInfo::new(X86_IO_PORT_OUT32, 0, 0, 2);
-    let _ = crate::ipc::call(cap, info);
+    match crate::ipc::call(cap, info) {
+        Ok(_) => {},
+        Err(_) => crate::println!("[PortIO] outl failed"),
+    }
 }

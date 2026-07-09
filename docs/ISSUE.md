@@ -871,6 +871,47 @@ P4.2(2.1) 审计：零问题，满足闭环条件。
 
 ---
 
+## P4.4 Phase 1 审计（2026-07-08）
+
+**审计范围**: `services/rootserver/src/shell.rs` IPC fallback 变更 + `commit 4b12d06` 全部 diff。
+
+### ISSUE-89 [P1] `cat` IPC 读取截断于 4096 字节
+
+- **位置**: `services/rootserver/src/shell.rs:1708-1721`
+- **问题**: IPC 路径分配 4096 字节缓冲区并只读取一次。超过 4KB 的文件输出截断。
+- **修复**: 改为读取循环，持续读取直到 EOF。
+- **状态**: 🟢 已修复
+
+### ISSUE-90 [P1] `echo >file` 和 `cp` 静默忽略写入错误
+
+- **位置**: `services/rootserver/src/shell.rs:2523-2531`, `:1849-1865`
+- **问题**: `fs_write_direct` 返回值被丢弃。写入失败时用户收到成功假确认。
+- **修复**: 检查 `fs_write_direct` 返回值，失败时打印错误。
+- **状态**: 🟢 已修复
+
+### ISSUE-91 [P2] `cd` IPC 路径不验证目录类型
+
+- **位置**: `services/rootserver/src/shell.rs:1610-1615`
+- **问题**: `fs_stat_direct` 返回 >=0 的值都接受。`cd` 到普通文件“成功”。
+- **修复**: 用 `match` 检查返回值：1=目录（接受），-2=不存在，其他=非目录。
+- **状态**: 🟢 已修复
+
+### ISSUE-92 [P2] `encrypt`/`decrypt` 回退顺序错误 + 重复处理程序
+
+- **位置**: `services/rootserver/src/shell.rs:1363-1419` 和 `:1898-1951`
+- **问题**: `spawn_fs_helper` 在直接 IPC 之前调用。`execute_command` 中有两套完全相同的处理程序。
+- **修复**: 交换顺序（IPC 优先），删除第二套重复处理程序，删除 DEBUG 打印。
+- **状态**: 🟢 已修复
+
+### ISSUE-93 [P2] `outw`/`outl` 静默丢弃错误，与 `outb` 不一致
+
+- **位置**: `libs/libnova/src/arch/x86_64/port_io.rs:125,155`
+- **问题**: `outb` 打印 `[PortIO] outb failed`，但 `outw`/`outl` 静默丢弃。
+- **修复**: `outw`/`outl` 增加一致的 `match` 错误打印。
+- **状态**: 🟢 已修复
+
+---
+
 ## D1 QEMU 回归修复审计（2026-07-08）
 
 ### ISSUE-85 [P0] kernel 编译 `SUPPORT_PCID=ON` 导致 QEMU TCG 中 halt
