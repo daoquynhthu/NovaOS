@@ -55,19 +55,13 @@
 
 确认 fs_server IPC 覆盖所有文件操作后，移除 RootServer 的 `DISK_FS` 和 `novafs_core::VFS` 本地实例。RootServer 不再拥有 NovaFS 数据面。
 
-### 子任务
+### 第二阶段：exec 二进制加载迁移 & 移除本地 NovaFS
 
 | # | 子任务 | 状态 | 类型 | 说明 |
 |---|--------|------|------|------|
-| 1.1 | Shell 添加 fs_server endpoint 查询 helper | ✅ | 重构 | 封装 `lookup_latest_ready("fs")` 为 shell 内部 helper |
-| 1.2 | 迁移 `sync`、`mkdir`、`rm`、`touch`、`mv`、`chmod`、`chown` 到直接 IPC | ✅ | RED→GREEN | 添加 fs_*_direct() fallback |
-| 1.3 | 迁移 `cat`、`cp`、`writetest`、`echo >file`、`truncate` 到直接 IPC | ✅ | RED→GREEN | 使用 open/read/write/close 组合 |
-| 1.4 | 迁移 `ls`、`cd` 到直接 IPC | ✅ | RED→GREEN | list_direct() / stat_direct() |
-| 1.5 | 迁移 `ln`、`ln -s` 到直接 IPC | ✅ | RED→GREEN | link_direct() / symlink_direct() |
-| 1.6 | 迁移 `exec`、`runhello` 的二进制加载到直接 IPC 🏗 | ⬜ | RED→GREEN | open_direct + read_direct 替代 VFS::read_file |
-| 1.7 | QEMU smoke 验证 | ✅ | 验证 | 内核启动 + Shell + 用户程序 + fs_server 全部通过 |
-| 1.8 | 移除 RootServer 本地 NovaFS 挂载 | ⬜ | 清理 | 依赖 1.6 完成 |
-| 1.9 | `cargo check --workspace` + 单元测试 | 🟡 | 门禁 | cargo check 通过 |
+| 1.6 | 迁移 `exec`、`runhello` 二进制加载到 IPC | ✅ | RED→GREEN | `open_direct + read_direct` 替代 `VFS::read_file`，保留 VFS fallback |
+| 1.8 | 移除 RootServer 本地 NovaFS 挂载 | ⬜ | 清理 | 确认 fs_server IPC 覆盖全部 FS 操作后删除 `DISK_FS` / `novafs_core::VFS` |
+| 1.9 | `cargo check --workspace` + QEMU smoke | ⬜ | 门禁 | 全绿通过 |
 
 ---
 

@@ -732,7 +732,30 @@ impl Shell {
         crate::services::lookup_latest_ready("fs").map(|(_, ep, _)| ep)
     }
 
+    fn read_file_via_fs(&self, path_str: &str) -> Option<alloc::vec::Vec<u8>> {
+        if let Some(fs_ep) = self.fs_endpoint() {
+            let fd = fs_open_direct(fs_ep, path_str, 0);
+            if fd >= 0 {
+                let mut data = alloc::vec::Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = fs_read_direct(fs_ep, fd as usize, &mut buf);
+                    if n <= 0 {
+                        break;
+                    }
+                    data.extend_from_slice(&buf[..n as usize]);
+                }
+                fs_close_direct(fs_ep, fd as usize);
+                return Some(data);
+            }
+        }
+        None
+    }
+
     fn load_hello_binary(&self) -> Option<alloc::vec::Vec<u8>> {
+        if let Some(data) = self.read_file_via_fs("/bin/hello") {
+            return Some(data);
+        }
         {
             let vfs_lock = novafs_core::VFS.lock();
             if let Some(fs) = vfs_lock.as_ref() {
@@ -1327,7 +1350,13 @@ impl Shell {
                     let path_str = self.resolve_path(filename);
 
                     let mut final_data = None;
-                    {
+                    if let Some(data) = self.read_file_via_fs(&path_str) {
+                        final_data = Some(data);
+                    } else if !path_str.contains("/bin/") {
+                        let bin_path = alloc::format!("/bin/{}", filename);
+                        final_data = self.read_file_via_fs(&bin_path);
+                    }
+                    if final_data.is_none() {
                         let vfs_lock = novafs_core::VFS.lock();
                         if let Some(fs) = vfs_lock.as_ref() {
                             if let Ok(data) = fs.read_file(&path_str) {

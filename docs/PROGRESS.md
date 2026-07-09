@@ -417,3 +417,25 @@
 - `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
 - `cargo test -p libnova --features std --target x86_64-pc-windows-msvc` — 34 passed
 - `test.ps1 -Smoke` — 内核启动成功，Shell 就绪，用户程序执行并退出
+
+## 2026-07-08: P4.4 Phase 1 — Shell FS 命令迁移到 fs_server IPC
+
+**完成项**：
+- 为 14/16 Shell FS 命令添加 fs_server 直接 IPC 调用作为首选路径：
+  - 简单 IPC: sync, mkdir, rm, touch, mv, chmod, chown
+  - 读写组合: cat, cp, truncate, writetest, echo >file
+  - 目录/链接: ls, cd, ln, ln -s
+  - encrypt/decrypt 改为 IPC 优先（含修复重复处理程序）
+- 修复审计发现的 5 个 ISSUE（ISSUE-89~93）：
+  - cat 循环读取防截断、echo/cp 检查写入返回值
+  - cd 验证目录类型、encrypt/decrypt 顺序修正
+  - outw/outl 一致错误日志
+- 保留 spawn_fs_helper 和 LOCAL_VFS 作为 fallback
+
+**验证**：
+- `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+- 独立审计 → 修复 → 再审计零问题
+
+**已知**：
+- `exec`/`runhello` 二进制加载仍使用 VFS（Phase 2 pending）
+- 本地 NovaFS 挂载未移除（依赖 Phase 2）
