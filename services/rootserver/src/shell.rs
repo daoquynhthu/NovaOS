@@ -124,76 +124,7 @@ impl Shell {
         }
     }
 
-    fn format_mode(mode: u16) -> alloc::string::String {
-        let mut s = alloc::string::String::new();
-        // User
-        s.push(if mode & 0o400 != 0 { 'r' } else { '-' });
-        s.push(if mode & 0o200 != 0 { 'w' } else { '-' });
-        s.push(if mode & 0o100 != 0 { 'x' } else { '-' });
-        // Group
-        s.push(if mode & 0o040 != 0 { 'r' } else { '-' });
-        s.push(if mode & 0o020 != 0 { 'w' } else { '-' });
-        s.push(if mode & 0o010 != 0 { 'x' } else { '-' });
-        // Other
-        s.push(if mode & 0o004 != 0 { 'r' } else { '-' });
-        s.push(if mode & 0o002 != 0 { 'w' } else { '-' });
-        s.push(if mode & 0o001 != 0 { 'x' } else { '-' });
-        s
-    }
 
-    fn format_time(ts: u64) -> alloc::string::String {
-        let seconds_per_day = 86400;
-        let mut days = ts / seconds_per_day;
-        let mut seconds = ts % seconds_per_day;
-
-        let hour = seconds / 3600;
-        seconds %= 3600;
-        let minute = seconds / 60;
-        let second = seconds % 60;
-
-        let mut year = 1970;
-        loop {
-            let days_in_year = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
-                366
-            } else {
-                365
-            };
-            if days >= days_in_year {
-                days -= days_in_year;
-                year += 1;
-            } else {
-                break;
-            }
-        }
-
-        let days_in_month = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-        let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-
-        let mut month = 1;
-        for i in 1..=12 {
-            let mut d = days_in_month[i];
-            if i == 2 && is_leap {
-                d = 29;
-            }
-            if days >= d {
-                days -= d;
-                month += 1;
-            } else {
-                break;
-            }
-        }
-        let day = days + 1;
-
-        alloc::format!(
-            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second
-        )
-    }
 
     pub fn init(
         &mut self,
@@ -1031,15 +962,7 @@ impl Shell {
             if self.spawn_fs_helper_args(&["fs_sync"]) {
                 return;
             }
-            let fs_lock = crate::fs::DISK_FS.lock();
-            if let Some(fs) = fs_lock.as_ref() {
-                match fs.sync() {
-                    Ok(_) => println!("FileSystem synced."),
-                    Err(e) => println!("sync failed: {}", e),
-                }
-            } else {
-                println!("sync: Filesystem not mounted");
-            }
+            println!("sync: filesystem not available");
         } else if self.word_eq(word_start, word_end, "date") {
             let rtc = crate::drivers::rtc::RtcDriver::new();
             let (day, month, year) = rtc.read_date();
@@ -1500,99 +1423,7 @@ impl Shell {
                 return;
             }
 
-            let fs_lock = crate::fs::DISK_FS.lock();
-            if let Some(fs) = fs_lock.as_ref() {
-                // Use resolve_path_ex to avoid following symlink if it's the last component
-                match fs.resolve_path_ex(&self.cwd, &path_str, false) {
-                    Ok(inode) => {
-                        if let Ok(stat) = inode.metadata() {
-                            if stat.file_type == novafs_core::FileType::Directory {
-                                match inode.list() {
-                                    Ok(entries) => {
-                                        for (name, child) in entries {
-                                            if let Ok(cstat) = child.metadata() {
-                                                let type_char = match cstat.file_type {
-                                                    novafs_core::FileType::Directory => 'd',
-                                                    novafs_core::FileType::Symlink => 'l',
-                                                    _ => '-',
-                                                };
-                                                let mode_str = Self::format_mode(cstat.mode);
-                                                let time_str = Self::format_time(cstat.mtime);
-
-                                                let mut name_display = name.clone();
-                                                if cstat.file_type == novafs_core::FileType::Symlink
-                                                {
-                                                    let mut buf = alloc::vec![0u8; cstat.size];
-                                                    if let Ok(n) = child.read_at(0, &mut buf) {
-                                                        if let Ok(target) =
-                                                            core::str::from_utf8(&buf[..n])
-                                                        {
-                                                            name_display = alloc::format!(
-                                                                "{} -> {}", name, target
-                                                            );
-                                                        }
-                                                    }
-                                                }
-
-                                                println!(
-                                                    "{}{} {:>2} {:>4} {:>4} {:>8} {} {}",
-                                                    type_char,
-                                                    mode_str,
-                                                    cstat.nlink,
-                                                    cstat.uid,
-                                                    cstat.gid,
-                                                    cstat.size,
-                                                    time_str,
-                                                    name_display
-                                                );
-                                            } else {
-                                                println!("?rw-r--r--  1    0    0        0 1970-01-01 00:00:00 {}", name);
-                                            }
-                                        }
-                                    }
-                                    Err(e) => println!("ls: {}", e),
-                                }
-                            } else {
-                                let type_char = match stat.file_type {
-                                    novafs_core::FileType::Directory => 'd',
-                                    novafs_core::FileType::Symlink => 'l',
-                                    _ => '-',
-                                };
-                                let mode_str = Self::format_mode(stat.mode);
-                                let time_str = Self::format_time(stat.mtime);
-
-                                let mut name_display = path_str.clone();
-                                if stat.file_type == novafs_core::FileType::Symlink {
-                                    let mut buf = alloc::vec![0u8; stat.size];
-                                    if let Ok(n) = inode.read_at(0, &mut buf) {
-                                        if let Ok(target) = core::str::from_utf8(&buf[..n]) {
-                                            name_display =
-                                                alloc::format!("{} -> {}", path_str, target);
-                                        }
-                                    }
-                                }
-
-                                println!(
-                                    "{}{} {:>2} {:>4} {:>4} {:>8} {} {}",
-                                    type_char,
-                                    mode_str,
-                                    stat.nlink,
-                                    stat.uid,
-                                    stat.gid,
-                                    stat.size,
-                                    time_str,
-                                    name_display
-                                );
-                            }
-                        } else {
-                            println!("ls: cannot stat {}", path_str);
-                        }
-                    }
-                    Err(e) => println!("ls: {}: {}", path_str, e),
-                }
-            } else {
-                println!("ls: Filesystem not mounted");
-            }
+            println!("ls: filesystem not available");
         } else if self.word_eq(word_start, word_end, "env") {
             for (k, v) in &self.env_vars {
                 println!("{}={}", k, v);
@@ -1646,27 +1477,7 @@ impl Shell {
                     return;
                 }
 
-                let fs_lock = crate::fs::DISK_FS.lock();
-                if let Some(fs) = fs_lock.as_ref() {
-                    match novafs_core::resolve_path(fs, &self.cwd, &path_str) {
-                        Ok(inode) => {
-                            if let Ok(stat) = inode.metadata() {
-                                if stat.file_type == novafs_core::FileType::Directory {
-                                    self.cwd = path_str;
-                                    if self.cwd.len() > 1 && self.cwd.ends_with('/') {
-                                        self.cwd.pop();
-                                    }
-                                    println!("[SHELL] cd ok {}", self.cwd);
-                                } else {
-                                    println!("cd: {}: Not a directory", path_str);
-                                }
-                            }
-                        }
-                        Err(e) => println!("cd: {}: {}", path_str, e),
-                    }
-                } else {
-                    println!("cd: Filesystem not mounted");
-                }
+                println!("cd: filesystem not available");
             }
         } else if self.word_eq(word_start, word_end, "mkdir") {
             let len = end - rest_start;
@@ -1695,33 +1506,7 @@ impl Shell {
                     if self.spawn_fs_helper("fs_mkdir", &path_str) {
                         return;
                     }
-                    let (parent_path, name) = if let Some(idx) = path_str.rfind('/') {
-                        if idx == 0 {
-                            ("/", &path_str[1..])
-                        } else {
-                            (&path_str[..idx], &path_str[idx + 1..])
-                        }
-                    } else {
-                        (self.cwd.as_str(), path_str.as_str())
-                    };
-                    let fs_lock = crate::fs::DISK_FS.lock();
-                    if let Some(fs) = fs_lock.as_ref() {
-                        match novafs_core::resolve_path(fs, &self.cwd, parent_path) {
-                            Ok(parent) => {
-                                match parent.create(name, novafs_core::FileType::Directory) {
-                                    Ok(_) => {
-                                        println!("Created directory {}", path_str);
-                                        fs.sync().ok();
-                                        self.mark_fs_service_dirty();
-                                    }
-                                    Err(e) => println!("mkdir: {}", e),
-                                }
-                            }
-                            Err(e) => println!("mkdir: parent {}: {}", parent_path, e),
-                        }
-                    } else {
-                        println!("mkdir: Filesystem not mounted");
-                    }
+                    println!("mkdir: filesystem not available");
                 }
             }
         } else if self.word_eq(word_start, word_end, "cat") {
@@ -1757,38 +1542,7 @@ impl Shell {
                     return;
                 }
 
-                let fs_lock = crate::fs::DISK_FS.lock();
-                if let Some(fs) = fs_lock.as_ref() {
-                    match novafs_core::resolve_path(fs, &self.cwd, &path_str) {
-                        Ok(inode) => {
-                            if let Ok(stat) = inode.metadata() {
-                                if stat.file_type == novafs_core::FileType::File {
-                                    let mut buf = alloc::vec![0u8; stat.size];
-                                    match inode.read_at(0, &mut buf) {
-                                        Ok(_) => {
-                                            if let Ok(s) = core::str::from_utf8(&buf) {
-                                                print!("{}", s);
-                                                if !s.ends_with('\n') {
-                                                    println!();
-                                                }
-                                            } else {
-                                                println!("(Binary file, {} bytes)", stat.size);
-                                            }
-                                        }
-                                        Err(e) => println!("cat: read error: {}", e),
-                                    }
-                                } else {
-                                    println!("cat: {}: Is a directory", path_str);
-                                }
-                            } else {
-                                println!("cat: {}: cannot stat", path_str);
-                            }
-                        }
-                        Err(e) => println!("cat: {}: {}", path_str, e),
-                    }
-                } else {
-                    println!("cat: Filesystem not mounted");
-                }
+                println!("cat: filesystem not available");
             }
         } else if self.word_eq(word_start, word_end, "rm") {
             let len = end - rest_start;
@@ -1824,28 +1578,7 @@ impl Shell {
                     return;
                 }
 
-                let fs_lock = crate::fs::DISK_FS.lock();
-                if let Some(fs) = fs_lock.as_ref() {
-                    let (parent_path, name) = if let Some(idx) = path_str.rfind('/') {
-                        if idx == 0 {
-                            ("/", &path_str[1..])
-                        } else {
-                            (&path_str[..idx], &path_str[idx + 1..])
-                        }
-                    } else {
-                        (self.cwd.as_str(), path_str.as_str())
-                    };
-
-                    match novafs_core::resolve_path(fs, &self.cwd, parent_path) {
-                        Ok(parent) => match parent.remove(name) {
-                            Ok(_) => println!("Removed '{}'", path_str),
-                            Err(e) => println!("rm: cannot remove '{}': {}", path_str, e),
-                        },
-                        Err(e) => println!("rm: {}: {}", parent_path, e),
-                    }
-                } else {
-                    println!("rm: Filesystem not mounted");
-                }
+                println!("rm: filesystem not available");
             }
         } else if self.word_eq(word_start, word_end, "cp") {
             let len = end - rest_start;
@@ -1908,18 +1641,7 @@ impl Shell {
                         return;
                     }
 
-                    let fs_lock = crate::fs::DISK_FS.lock();
-                    if let Some(fs) = fs_lock.as_ref() {
-                        match fs.read_file(&src_path) {
-                            Ok(data) => match fs.write_file(&dest_path, &data) {
-                                Ok(_) => println!("Copied '{}' to '{}'", src_path, dest_path),
-                                Err(e) => println!("cp: write error: {}", e),
-                            },
-                            Err(e) => println!("cp: read error: {}", e),
-                        }
-                    } else {
-                        println!("cp: Filesystem not mounted");
-                    }
+                    println!("cp: filesystem not available");
                 } else {
                     println!("Usage: cp <src> <dest>");
                 }
@@ -1967,101 +1689,33 @@ impl Shell {
 
                     let link_path = self.resolve_path(&link_str);
 
-                    let fs_lock = crate::fs::DISK_FS.lock();
-                    if let Some(fs) = fs_lock.as_ref() {
-                        if is_symlink {
-                            if let Some(fs_ep) = self.fs_endpoint() {
-                                if fs_symlink_direct(fs_ep, &target_str, &link_path) >= 0 {
-                                    println!("Created symbolic link '{}' -> '{}'", link_path, target_str);
-                                    return;
-                                }
-                            }
-                            let helper_args =
-                                ["fs_symlink", target_str.as_str(), link_path.as_str()];
-                            if self.spawn_fs_helper_args(&helper_args) {
+                    if is_symlink {
+                        if let Some(fs_ep) = self.fs_endpoint() {
+                            if fs_symlink_direct(fs_ep, &target_str, &link_path) >= 0 {
+                                println!("Created symbolic link '{}' -> '{}'", link_path, target_str);
                                 return;
-                            }
-                            // Symlink creation
-                            let (parent_path, name) = if let Some(idx) = link_path.rfind('/') {
-                                if idx == 0 {
-                                    ("/", &link_path[1..])
-                                } else {
-                                    (&link_path[..idx], &link_path[idx + 1..])
-                                }
-                            } else {
-                                ("/", link_path.as_str())
-                            };
-
-                            if name.is_empty() {
-                                println!("ln: Invalid link name");
-                            } else {
-                                match novafs_core::resolve_path(fs, &self.cwd, parent_path) {
-                                    Ok(parent) => {
-                                        match parent.create(name, novafs_core::FileType::Symlink) {
-                                            Ok(inode) => {
-                                                match inode.write_at(0, target_str.as_bytes()) {
-                                                    Ok(_) => println!(
-                                                        "Created symbolic link '{}' -> '{}'",
-                                                        link_path, target_str
-                                                    ),
-                                                    Err(e) => println!("ln: write failed: {}", e),
-                                                }
-                                            }
-                                            Err(e) => println!("ln: create failed: {}", e),
-                                        }
-                                    }
-                                    Err(e) => println!("ln: parent {}: {}", parent_path, e),
-                                }
-                            }
-                        } else {
-                            // Hard link creation
-                            let target_path = self.resolve_path(&target_str);
-                            if let Some(fs_ep) = self.fs_endpoint() {
-                                if fs_link_direct(fs_ep, &target_path, &link_path) >= 0 {
-                                    println!("Created hard link '{}' => '{}'", link_path, target_path);
-                                    return;
-                                }
-                            }
-                            let helper_args = ["fs_link", target_path.as_str(), link_path.as_str()];
-                            if self.spawn_fs_helper_args(&helper_args) {
-                                return;
-                            }
-                            match novafs_core::resolve_path(fs, &self.cwd, &target_path) {
-                                Ok(target_inode) => {
-                                    let (parent_path, name) =
-                                        if let Some(idx) = link_path.rfind('/') {
-                                            if idx == 0 {
-                                                ("/", &link_path[1..])
-                                            } else {
-                                                (&link_path[..idx], &link_path[idx + 1..])
-                                            }
-                                        } else {
-                                            ("/", link_path.as_str())
-                                        };
-
-                                    if name.is_empty() {
-                                        println!("ln: Invalid link name");
-                                    } else {
-                                        match novafs_core::resolve_path(fs, &self.cwd, parent_path)
-                                        {
-                                            Ok(parent) => {
-                                                match parent.link(name, target_inode.as_ref()) {
-                                                    Ok(_) => println!(
-                                                        "Created hard link '{}' => '{}'",
-                                                        link_path, target_path
-                                                    ),
-                                                    Err(e) => println!("ln: failed to link: {}", e),
-                                                }
-                                            }
-                                            Err(e) => println!("ln: parent {}: {}", parent_path, e),
-                                        }
-                                    }
-                                }
-                                Err(e) => println!("ln: target {}: {}", target_path, e),
                             }
                         }
+                        let helper_args =
+                            ["fs_symlink", target_str.as_str(), link_path.as_str()];
+                        if self.spawn_fs_helper_args(&helper_args) {
+                            return;
+                        }
+                        println!("ln: filesystem not available");
                     } else {
-                        println!("ln: Filesystem not mounted");
+                        // Hard link creation
+                        let target_path = self.resolve_path(&target_str);
+                        if let Some(fs_ep) = self.fs_endpoint() {
+                            if fs_link_direct(fs_ep, &target_path, &link_path) >= 0 {
+                                println!("Created hard link '{}' => '{}'", link_path, target_path);
+                                return;
+                            }
+                        }
+                        let helper_args = ["fs_link", target_path.as_str(), link_path.as_str()];
+                        if self.spawn_fs_helper_args(&helper_args) {
+                            return;
+                        }
+                        println!("ln: filesystem not available");
                     }
                 } else {
                     println!("Usage: ln [-s] <target> <link_name>");
@@ -2102,20 +1756,7 @@ impl Shell {
                         if self.spawn_fs_helper_args(&["fs_chmod", &mode_str, &path_str]) {
                             return;
                         }
-                        let fs_lock = crate::fs::DISK_FS.lock();
-                        if let Some(fs) = fs_lock.as_ref() {
-                            match novafs_core::resolve_path(fs, &self.cwd, &path_str) {
-                                Ok(inode) => match inode.control(4, mode as u64) {
-                                    Ok(_) => {
-                                        println!("Changed mode of '{}' to {:o}", path_str, mode)
-                                    }
-                                    Err(e) => println!("chmod: {}", e),
-                                },
-                                Err(e) => println!("chmod: {}: {}", path_str, e),
-                            }
-                        } else {
-                            println!("chmod: Filesystem not mounted");
-                        }
+                        println!("chmod: filesystem not available");
                     } else {
                         println!("chmod: Invalid mode (octal required)");
                     }
@@ -2162,31 +1803,7 @@ impl Shell {
                             if self.spawn_fs_helper_args(&["fs_chown", &owner_str, &path_str]) {
                                 return;
                             }
-                            let fs_lock = crate::fs::DISK_FS.lock();
-                            if let Some(fs) = fs_lock.as_ref() {
-                                match novafs_core::resolve_path(fs, &self.cwd, &path_str) {
-                                    Ok(inode) => {
-                                        let mut success = true;
-                                        if let Err(e) = inode.control(5, uid as u64) {
-                                            println!("chown: failed to set uid: {}", e);
-                                            success = false;
-                                        }
-                                        if success {
-                                            if let Err(e) = inode.control(6, gid as u64) {
-                                                println!("chown: failed to set gid: {}", e);
-                                            } else {
-                                                println!(
-                                                    "Changed ownership of '{}' to {}:{}",
-                                                    path_str, uid, gid
-                                                );
-                                            }
-                                        }
-                                    }
-                                    Err(e) => println!("chown: {}: {}", path_str, e),
-                                }
-                            } else {
-                                println!("chown: Filesystem not mounted");
-                            }
+                            println!("chown: filesystem not available");
                         } else {
                             println!("chown: Invalid uid/gid");
                         }
@@ -2222,88 +1839,19 @@ impl Shell {
                     let dest_str = dest_s.iter().collect::<alloc::string::String>();
 
                     let src_path = self.resolve_path(&src_str);
-                    let mut dest_path = self.resolve_path(&dest_str);
+                    let dest_path = self.resolve_path(&dest_str);
 
-                    let fs_lock = crate::fs::DISK_FS.lock();
-                    if let Some(fs) = fs_lock.as_ref() {
-                        // Check if dest is a directory
-                        let mut dest_is_dir = false;
-                        if let Ok(inode) = novafs_core::resolve_path(fs, &self.cwd, &dest_path) {
-                            if let Ok(stat) = inode.metadata() {
-                                if stat.file_type == novafs_core::FileType::Directory {
-                                    dest_is_dir = true;
-                                }
-                            }
-                        }
-
-                        if dest_is_dir {
-                            let src_name = if let Some(idx) = src_path.rfind('/') {
-                                &src_path[idx + 1..]
-                            } else {
-                                &src_path
-                            };
-                            if !dest_path.ends_with('/') {
-                                dest_path.push('/');
-                            }
-                            dest_path.push_str(src_name);
-                        }
-
-                        if let Some(fs_ep) = self.fs_endpoint() {
-                            if fs_rename_direct(fs_ep, &src_path, &dest_path) >= 0 {
-                                println!("Moved '{}' to '{}'", src_path, dest_path);
-                                return;
-                            }
-                        }
-                        let helper_args = ["fs_mv", src_path.as_str(), dest_path.as_str()];
-                        if self.spawn_fs_helper_args(&helper_args) {
+                    if let Some(fs_ep) = self.fs_endpoint() {
+                        if fs_rename_direct(fs_ep, &src_path, &dest_path) >= 0 {
+                            println!("Moved '{}' to '{}'", src_path, dest_path);
                             return;
                         }
-
-                        // Split paths
-                        let (src_parent_path, src_name) = if let Some(idx) = src_path.rfind('/') {
-                            if idx == 0 {
-                                ("/", &src_path[1..])
-                            } else {
-                                (&src_path[..idx], &src_path[idx + 1..])
-                            }
-                        } else {
-                            (self.cwd.as_str(), src_path.as_str())
-                        };
-
-                        let (dest_parent_path, dest_name) = if let Some(idx) = dest_path.rfind('/')
-                        {
-                            if idx == 0 {
-                                ("/", &dest_path[1..])
-                            } else {
-                                (&dest_path[..idx], &dest_path[idx + 1..])
-                            }
-                        } else {
-                            (self.cwd.as_str(), dest_path.as_str())
-                        };
-
-                        // Perform rename
-                        match novafs_core::resolve_path(fs, &self.cwd, src_parent_path) {
-                            Ok(src_parent) => {
-                                match novafs_core::resolve_path(fs, &self.cwd, dest_parent_path) {
-                                    Ok(dest_parent) => {
-                                        match src_parent.rename(src_name, &dest_parent, dest_name) {
-                                            Ok(_) => println!(
-                                                "Renamed '{}' to '{}'",
-                                                src_path, dest_path
-                                            ),
-                                            Err(e) => println!("mv: {}", e),
-                                        }
-                                    }
-                                    Err(e) => {
-                                        println!("mv: dest parent {}: {}", dest_parent_path, e)
-                                    }
-                                }
-                            }
-                            Err(e) => println!("mv: src parent {}: {}", src_parent_path, e),
-                        }
-                    } else {
-                        println!("mv: Filesystem not mounted");
                     }
+                    let helper_args = ["fs_mv", src_path.as_str(), dest_path.as_str()];
+                    if self.spawn_fs_helper_args(&helper_args) {
+                        return;
+                    }
+                    println!("mv: filesystem not available");
                 } else {
                     println!("Usage: mv <src> <dest>");
                 }
@@ -2344,33 +1892,7 @@ impl Shell {
                     return;
                 }
 
-                let fs_lock = crate::fs::DISK_FS.lock();
-                if let Some(fs) = fs_lock.as_ref() {
-                    let (parent_path, name) = if let Some(idx) = path_str.rfind('/') {
-                        if idx == 0 {
-                            ("/", &path_str[1..])
-                        } else {
-                            (&path_str[..idx], &path_str[idx + 1..])
-                        }
-                    } else {
-                        (self.cwd.as_str(), path_str.as_str())
-                    };
-                    match novafs_core::resolve_path(fs, &self.cwd, parent_path) {
-                        Ok(parent) => {
-                            if let Ok(_) = parent.lookup(name) {
-                                // Exists, do nothing
-                            } else {
-                                match parent.create(name, novafs_core::FileType::File) {
-                                    Ok(_) => println!("Created '{}'", path_str),
-                                    Err(e) => println!("touch: {}", e),
-                                }
-                            }
-                        }
-                        Err(e) => println!("touch: {}: {}", parent_path, e),
-                    }
-                } else {
-                    println!("touch: Filesystem not mounted");
-                }
+                println!("touch: filesystem not available");
             }
         } else if self.word_eq(word_start, word_end, "pwd") {
             println!("{}", self.cwd);
@@ -2401,26 +1923,7 @@ impl Shell {
                         return;
                     }
 
-                    let fs_lock = crate::fs::DISK_FS.lock();
-                    if let Some(fs) = fs_lock.as_ref() {
-                        match novafs_core::resolve_path(fs, "/", &path_str) {
-                            Ok(inode) => match inode.control(3, size) {
-                                Ok(_) => println!("Truncated '{}' to {} bytes.", path_str, size),
-                                Err(e) => println!("truncate: {}", e),
-                            },
-                            Err(_) => match fs.create_file(&path_str) {
-                                Ok(inode) => match inode.control(3, size) {
-                                    Ok(_) => {
-                                        println!("Truncated '{}' to {} bytes.", path_str, size)
-                                    }
-                                    Err(e) => println!("truncate: {}", e),
-                                },
-                                Err(e) => println!("truncate: {}: {}", path_str, e),
-                            },
-                        }
-                    } else {
-                        println!("truncate: Filesystem not mounted");
-                    }
+                    println!("truncate: filesystem not available");
                 }
             }
         } else if self.word_eq(word_start, word_end, "writetest") {
@@ -2463,18 +1966,7 @@ impl Shell {
                 data.push((i % 256) as u8);
             }
 
-            let fs_lock = crate::fs::DISK_FS.lock();
-            if let Some(fs) = fs_lock.as_ref() {
-                match fs.write_file(&path_str, &data) {
-                    Ok(_) => {
-                        println!("Write success");
-                        self.mark_fs_service_dirty();
-                    }
-                    Err(e) => println!("Write failed: {}", e),
-                }
-            } else {
-                println!("writetest: Filesystem not mounted");
-            }
+            println!("writetest: filesystem not available");
         } else if self.word_eq(word_start, word_end, "echo") {
             let mut redirect_idx = None;
             for i in rest_start..end {
@@ -2527,18 +2019,7 @@ impl Shell {
                     content_vec.extend_from_slice(s.as_bytes());
                 }
 
-                let fs_lock = crate::fs::DISK_FS.lock();
-                if let Some(fs) = fs_lock.as_ref() {
-                    match fs.write_file(&path_str, &content_vec) {
-                        Ok(_) => {
-                            println!("Written to {}", path_str);
-                            self.mark_fs_service_dirty();
-                        }
-                        Err(e) => println!("echo: write error: {}", e),
-                    }
-                } else {
-                    println!("echo: Filesystem not mounted");
-                }
+                println!("echo: filesystem not available");
             } else {
                 if rest_start >= end {
                     println!();
