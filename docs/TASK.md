@@ -73,10 +73,12 @@
 
 | # | 子任务 | 状态 | 说明 |
 |---|--------|------|------|
-| 2.1 | RootServer 不再处理文件 syscall（open/read/write/close 等） | ⬜ | 全部转发到 fs_server |
-| 2.2 | RootServer 移除 ATA 端口 I/O 依赖 | ⬜ | |
-| 2.3 | 确认降权后 RootServer 代码量减至合理规模 | ⬜ | |
-| 2.4 | `cargo check --workspace` + 单元测试 | ⬜ | |
+| 2.1 | Boot 流程去掉本地 NovaFS 格式化/安装 | ✅ | 替换为 `create_deprecated_local_fs()` 弃用桩 |
+| 2.2 | fs_server 接管磁盘初始化和二进制安装 | ⬜ | fs_server 首次启动时格式化磁盘 |
+| 2.3 | Shell 命令中移除 LOCAL_VFS fallback | ⬜ | 仅保留 IPC + spawn_fs_helper |
+| 2.4 | RootServer 移除 ATA 驱动 | ⬜ | |
+| 2.5 | 移除文件 syscall handler | ⬜ | 转发到 fs_server |
+| 2.6 | `cargo check --workspace` + QEMU smoke | ⬜ | |
 
 ---
 

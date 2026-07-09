@@ -2,7 +2,7 @@
 
 > **Purpose**: Quick code navigation (front) + layered architecture description for AI agent context (back).  
 > **Truth source**: Code only. If docs disagree with code, code wins.  
-> **Generated**: 2026-07-08 (updated for Phase 2-4)
+> **Generated**: 2026-07-08 (updated for Phase 2-4, P4.5 step 1)
 
 ---
 
@@ -222,9 +222,10 @@
 
 ## II. Architecture Reality
 
-- `Main event loop（dispatch 部分）` 内联 Send handler 已添加 `info.length() < 4` 校验（P4.6）
+- boot 流程不再格式化磁盘/安装二进制（P4.5）：`create_deprecated_local_fs()` 创建最小桩
+- fs_server 是唯一数据面权威，DISK_FS/VFS 保留为弃用兼容桩
 - ATA PIO 设备端口能力通过 `issue_ioport_cap` 安装到 fs_server CNode（P4.2）
-- RootServer 不再需要代理 fs_server 块 I/O 请求，`FS_SYNC_FORWARD_ENABLED` 死锁已解除（P4.3）
+- `FS_SYNC_FORWARD_ENABLED` 死锁已解除（P4.3）
 
 ### Layer 0: Physical / Host
 
@@ -301,11 +302,14 @@ The initial user-mode process. RootServer is the **syscall dispatch center** + *
 - P4.6: inline Send handler validated, fs_server dispatch validates message length
 - Non-FS Shell commands now use direct fs_server IPC fallback before spawn_fs_helper (P4.4)
 
-**Architecture constraint — FS forwarding deadlock** (`main.rs:65`):
+**Architecture — NovaFS delegation (P4.5)**:
+RootServer boot no longer formats disk or installs system binaries. A `create_deprecated_local_fs()` stub creates a minimal local NovaFS for boot-time compatibility. fs_server is the sole data authority — all file operations go through fs_server IPC (Shell commands via P4.4, exec binary loading via P4.4.6). DISK_FS and novafs_core::VFS are deprecated legacy stubs.
+
+**Legacy — FS forwarding deadlock** (`main.rs:65`):
 ```rust
 const FS_SYNC_FORWARD_ENABLED: bool = false;
 ```
-RootServer cannot synchronously `Call` fs_server and have fs_server `Call` back (deadlock). All fs_server communication uses **async helper pattern**: shell spawns `/bin/hello fs_X <args>` which directly calls fs_server via IPC.
+Deadlock condition eliminated (P4.3). fs_server now has local ATA or RemoteBlockDevice fallback, no longer calls back to RootServer for block I/O.
 
 **OOM protection** (`main.rs:67-94`):
 - `deny_if_memory_pressure()` checks free slots (>64 reserve) and free RAM (>256KB)

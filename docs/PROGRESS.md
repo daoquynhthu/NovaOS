@@ -439,3 +439,16 @@
 **已知**：
 - `exec`/`runhello` 二进制加载仍使用 VFS（Phase 2 pending）
 - 本地 NovaFS 挂载未移除（依赖 Phase 2）
+
+## 2026-07-08: P4.5 Step 1 — Boot 流程去本地格式化
+
+**完成项**：
+- 将 80 行的 NovaFS 格式化和二进制安装启动流程替换为 `create_deprecated_local_fs()` 函数
+- 启动时不再格式化磁盘或安装系统二进制（由 fs_server 在运行时处理）
+- DISK_FS / novafs_core::VFS 保留为弃用桩
+
+**原理**：系统二进制（hello, fs_server, serial_server）通过 `crate::filesystem::get_file()` 从嵌入式文件系统加载，不需要磁盘格式化即可启动。磁盘现在由 fs_server 首次访问时格式化。
+
+**验证**：
+- `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+- QEMU 验证：内核启动 → fs_server 启动 → NovaFS 通过 RemoteBlockDevice 挂载
