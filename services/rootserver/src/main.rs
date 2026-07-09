@@ -122,6 +122,16 @@ extern "C" fn irq_worker_entry(notification: usize, endpoint: usize) {
     }
 }
 
+/// P4.5: Create a minimal local NovaFS instance for boot-time compatibility.
+fn create_deprecated_local_fs(ata: &Arc<crate::drivers::ata::AtaDriver>, size_sectors: u32) -> Option<Arc<dyn FileSystem>> {
+    let sectors = if size_sectors > 0 { size_sectors } else { 1024 * 10 };
+    let device = ata.clone();
+    let fs = novafs_core::novafs::NovaFS::format(device, 0, sectors);
+    let fs_arc = Arc::new(fs);
+    println!("[KERNEL] Deprecated local FS created ({} sectors).", sectors);
+    Some(fs_arc)
+}
+
 pub(crate) fn spawn_boot_process(
     boot_info: &seL4_BootInfo,
     allocator: &mut impl ObjectAllocator,
@@ -400,78 +410,14 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
 
     let ata = alloc::sync::Arc::new(ata_driver);
 
-    // Initialize NovaFS (Mount)
-    println!("[KERNEL] Mounting NovaFS...");
-    let mut need_format = false;
-
-    match novafs_core::novafs::NovaFS::new(ata.clone(), 0) {
-        Ok(fs) => {
-            let fs_arc = alloc::sync::Arc::new(fs.clone());
-            *crate::fs::DISK_FS.lock() = Some(fs_arc.clone());
-            *novafs_core::VFS.lock() = Some(fs_arc);
-            if fs.root_inode().lookup("bin").is_err() {
-                println!("[KERNEL] /bin not found.");
-                need_format = true;
-            }
-        }
-        Err(e) => {
-            println!("[KERNEL] Mount failed: {}. Will format.", e);
-            need_format = true;
-        }
-    }
-
-    if need_format {
-        println!("[KERNEL] Disk uninitialized or system missing. Formatting...");
-        // Use detected size if valid, else default 5MB
-        let format_size = if disk_size_sectors > 0 {
-            disk_size_sectors
-        } else {
-            1024 * 10
-        };
-        let fs_new = novafs_core::novafs::NovaFS::format(ata.clone(), 0, format_size);
-        let fs_arc = alloc::sync::Arc::new(fs_new.clone());
+    // P4.5: Delegate all disk operations to fs_server.
+    // DISK_FS and novafs_core::VFS remain as deprecated stubs for POST test
+    // compatibility and Shell fallback; fs_server is the sole data authority.
+    if let Some(fs_arc) = create_deprecated_local_fs(&ata, disk_size_sectors) {
         *crate::fs::DISK_FS.lock() = Some(fs_arc.clone());
         *novafs_core::VFS.lock() = Some(fs_arc);
-
-        if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
-            let root = fs.root_inode();
-            println!("[KERNEL] Creating /bin...");
-            let bin = root
-                .create("bin", novafs_core::FileType::Directory)
-                .expect("Failed to create /bin");
-
-            println!("[KERNEL] Installing system binaries...");
-            for file in filesystem::FILES {
-                println!("[KERNEL] Installing: {}", file.name);
-                let inode = bin
-                    .create(file.name, novafs_core::FileType::File)
-                    .expect("Failed to create file");
-                println!("[KERNEL] Writing data for: {}", file.name);
-                inode.write_at(0, file.data).expect("Failed to write data");
-                println!("  - Installed: {}", file.name);
-            }
-
-            // Create README
-            println!("[KERNEL] Creating README.TXT...");
-            let readme = root
-                .create("README.TXT", novafs_core::FileType::File)
-                .unwrap();
-            println!("[KERNEL] Writing README.TXT...");
-            readme
-                .write_at(0, b"Welcome to NovaOS (Persistent Mode)!")
-                .unwrap();
-            println!("[KERNEL] Syncing README...");
-            readme.sync().ok();
-        }
-
-        if let Some(fs) = crate::fs::DISK_FS.lock().as_ref() {
-            println!("[KERNEL] Syncing Filesystem...");
-            fs.sync().ok();
-        }
-    } else {
-        println!("[KERNEL] Filesystem healthy.");
     }
-    println!("[KERNEL] VFS Initialized.");
+    println!("[KERNEL] VFS Initialized (deprecated, fs_server is primary).");
 
     // Initialize Serial Port
     serial::init();
