@@ -75,10 +75,9 @@
 |---|--------|------|------|
 | 2.1 | Boot 流程去掉本地 NovaFS 格式化/安装 | ✅ | 替换为 `create_deprecated_local_fs()` 弃用桩 |
 | 2.2 | fs_server 接管磁盘初始化（自动格式化） | ✅ | fs_server mount 失败时自动 format；local FS 安装二进制供旧 syscall 使用 |
-| 2.3 | Shell 命令中移除 LOCAL_VFS fallback | ⬜ | 仅保留 IPC + spawn_fs_helper |
-| 2.4 | RootServer 移除 ATA 驱动 | ⬜ | |
-| 2.5 | 移除文件 syscall handler | ⬜ | 转发到 fs_server |
-| 2.6 | `cargo check --workspace` + QEMU smoke | ⬜ | |
+| 2.3 | Shell 命令中移除 LOCAL_VFS fallback | ✅ | 15 个命令已清理，仅 mkfs/mount 保留 |
+| 2.4 | 启用 FS_SYNC_FORWARD_ENABLED=true | ✅ | 利用已有 `try_forward_fs_call` 机制，死锁已解除 |
+| 2.5 | `cargo check --workspace` + QEMU smoke | ⬜ | |
 
 ---
 

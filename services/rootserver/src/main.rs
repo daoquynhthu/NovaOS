@@ -57,7 +57,7 @@ const OOM_MIN_FREE_RAM_BYTES: u64 = 256 * 1024;
 pub(crate) const FS_READ_PREFER_SERVER: bool = true;
 // P4.3: fs_server now has direct ATA access (P4.2) so synchronous forwarding
 // no longer causes a deadlock. Keep disabled pending data-consistency review.
-pub(crate) const FS_SYNC_FORWARD_ENABLED: bool = false;
+pub(crate) const FS_SYNC_FORWARD_ENABLED: bool = true;
 
 pub(crate) fn deny_if_memory_pressure(
     slots: &SlotAllocator,
