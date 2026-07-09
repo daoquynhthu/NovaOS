@@ -123,12 +123,24 @@ extern "C" fn irq_worker_entry(notification: usize, endpoint: usize) {
 }
 
 /// P4.5: Create a minimal local NovaFS instance for boot-time compatibility.
+/// Installs system binaries so that user_app's sys_spawn can find them.
+/// fs_server is the sole production data authority; this stub is only for
+/// legacy syscall-based binary loading that hasn't been migrated yet.
 fn create_deprecated_local_fs(ata: &Arc<crate::drivers::ata::AtaDriver>, size_sectors: u32) -> Option<Arc<dyn FileSystem>> {
     let sectors = if size_sectors > 0 { size_sectors } else { 1024 * 10 };
     let device = ata.clone();
     let fs = novafs_core::novafs::NovaFS::format(device, 0, sectors);
+    let root = fs.root_inode();
+    let bin = root.create("bin", novafs_core::FileType::Directory).ok()?;
+    for file in crate::filesystem::FILES {
+        if let Ok(inode) = bin.create(file.name, novafs_core::FileType::File) {
+            let _ = inode.write_at(0, file.data);
+        }
+    }
+    drop(bin);
+    fs.sync().ok();
     let fs_arc = Arc::new(fs);
-    println!("[KERNEL] Deprecated local FS created ({} sectors).", sectors);
+    println!("[KERNEL] Deprecated local FS created ({} sectors, {} binaries).", sectors, crate::filesystem::FILES.len());
     Some(fs_arc)
 }
 

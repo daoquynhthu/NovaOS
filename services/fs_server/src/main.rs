@@ -208,22 +208,31 @@ fn mount_local_fs(syscall_ep_cap: seL4_CPtr) -> Result<(), &'static str> {
     libnova::arch::x86_64::port_io::init(ata_slot);
 
     let mut ata = novafs_core::ata::AtaBlockDevice::new(0x1F0);
-    let fs: Arc<dyn FileSystem> = match ata.detect() {
-        Ok(()) if ata.sector_count > 0 => {
-            println!("[FS_SERVER] Local ATA detected, {} sectors", ata.sector_count);
-            let device = Arc::new(ata);
-            let nfs = NovaFS::new(device, 0)?;
-            Arc::new(nfs) as Arc<dyn FileSystem>
-        }
-        _ => {
-            println!("[FS_SERVER] Local ATA unavailable, using RemoteBlockDevice");
-            let device = Arc::new(RemoteBlockDevice::new(syscall_ep_cap)?);
-            let nfs = NovaFS::new(device, 0)?;
-            Arc::new(nfs) as Arc<dyn FileSystem>
-        }
-    };
-
-    *DISK_FS.lock() = Some(fs);
+    let ata_sectors = if ata.detect().is_ok() { ata.sector_count } else { 0 };
+    if ata_sectors > 0 {
+        println!("[FS_SERVER] Local ATA detected, {} sectors", ata_sectors);
+        let device = Arc::new(ata);
+        let nfs = match NovaFS::new(device.clone(), 0) {
+            Ok(fs) => fs,
+            Err(_) => {
+                println!("[FS_SERVER] Formatting local ATA...");
+                NovaFS::format(device, 0, ata_sectors as u32)
+            }
+        };
+        *DISK_FS.lock() = Some(Arc::new(nfs));
+    } else {
+        println!("[FS_SERVER] Local ATA unavailable, using RemoteBlockDevice");
+        let device = Arc::new(RemoteBlockDevice::new(syscall_ep_cap)?);
+        let sectors = 20480;
+        let nfs = match NovaFS::new(device.clone(), 0) {
+            Ok(fs) => fs,
+            Err(_) => {
+                println!("[FS_SERVER] Formatting remote block device...");
+                NovaFS::format(device, 0, sectors)
+            }
+        };
+        *DISK_FS.lock() = Some(Arc::new(nfs));
+    }
     Ok(())
 }
 
