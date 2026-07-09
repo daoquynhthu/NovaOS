@@ -9,8 +9,9 @@ description = "Core library for NovaOS native system calls and abstractions"
 workspace = true
 
 [features]
-default = []
+default = ["nova_debug_console"]
 std = ["sel4-sys/std"]
+nova_debug_console = []
 
 [dependencies]
 sel4-sys = { path = "../seL4-sys", default-features = false }

@@ -89,9 +89,9 @@
 
 | # | 子任务 | 状态 | 说明 |
 |---|--------|------|------|
-| 3.1 | 识别所有 debug syscall 调用点（seL4_DebugPutChar 等） | ⬜ | 排除必要 console 输出 |
-| 3.2 | 添加编译时门控（`cfg(debug_assertions)` 或 feature flag） | ⬜ | |
-| 3.3 | `cargo check --workspace` + 单元测试 | ⬜ | |
+| 3.1 | 识别所有 debug syscall 调用点 | ✅ | 仅 `console.rs:seL4_SysDebugPutChar` 一处 |
+| 3.2 | 添加 feature flag `nova_debug_console` 门控 | ✅ | 默认启用；`--no-default-features` 禁用 |
+| 3.3 | `cargo check` + QEMU smoke | ⬜ | |
 
 ---
 

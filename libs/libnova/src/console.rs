@@ -13,7 +13,7 @@ pub struct DebugConsole;
 
 impl DebugConsole {
     fn write_byte(&self, c: u8) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(feature = "nova_debug_console", target_arch = "x86_64"))]
         unsafe {
             // seL4_SysDebugPutChar = -9
             const SEL4_SYS_DEBUG_PUT_CHAR: isize = -9;
