@@ -222,12 +222,11 @@ impl VSpace {
         // frame_cap, vaddr, self.pml4_cap, rights);
 
         let dest_info = libnova::ipc::call(frame_cap, info);
-        dest_info.map(|_| ()).map_err(|e| {
+        dest_info.map(|_| ()).inspect_err(|e| {
             println!(
                 "[VSpace] Page Map Failed! Error={:?} frame_cap={}, pml4={}, vaddr={:x}",
                 e, frame_cap, self.pml4_cap, vaddr
             );
-            e
         })
     }
 
@@ -236,7 +235,6 @@ impl VSpace {
         let info = libnova::ipc::MessageInfo::new(ARCH_INVOCATION_LABEL_X86_PAGE_UNMAP, 0, 0, 0);
         libnova::ipc::call(frame_cap, info)
             .map(|_| ())
-            .map_err(|e| e)
     }
 
     fn map_paging_structure<A: ObjectAllocator>(

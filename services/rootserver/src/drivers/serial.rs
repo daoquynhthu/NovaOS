@@ -39,7 +39,7 @@ impl Driver for SerialDriver {
             events.push(DriverEvent::SerialInput(byte));
         }
 
-        if let Err(_) = ioapic::ack_irq(self.irq_cap) {
+        if ioapic::ack_irq(self.irq_cap).is_err() {
             // Log?
         }
 

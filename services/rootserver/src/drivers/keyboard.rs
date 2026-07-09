@@ -513,7 +513,7 @@ impl Keyboard {
         if ctrl && is_letter {
             if let Key::Char(c) = char_code {
                 let lower = c.to_ascii_lowercase() as u8;
-                if lower >= b'a' && lower <= b'z' {
+                if lower.is_ascii_lowercase() {
                     let c_code = (lower - b'a' + 1) as char;
                     return Some(Key::Char(c_code));
                 }
@@ -552,7 +552,7 @@ impl Driver for Keyboard {
             }
         }
 
-        if let Err(_) = ioapic::ack_irq(self.irq_cap) {
+        if ioapic::ack_irq(self.irq_cap).is_err() {
             // Log?
         }
 

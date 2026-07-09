@@ -66,7 +66,7 @@ fn test_rootserver_mapping(
     // Test Shared Mapping: Map to a new VSpace first
     let asid_pool = seL4_RootCNodeCapSlots::seL4_CapInitThreadASIDPool as seL4_CPtr;
     let mut temp_vspace =
-        VSpace::new_from_scratch(allocator, slot_allocator, boot_info, asid_pool).unwrap();
+        VSpace::new_from_scratch(allocator, slot_allocator, boot_info, asid_pool).expect("new_from_scratch failed");
     println!("[INFO] Mapping frame {} to Temp VSpace first...", frame_cap);
     match temp_vspace.map_page(
         allocator,
@@ -82,7 +82,7 @@ fn test_rootserver_mapping(
     }
 
     // Try copying the cap for the second mapping
-    let copied_cap = slot_allocator.alloc().unwrap();
+    let copied_cap = slot_allocator.alloc().expect("slot allocation failed");
     let cnode_cap = seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
     let root_cnode = CNode::new(cnode_cap, 64); // 64-bit root cnode size? No, depth.
                                                 // Root CNode size is usually 12 bits?
@@ -122,8 +122,8 @@ pub fn test_disk_driver() {
 
     // Test Write to Sector 1
     let mut pattern = [0u8; 512];
-    for i in 0..512 {
-        pattern[i] = (i % 255) as u8;
+    for (i, item) in pattern.iter_mut().enumerate() {
+        *item = (i % 255) as u8;
     }
     pattern[0] = 0xBE;
     pattern[1] = 0xEF;

@@ -99,8 +99,7 @@ impl RtcDriver {
 
         days += (d - 1) as u64;
 
-        let total_seconds = days * 86400 + h as u64 * 3600 + min as u64 * 60 + s as u64;
-        total_seconds
+        days * 86400 + h as u64 * 3600 + min as u64 * 60 + s as u64
     }
 }
 

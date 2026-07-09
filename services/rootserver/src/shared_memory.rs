@@ -119,7 +119,7 @@ impl SharedMemoryManager {
             return Err(seL4_Error::seL4_FailedLookup);
         }
 
-        let region = self.regions[key].unwrap();
+        let region = self.regions[key].expect("region key exists");
         let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
         let root_node = CNode::new(root_cnode, sel4_sys::seL4_WordBits as u8);
 
@@ -214,7 +214,7 @@ impl SharedMemoryManager {
         if size == 0 {
             return Err(seL4_Error::seL4_InvalidArgument);
         }
-        let page_count = (size + (PAGE_SIZE - 1)) / PAGE_SIZE;
+        let page_count = size.div_ceil(PAGE_SIZE);
         if page_count > MAX_REGION_PAGES {
             return Err(seL4_Error::seL4_RangeError);
         }
@@ -273,6 +273,7 @@ impl SharedMemoryManager {
         Ok(idx)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn map_shared_region<A: ObjectAllocator>(
         &mut self,
         key: usize,
@@ -290,7 +291,7 @@ impl SharedMemoryManager {
             return Err(seL4_Error::seL4_AlignmentError);
         }
 
-        let region = self.regions[key].unwrap();
+        let region = self.regions[key].expect("region key exists");
         let root_cnode = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
         let root_node = CNode::new(root_cnode, sel4_sys::seL4_WordBits as u8);
         let copy_rights = cap_rights_new(false, false, true, true);

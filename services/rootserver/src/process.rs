@@ -387,14 +387,14 @@ impl ProcessManager {
 
         for i in 0..MAX_PROCESSES {
             if let Some(p) = &self.processes[i] {
-                if p.ppid == parent_pid {
-                    if child_pid == -1 || (child_pid as usize) == i {
-                        found_child = true;
-                        if p.state == ProcessState::Terminated {
-                            if let Some(code) = p.exit_code {
-                                found_zombie = Some((i, code));
-                                break;
-                            }
+                if p.ppid == parent_pid
+                    && (child_pid == -1 || (child_pid as usize) == i)
+                {
+                    found_child = true;
+                    if p.state == ProcessState::Terminated {
+                        if let Some(code) = p.exit_code {
+                            found_zombie = Some((i, code));
+                            break;
                         }
                     }
                 }
@@ -449,11 +449,11 @@ impl ProcessManager {
 
         if let Some(parent) = self.get_process(ppid) {
             parent_exists = true;
-            if parent.state == ProcessState::BlockedOnWait {
-                if parent.waiting_for_child.is_none() || parent.waiting_for_child == Some(pid) {
-                    parent_waiting = true;
-                    parent_reply_cap = parent.saved_reply_cap;
-                }
+            if parent.state == ProcessState::BlockedOnWait
+                && (parent.waiting_for_child.is_none() || parent.waiting_for_child == Some(pid))
+            {
+                parent_waiting = true;
+                parent_reply_cap = parent.saved_reply_cap;
             }
         }
 
@@ -733,6 +733,7 @@ impl Process {
         Ok(entry)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn<A: ObjectAllocator>(
         allocator: &mut A,
         slots: &mut SlotAllocator,
@@ -851,13 +852,13 @@ impl Process {
             // Envp: [ptr0, ..., NULL]
             let envp_size = (env.len() + 1) * 8;
             sp -= envp_size;
-            sp = sp & !0xF;
+            sp &= !0xF;
             let envp_start_vaddr = sp;
 
             // Argv: [ptr0, ..., NULL]
             let argv_size = (args.len() + 1) * 8;
             sp -= argv_size;
-            sp = sp & !0xF;
+            sp &= !0xF;
             let argv_start_vaddr = sp;
 
             // Construct Data
@@ -1008,6 +1009,7 @@ impl Process {
         Tcb::new(self.tcb_cap).write_registers(rip, rsp, rflags, rdi)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn write_registers_ext(
         &self,
         rip: seL4_Word,
@@ -1069,8 +1071,8 @@ impl Process {
                 return Err(Error::Unknown(0));
             }
             let mut regs = [0u64; 20];
-            for i in 0..num_regs {
-                regs[i] = sel4_sys::seL4_GetMR(i);
+            for (i, reg) in regs.iter_mut().enumerate().take(num_regs) {
+                *reg = sel4_sys::seL4_GetMR(i);
             }
             Ok(regs)
         }

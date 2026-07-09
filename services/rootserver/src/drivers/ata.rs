@@ -104,8 +104,8 @@ impl AtaDriver {
 
         // Read 256 words
         let mut data = [0u16; 256];
-        for i in 0..256 {
-            data[i] = inw(self.port_base);
+        for item in data.iter_mut() {
+            *item = inw(self.port_base);
         }
 
         // Extract Model (words 27-46)
@@ -234,7 +234,7 @@ impl AtaDriver {
         if sectors == 0 {
             return Ok(());
         }
-        if data.len() % 512 != 0 {
+        if !data.len().is_multiple_of(512) {
             return Err("Data length must be multiple of 512");
         }
 

@@ -725,7 +725,7 @@ impl Shell {
             return false;
         }
         let env_slice: alloc::vec::Vec<&str> = env_vec.iter().map(|s| s.as_str()).collect();
-        if let Some(pid) = self.spawn_process("hello", &data, &args, &env_slice) {
+        if let Some(pid) = self.spawn_process("hello", &data, args, &env_slice) {
             self.pending_prompt_pid = Some(pid);
             true
         } else {
@@ -1243,8 +1243,8 @@ impl Shell {
                             let auth =
                                 sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadTCB as usize;
                             match p.set_priority(
-                                auth.try_into().unwrap(),
-                                (prio as usize).try_into().unwrap(),
+                                auth.try_into().expect("auth fits"),
+                                prio.try_into().expect("prio fits"),
                             ) {
                                 Ok(_) => println!("Process {} priority set to {}", pid, prio),
                                 Err(e) => println!("Failed to set priority: {:?}", e),
@@ -1335,7 +1335,6 @@ impl Shell {
                     }
                 }
                 if self.spawn_fs_helper("fs_encrypt", &path_str) {
-                    return;
                 }
             }
         } else if self.word_eq(word_start, word_end, "decrypt") {
@@ -1361,7 +1360,6 @@ impl Shell {
                     }
                 }
                 if self.spawn_fs_helper("fs_decrypt", &path_str) {
-                    return;
                 }
             }
         } else if self.word_eq(word_start, word_end, "history") {

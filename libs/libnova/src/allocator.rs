@@ -376,7 +376,7 @@ impl ObjectAllocator for UntypedAllocator {
 
             unsafe {
                 let err = UntypedAllocator::untyped_retype(
-                    untyped_cptr.try_into().unwrap(),
+                    untyped_cptr.try_into().expect("CPtr conversion failed"),
                     type_,
                     size_bits,
                     SE_L4_CAP_INIT_THREAD_CNODE,

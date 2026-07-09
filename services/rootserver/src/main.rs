@@ -110,7 +110,7 @@ extern "C" fn irq_worker_entry(notification: usize, endpoint: usize) {
 
     loop {
         // Wait for notification
-        let badge = libnova::ipc::wait(notification.try_into().unwrap());
+        let badge = libnova::ipc::wait(notification.try_into().expect("notification fits"));
 
         // Debug: print '!'
         // crate::serial::send_char('!');
@@ -118,7 +118,7 @@ extern "C" fn irq_worker_entry(notification: usize, endpoint: usize) {
 
         libnova::ipc::set_mr(0, badge);
         let info = libnova::ipc::MessageInfo::new(0, 0, 0, 1);
-        let _ = libnova::ipc::call(endpoint.try_into().unwrap(), info);
+        let _ = libnova::ipc::call(endpoint.try_into().expect("endpoint fits"), info);
     }
 }
 
@@ -144,6 +144,7 @@ fn create_deprecated_local_fs(ata: &Arc<crate::drivers::ata::AtaDriver>, size_se
     Some(fs_arc)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_boot_process(
     boot_info: &seL4_BootInfo,
     allocator: &mut impl ObjectAllocator,
@@ -664,11 +665,11 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                                 let err = crate::arch::ioapic::get_ioapic_handler(
                                                     irq_control_cap,
                                                     ioapic_idx as usize,
-                                                    pin as usize,
+                                                    pin,
                                                     level,
                                                     polarity,
                                                     root_cnode_cap,
-                                                    irq_slot.try_into().unwrap(),
+                                                    irq_slot.try_into().expect("irq_slot fits"),
                                                     depth,
                                                     vector,
                                                 );
@@ -741,11 +742,11 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                                 let err = crate::arch::ioapic::get_ioapic_handler(
                                                     irq_control_cap,
                                                     ioapic_idx as usize,
-                                                    pin as usize,
+                                                    pin,
                                                     level,
                                                     polarity,
                                                     root_cnode_cap,
-                                                    irq_slot.try_into().unwrap(),
+                                                    irq_slot.try_into().expect("irq_slot fits"),
                                                     depth,
                                                     vector,
                                                 );
@@ -812,11 +813,11 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                                 let err = crate::arch::ioapic::get_ioapic_handler(
                                                     irq_control_cap,
                                                     ioapic_idx as usize,
-                                                    pin as usize,
+                                                    pin,
                                                     level,
                                                     polarity,
                                                     root_cnode_cap,
-                                                    irq_slot.try_into().unwrap(),
+                                                    irq_slot.try_into().expect("irq_slot fits"),
                                                     depth,
                                                     vector,
                                                 );
@@ -1095,9 +1096,9 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 regs[1] = stack_top as u64; // rsp
                 regs[2] = 0x202; // rflags (IF enabled)
                                  // 8: rdi (notification)
-                regs[8] = notification_cap as u64;
+                regs[8] = notification_cap;
                 // 7: rsi (endpoint)
-                regs[7] = worker_badged_ep as u64;
+                regs[7] = worker_badged_ep;
 
                 let info = libnova::ipc::MessageInfo::new(
                     sel4_sys::invocation_label_TCBWriteRegisters as seL4_Word,
@@ -1107,8 +1108,8 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                 );
                 libnova::ipc::set_mr(0, 0); // Resume=false
                 libnova::ipc::set_mr(1, 20); // Count
-                for i in 0..20 {
-                    libnova::ipc::set_mr(i + 2, regs[i].try_into().unwrap());
+                for (i, reg) in regs.iter().enumerate() {
+                    libnova::ipc::set_mr(i + 2, *reg);
                 }
                 let _ = libnova::ipc::call(worker_tcb_cap, info);
 
@@ -1126,7 +1127,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
 
             // 1. Configure Keyboard (Badge 1)
             if irq_handler_cap != 0 {
-                let kb_badge_cap = slot_allocator.alloc().unwrap();
+                let kb_badge_cap = slot_allocator.alloc().expect("slot allocation failed");
                 let root_cnode =
                     sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
                 let cnode_depth = sel4_sys::seL4_WordBits as u8;
@@ -1166,7 +1167,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
 
             // 2. Configure Timer (Badge 2)
             if timer_irq_cap != 0 {
-                let timer_badge_cap = slot_allocator.alloc().unwrap();
+                let timer_badge_cap = slot_allocator.alloc().expect("slot allocation failed");
                 let root_cnode =
                     sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
                 let cnode_depth = sel4_sys::seL4_WordBits as u8;
@@ -1209,7 +1210,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
 
             // 3. Configure Serial (Badge 4)
             if serial_irq_cap != 0 {
-                let serial_badge_cap = slot_allocator.alloc().unwrap();
+                let serial_badge_cap = slot_allocator.alloc().expect("slot allocation failed");
                 let root_cnode =
                     sel4_sys::seL4_RootCNodeCapSlots::seL4_CapInitThreadCNode as seL4_CPtr;
                 let cnode_depth = sel4_sys::seL4_WordBits as u8;
@@ -1378,7 +1379,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                             b'\x08' | 0x7F => Some(drivers::keyboard::Key::Backspace),
                             b'\t' => Some(drivers::keyboard::Key::Tab),
                             0x1B => Some(drivers::keyboard::Key::Esc),
-                            c if c >= 32 && c <= 126 => {
+                            c if (32..=126).contains(&c) => {
                                 Some(drivers::keyboard::Key::Char(c as char))
                             }
                             _ => None,
@@ -2165,7 +2166,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                     const DEMAND_PAGING_START: usize = 0x4000_0000;
                     const DEMAND_PAGING_END: usize = 0x7000_0000;
 
-                    if fault_addr >= DEMAND_PAGING_START && fault_addr < DEMAND_PAGING_END {
+                    if (DEMAND_PAGING_START..DEMAND_PAGING_END).contains(&fault_addr) {
                         let aligned_addr = fault_addr & !0xFFF; // Align to 4K
                         log_debug!(
                             libnova::log::DOM_PAGING,
@@ -2215,7 +2216,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                 let rights = cap_rights_new(false, true, true, true);
                                 let attr =
                                     sel4_sys::seL4_X86_VMAttributes::seL4_X86_Default_VMAttributes;
-                                if let Ok(_) = p.vspace.map_page(
+                                if p.vspace.map_page(
                                     &mut allocator,
                                     &mut slot_allocator,
                                     boot_info,
@@ -2223,7 +2224,7 @@ pub unsafe extern "C" fn rust_main(boot_info_ptr: *const seL4_BootInfo) -> ! {
                                     aligned_addr,
                                     rights,
                                     attr,
-                                ) {
+                                ).is_ok() {
                                     let _ = p.track_frame(frame_cap, aligned_addr, rights, attr);
                                     reply_info = libnova::ipc::MessageInfo::new(0, 0, 0, 0);
                                     need_reply = true;

@@ -614,7 +614,7 @@ pub fn map_phys(
         let page_offset = offset & !(4096 - 1);
         let target_limit = page_offset + 4096;
 
-        let mut mc = context.mapped_caps[idx].take().unwrap();
+        let mut mc = context.mapped_caps[idx].take().expect("mapped_caps entry exists");
 
         if target_limit > mc.mapped_limit {
             // Need to map more pages

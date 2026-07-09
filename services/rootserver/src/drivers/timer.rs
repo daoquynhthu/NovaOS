@@ -22,7 +22,7 @@ impl Driver for TimerDriver {
 
     fn handle_irq(&mut self, _irq: u8) -> alloc::vec::Vec<DriverEvent> {
         // ACK is handled by the driver
-        if let Err(_) = ioapic::ack_irq(self.irq_cap) {
+        if ioapic::ack_irq(self.irq_cap).is_err() {
             // Log error?
         }
         alloc::vec![DriverEvent::Tick]
