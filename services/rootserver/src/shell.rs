@@ -2,8 +2,20 @@ use crate::drivers::keyboard::Key;
 use crate::memory::{FrameAllocator, SlotAllocator, UntypedAllocator};
 use crate::tests;
 use alloc::string::ToString;
+use alloc::vec;
 use libnova::cap::cap_rights_new;
-use libnova::fs_ipc::{decrypt_direct as fs_decrypt_direct, encrypt_direct as fs_encrypt_direct};
+#[allow(unused_imports)]
+use libnova::fs_ipc::{
+    chmod_direct as fs_chmod_direct, chown_direct as fs_chown_direct,
+    close_direct as fs_close_direct, decrypt_direct as fs_decrypt_direct,
+    encrypt_direct as fs_encrypt_direct, link_direct as fs_link_direct,
+    list_direct as fs_list_direct, mkdir_direct as fs_mkdir_direct,
+    open_direct as fs_open_direct, read_direct as fs_read_direct,
+    rename_direct as fs_rename_direct, stat_direct as fs_stat_direct,
+    symlink_direct as fs_symlink_direct, sync_direct as fs_sync_direct,
+    truncate_direct as fs_truncate_direct, unlink_direct as fs_unlink_direct,
+    write_direct as fs_write_direct, writetest_direct as fs_writetest_direct,
+};
 use sel4_sys::seL4_BootInfo;
 
 const MAX_CMD_LEN: usize = 64;
@@ -716,6 +728,10 @@ impl Shell {
         res
     }
 
+    fn fs_endpoint(&self) -> Option<sel4_sys::seL4_CPtr> {
+        crate::services::lookup_latest_ready("fs").map(|(_, ep, _)| ep)
+    }
+
     fn load_hello_binary(&self) -> Option<alloc::vec::Vec<u8>> {
         {
             let vfs_lock = novafs_core::VFS.lock();
@@ -983,6 +999,12 @@ impl Shell {
                 }
             }
         } else if self.word_eq(word_start, word_end, "sync") {
+            if let Some(fs_ep) = self.fs_endpoint() {
+                if fs_sync_direct(fs_ep) >= 0 {
+                    println!("[FS] Filesystem synced.");
+                    return;
+                }
+            }
             if self.spawn_fs_helper_args(&["fs_sync"]) {
                 return;
             }
@@ -1446,6 +1468,11 @@ impl Shell {
                 self.cwd.clone()
             };
 
+            if let Some(fs_ep) = self.fs_endpoint() {
+                if fs_list_direct(fs_ep, &path_str) >= 0 {
+                    return;
+                }
+            }
             if self.spawn_fs_helper("fs_ls", &path_str) {
                 return;
             }
@@ -1580,6 +1607,12 @@ impl Shell {
                 let s = s.iter().collect::<alloc::string::String>();
                 let path_str = self.resolve_path(&s);
 
+                if let Some(fs_ep) = self.fs_endpoint() {
+                    if fs_stat_direct(fs_ep, &path_str) >= 0 {
+                        self.pending_cd_path = Some(path_str.clone());
+                        return;
+                    }
+                }
                 if self.spawn_fs_helper_args(&["fs_cd", &path_str]) {
                     self.pending_cd_path = Some(path_str);
                     return;
@@ -1625,6 +1658,12 @@ impl Shell {
                 if name.is_empty() {
                     println!("mkdir: Invalid name");
                 } else {
+                    if let Some(fs_ep) = self.fs_endpoint() {
+                        if fs_mkdir_direct(fs_ep, &path_str) >= 0 {
+                            println!("[FS] mkdir ok");
+                            return;
+                        }
+                    }
                     if self.spawn_fs_helper("fs_mkdir", &path_str) {
                         return;
                     }
@@ -1666,6 +1705,21 @@ impl Shell {
                 let s = s.iter().collect::<alloc::string::String>();
                 let path_str = self.resolve_path(&s);
 
+                if let Some(fs_ep) = self.fs_endpoint() {
+                    let fd = fs_open_direct(fs_ep, &path_str, 0);
+                    if fd >= 0 {
+                        let mut buf = vec![0u8; 4096];
+                        let n = fs_read_direct(fs_ep, fd as usize, &mut buf);
+                        if n > 0 {
+                            print!("{}", core::str::from_utf8(&buf[..n as usize]).unwrap_or("(binary)"));
+                            if !buf[..n as usize].ends_with(b"\n") {
+                                println!();
+                            }
+                        }
+                        fs_close_direct(fs_ep, fd as usize);
+                        return;
+                    }
+                }
                 if self.spawn_fs_helper("fs_cat", &path_str) {
                     return;
                 }
@@ -1727,6 +1781,12 @@ impl Shell {
                     return;
                 }
 
+                if let Some(fs_ep) = self.fs_endpoint() {
+                    if fs_unlink_direct(fs_ep, &path_str) >= 0 {
+                        println!("[FS] rm ok");
+                        return;
+                    }
+                }
                 if self.spawn_fs_helper("fs_rm", &path_str) {
                     return;
                 }
@@ -1781,6 +1841,27 @@ impl Shell {
                     let src_path = self.resolve_path(&src_str);
                     let dest_path = self.resolve_path(&dest_str);
 
+                    if let Some(fs_ep) = self.fs_endpoint() {
+                        let src_fd = fs_open_direct(fs_ep, &src_path, 0);
+                        if src_fd >= 0 {
+                            let dest_fd = fs_open_direct(fs_ep, &dest_path, 1);
+                            if dest_fd >= 0 {
+                                let mut buf = vec![0u8; 4096];
+                                loop {
+                                    let n = fs_read_direct(fs_ep, src_fd as usize, &mut buf);
+                                    if n <= 0 {
+                                        break;
+                                    }
+                                    fs_write_direct(fs_ep, dest_fd as usize, &buf[..n as usize]);
+                                }
+                                fs_close_direct(fs_ep, dest_fd as usize);
+                                fs_close_direct(fs_ep, src_fd as usize);
+                                println!("Copied '{}' to '{}'", src_path, dest_path);
+                                return;
+                            }
+                            fs_close_direct(fs_ep, src_fd as usize);
+                        }
+                    }
                     let helper_args = ["fs_cp", src_path.as_str(), dest_path.as_str()];
                     if self.spawn_fs_helper_args(&helper_args) {
                         return;
@@ -1901,6 +1982,12 @@ impl Shell {
                     let fs_lock = crate::fs::DISK_FS.lock();
                     if let Some(fs) = fs_lock.as_ref() {
                         if is_symlink {
+                            if let Some(fs_ep) = self.fs_endpoint() {
+                                if fs_symlink_direct(fs_ep, &target_str, &link_path) >= 0 {
+                                    println!("Created symbolic link '{}' -> '{}'", link_path, target_str);
+                                    return;
+                                }
+                            }
                             let helper_args =
                                 ["fs_symlink", target_str.as_str(), link_path.as_str()];
                             if self.spawn_fs_helper_args(&helper_args) {
@@ -1941,6 +2028,12 @@ impl Shell {
                         } else {
                             // Hard link creation
                             let target_path = self.resolve_path(&target_str);
+                            if let Some(fs_ep) = self.fs_endpoint() {
+                                if fs_link_direct(fs_ep, &target_path, &link_path) >= 0 {
+                                    println!("Created hard link '{}' => '{}'", link_path, target_path);
+                                    return;
+                                }
+                            }
                             let helper_args = ["fs_link", target_path.as_str(), link_path.as_str()];
                             if self.spawn_fs_helper_args(&helper_args) {
                                 return;
@@ -2012,6 +2105,12 @@ impl Shell {
 
                     if let Ok(mode) = u16::from_str_radix(&mode_str, 8) {
                         let path_str = self.resolve_path(&file_str);
+                        if let Some(fs_ep) = self.fs_endpoint() {
+                            if fs_chmod_direct(fs_ep, &path_str, mode) >= 0 {
+                                println!("Changed mode of '{}' to {:o}", path_str, mode);
+                                return;
+                            }
+                        }
                         if self.spawn_fs_helper_args(&["fs_chmod", &mode_str, &path_str]) {
                             return;
                         }
@@ -2066,6 +2165,12 @@ impl Shell {
                             (parts[0].parse::<u32>(), parts[1].parse::<u32>())
                         {
                             let path_str = self.resolve_path(&file_str);
+                            if let Some(fs_ep) = self.fs_endpoint() {
+                                if fs_chown_direct(fs_ep, &path_str, uid, gid) >= 0 {
+                                    println!("Changed ownership of '{}' to {}:{}", path_str, uid, gid);
+                                    return;
+                                }
+                            }
                             if self.spawn_fs_helper_args(&["fs_chown", &owner_str, &path_str]) {
                                 return;
                             }
@@ -2155,6 +2260,12 @@ impl Shell {
                             dest_path.push_str(src_name);
                         }
 
+                        if let Some(fs_ep) = self.fs_endpoint() {
+                            if fs_rename_direct(fs_ep, &src_path, &dest_path) >= 0 {
+                                println!("Moved '{}' to '{}'", src_path, dest_path);
+                                return;
+                            }
+                        }
                         let helper_args = ["fs_mv", src_path.as_str(), dest_path.as_str()];
                         if self.spawn_fs_helper_args(&helper_args) {
                             return;
@@ -2233,6 +2344,14 @@ impl Shell {
                     return;
                 }
 
+                if let Some(fs_ep) = self.fs_endpoint() {
+                    let fd = fs_open_direct(fs_ep, &path_str, 1);
+                    if fd >= 0 {
+                        fs_close_direct(fs_ep, fd as usize);
+                        println!("[FS] touch ok");
+                        return;
+                    }
+                }
                 if self.spawn_fs_helper("fs_touch", &path_str) {
                     return;
                 }
@@ -2284,6 +2403,12 @@ impl Shell {
                     let size = size_str.parse::<u64>().unwrap_or(0);
 
                     let path_str = self.resolve_path(filename);
+                    if let Some(fs_ep) = self.fs_endpoint() {
+                        if fs_truncate_direct(fs_ep, &path_str, size) >= 0 {
+                            println!("Truncated '{}' to {} bytes.", path_str, size);
+                            return;
+                        }
+                    }
                     if self.spawn_fs_helper_args(&["fs_truncate", &path_str, size_str]) {
                         return;
                     }
@@ -2334,6 +2459,13 @@ impl Shell {
             println!("Writing {} KB to {}", size_kb, path_str);
 
             let size_str = size_kb.to_string();
+            if let Some(fs_ep) = self.fs_endpoint() {
+                if fs_writetest_direct(fs_ep, path_str.as_str(), size_kb) >= 0 {
+                    println!("Write success");
+                    self.mark_fs_service_dirty();
+                    return;
+                }
+            }
             if self.spawn_fs_helper_args(&["fs_writetest", path_str.as_str(), size_str.as_str()]) {
                 return;
             }
@@ -2382,6 +2514,17 @@ impl Shell {
                     content_str.pop();
                 }
 
+                let content_bytes = content_str.as_bytes();
+                if let Some(fs_ep) = self.fs_endpoint() {
+                    let fd = fs_open_direct(fs_ep, &path_str, 1);
+                    if fd >= 0 {
+                        fs_write_direct(fs_ep, fd as usize, content_bytes);
+                        fs_close_direct(fs_ep, fd as usize);
+                        println!("Written to {}", path_str);
+                        self.mark_fs_service_dirty();
+                        return;
+                    }
+                }
                 let helper_args = ["fs_write", path_str.as_str(), content_str.as_str()];
                 if self.spawn_fs_helper_args(&helper_args) {
                     return;

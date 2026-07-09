@@ -29,25 +29,45 @@
 
 ---
 
-## 任务 1: Shell 迁移到 fs_server（P4.4 new）
+## 任务 1: Shell 命令 FS 操作全部迁移到 fs_server（P4.4 new）
 
-**目标**: 将 RootServer 中的 Shell 功能（`shell.rs`）迁移到 fs_server，使 Shell 作为 fs_server 的子功能运行。消除"双 NovaFS 实例"架构风险。
+**目标**: 将所有 Shell 命令的本地 NovaFS 操作替换为 fs_server IPC 调用，消除"双 NovaFS 实例"架构风险。Shell UI 保留在 RootServer（它是个 shell，不是文件系统），但所有文件操作直接走 fs_server IPC，不再经过本地 NovaFS。
+
+**架构约束（AGENT.md §4-2）**：禁止一次性删除回退路径。在迁移过程中保留 `spawn_fs_helper` + LOCAL_VFS fallback 的回退链，最后在所有 IPC 路径验证通过后统一删除。
 
 **核心架构要求**：
 - fs_server 成为唯一 NovaFS 数据面权威
 - RootServer 停止挂载本地 NovaFS
-- Shell 命令通过 fs_server IPC 执行文件操作
-- epoch 刷新机制可移除（单数据源后不再需要）
+- epoch 刷新机制可移除（单数据源后不需要）
+- Shell UI、进程管理、allocator 访问留在 RootServer
+
+**参考实现**: `encrypt`/`decrypt` 命令已经示范了直接 IPC 模式：通过 `crate::services::lookup_latest_ready("fs")` 获取 fs_server endpoint，然后调用 `libnova::fs_ipc::*_direct()`。
+
+### 第一阶段：添加 fs_server IPC fallback（RED→GREEN）
+
+为每个有 LOCAL_VFS fallback 的命令添加直接的 fs_server IPC 调用作为新的首选路径。保留 `spawn_fs_helper` 和 LOCAL_VFS 作为第二/第三 fallback。
+
+### 第二阶段：验证 IPC 路径覆盖所有操作
+
+运行 QEMU smoke 测试确认所有 Shell 命令能通过 fs_server 工作。
+
+### 第三阶段：移除 RootServer 本地 NovaFS 挂载
+
+确认 fs_server IPC 覆盖所有文件操作后，移除 RootServer 的 `DISK_FS` 和 `novafs_core::VFS` 本地实例。RootServer 不再拥有 NovaFS 数据面。
 
 ### 子任务
 
-| # | 子任务 | 状态 | 说明 |
-|---|--------|------|------|
-| 1.1 | fs_server 添加 Shell 命令 IPC 接口（执行命令并返回结果） | ⬜ | 定义 `FsLabel::ShellExec` 或扩展现有协议 |
-| 1.2 | 迁移 `shell.rs` 的 `execute_command` 逻辑到 fs_server | ⬜ | Shell 命令体（cat/touch/cp/mv/rm/ls 等） |
-| 1.3 | RootServer 的 Shell 改为代理模式（IPC 转发到 fs_server） | ⬜ | 保留 Shell UI，命令执行走 IPC |
-| 1.4 | 移除 RootServer 的本地 NovaFS 挂载 | ⬜ | 确认 fs_server 已覆盖所有文件操作 |
-| 1.5 | `cargo check --workspace` + 单元测试 | ⬜ | |
+| # | 子任务 | 状态 | 类型 | 说明 |
+|---|--------|------|------|------|
+| 1.1 | Shell 添加 fs_server endpoint 查询 helper | ✅ | 重构 | 封装 `lookup_latest_ready("fs")` 为 shell 内部 helper |
+| 1.2 | 迁移 `sync`、`mkdir`、`rm`、`touch`、`mv`、`chmod`、`chown` 到直接 IPC | ✅ | RED→GREEN | 添加 fs_*_direct() fallback |
+| 1.3 | 迁移 `cat`、`cp`、`writetest`、`echo >file`、`truncate` 到直接 IPC | ✅ | RED→GREEN | 使用 open/read/write/close 组合 |
+| 1.4 | 迁移 `ls`、`cd` 到直接 IPC | ✅ | RED→GREEN | list_direct() / stat_direct() |
+| 1.5 | 迁移 `ln`、`ln -s` 到直接 IPC | ✅ | RED→GREEN | link_direct() / symlink_direct() |
+| 1.6 | 迁移 `exec`、`runhello` 的二进制加载到直接 IPC | ⬜ | RED→GREEN | open_direct + read_direct 替代 VFS::read_file（阻塞于 ISSUE-88） |
+| 1.7 | QEMU smoke 验证 | 🟡 | 验证 | 内核启动 + Shell + 用户程序运行通过；fs_server TCB error（ISSUE-88） |
+| 1.8 | 移除 RootServer 本地 NovaFS 挂载 | ⬜ | 清理 | 依赖 1.6 完成 |
+| 1.9 | `cargo check --workspace` + 单元测试 | 🟡 | 门禁 | cargo check 通过 |
 
 ---
 
