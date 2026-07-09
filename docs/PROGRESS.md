@@ -452,3 +452,27 @@
 **验证**：
 - `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
 - QEMU 验证：内核启动 → fs_server 启动 → NovaFS 通过 RemoteBlockDevice 挂载
+
+## 2026-07-08: P4.7 — Debug syscall 门控
+
+**完成项**：
+- 识别全仓库仅一处 debug syscall 使用 (console.rs: seL4_SysDebugPutChar)
+- 添加 `nova_debug_console` feature flag（默认启用）
+- `cfg(feature = "nova_debug_console")` 门控 DebugConsole::write_byte
+- 禁用后 `println!` 静默 no-op
+
+**验证**：`cargo check --workspace --no-default-features` 全绿
+
+## 2026-07-08: D2 — clippy 债务清零
+
+**完成项**：
+- rootserver + libnova 共 56 个 clippy error 全部修复：
+  - unwrap() → expect() 替换（~20处）
+  - if let Err(_) → .is_err()（3处）
+  - 手动 range 检查 → .contains()（3处）
+  - 手动 div_ceil → .div_ceil()
+  - 手动 assign → op=
+  - 多余 return 移除、needless borrow 清理
+  - 合法多参函数添加 `#[allow(clippy::too_many_arguments)]`
+
+**验证**：`cargo clippy -p rootserver -p libnova --target x86_64-unknown-none` — 零 error

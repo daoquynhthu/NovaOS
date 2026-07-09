@@ -2,7 +2,7 @@
 
 > **Purpose**: Quick code navigation (front) + layered architecture description for AI agent context (back).  
 > **Truth source**: Code only. If docs disagree with code, code wins.  
-> **Generated**: 2026-07-08 (updated for Phase 2-4, P4.5 step 1)
+> **Generated**: 2026-07-08 (Phase 4 complete, clippy zeroed)
 
 ---
 
@@ -506,7 +506,7 @@ E:\System/
 | Multi-threaded RootServer | Not started |
 | fs_server as sole data plane authority | ⏳ P4.4 Phase 2 (exec IPC + local NovaFS removal) |
 | Shell command fs_server IPC | ✅ P4.4 Phase 1 (12/16 commands); ⏳ exec (Phase 2) |
-| clippy debt (rootserver ~64 errors) | ⏳ Debt task D2 |
+| clippy debt | ✅ Zero errors (D2 completed) |
 | Crash recovery / durability | P3.2/P3.3 host tests exist; not automated in CI |
 | CI/CD pipeline | Basic workflow exists (fmt/check on Linux + Windows); QEMU not in CI |
 | Host-native unit tests | ✅ 34 libnova tests + novafs-core tests |
