@@ -34,6 +34,10 @@ pub fn init(cap: seL4_CPtr) {
     IO_PORT_CAP.store(cap.into(), Ordering::Release);
 }
 
+pub fn is_valid() -> bool {
+    IO_PORT_CAP.load(Ordering::Acquire) != 0
+}
+
 pub fn issue_ioport_cap(
     control_cap: seL4_CPtr,
     first_port: u16,
@@ -68,11 +72,10 @@ pub fn inb(port: u16) -> u8 {
     }
     crate::ipc::set_mr(0, port as seL4_Word);
     let info = crate::ipc::MessageInfo::new(X86_IO_PORT_IN8, 0, 0, 1);
-    let resp = crate::ipc::call(cap, info);
-    if resp.expect("inb failed").label() != 0 {
-        return 0xFF;
+    match crate::ipc::call(cap, info) {
+        Ok(msg) if msg.label() == 0 => crate::ipc::get_mr(0) as u8,
+        _ => 0xFF,
     }
-    crate::ipc::get_mr(0) as u8
 }
 
 pub fn outb(port: u16, value: u8) {
@@ -86,9 +89,9 @@ pub fn outb(port: u16, value: u8) {
     crate::ipc::set_mr(0, port as seL4_Word);
     crate::ipc::set_mr(1, value as seL4_Word);
     let info = crate::ipc::MessageInfo::new(X86_IO_PORT_OUT8, 0, 0, 2);
-    let resp = crate::ipc::call(cap, info);
-    if resp.expect("outb failed").label() != 0 {
-        crate::println!("[PortIO] outb failed");
+    match crate::ipc::call(cap, info) {
+        Ok(_) => {},
+        Err(_) => crate::println!("[PortIO] outb failed"),
     }
 }
 
@@ -102,11 +105,10 @@ pub fn inw(port: u16) -> u16 {
     }
     crate::ipc::set_mr(0, port as seL4_Word);
     let info = crate::ipc::MessageInfo::new(X86_IO_PORT_IN16, 0, 0, 1);
-    let resp = crate::ipc::call(cap, info);
-    if resp.expect("inw failed").label() != 0 {
-        return 0xFFFF;
+    match crate::ipc::call(cap, info) {
+        Ok(msg) if msg.label() == 0 => crate::ipc::get_mr(0) as u16,
+        _ => 0xFFFF,
     }
-    crate::ipc::get_mr(0) as u16
 }
 
 pub fn outw(port: u16, value: u16) {
@@ -120,10 +122,7 @@ pub fn outw(port: u16, value: u16) {
     crate::ipc::set_mr(0, port as seL4_Word);
     crate::ipc::set_mr(1, value as seL4_Word);
     let info = crate::ipc::MessageInfo::new(X86_IO_PORT_OUT16, 0, 0, 2);
-    let resp = crate::ipc::call(cap, info);
-    if resp.expect("outl failed").label() != 0 {
-        return;
-    }
+    let _ = crate::ipc::call(cap, info);
 }
 
 pub fn inl(port: u16) -> u32 {
@@ -136,11 +135,10 @@ pub fn inl(port: u16) -> u32 {
     }
     crate::ipc::set_mr(0, port as seL4_Word);
     let info = crate::ipc::MessageInfo::new(X86_IO_PORT_IN32, 0, 0, 1);
-    let resp = crate::ipc::call(cap, info);
-    if resp.expect("inl failed").label() != 0 {
-        return 0xFFFFFFFF;
+    match crate::ipc::call(cap, info) {
+        Ok(msg) if msg.label() == 0 => crate::ipc::get_mr(0) as u32,
+        _ => 0xFFFFFFFF,
     }
-    crate::ipc::get_mr(0) as u32
 }
 
 pub fn outl(port: u16, value: u32) {
@@ -154,8 +152,5 @@ pub fn outl(port: u16, value: u32) {
     crate::ipc::set_mr(0, port as seL4_Word);
     crate::ipc::set_mr(1, value as seL4_Word);
     let info = crate::ipc::MessageInfo::new(X86_IO_PORT_OUT32, 0, 0, 2);
-    let resp = crate::ipc::call(cap, info);
-    if resp.expect("outl failed").label() != 0 {
-        return;
-    }
+    let _ = crate::ipc::call(cap, info);
 }

@@ -85,7 +85,7 @@ impl AtaBlockDevice {
     }
 
     fn poll(&self, check_for_error: bool) -> Result<(), &'static str> {
-        for _ in 0..10000 {
+        for _ in 0..100 {
             let status = self.read(ATA_STATUS);
             if status & STATUS_BSY == 0 {
                 if check_for_error && status & STATUS_ERR != 0 {

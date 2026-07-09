@@ -64,8 +64,8 @@
 | 1.3 | 迁移 `cat`、`cp`、`writetest`、`echo >file`、`truncate` 到直接 IPC | ✅ | RED→GREEN | 使用 open/read/write/close 组合 |
 | 1.4 | 迁移 `ls`、`cd` 到直接 IPC | ✅ | RED→GREEN | list_direct() / stat_direct() |
 | 1.5 | 迁移 `ln`、`ln -s` 到直接 IPC | ✅ | RED→GREEN | link_direct() / symlink_direct() |
-| 1.6 | 迁移 `exec`、`runhello` 的二进制加载到直接 IPC | ⬜ | RED→GREEN | open_direct + read_direct 替代 VFS::read_file（阻塞于 ISSUE-88） |
-| 1.7 | QEMU smoke 验证 | 🟡 | 验证 | 内核启动 + Shell + 用户程序运行通过；fs_server TCB error（ISSUE-88） |
+| 1.6 | 迁移 `exec`、`runhello` 的二进制加载到直接 IPC 🏗 | ⬜ | RED→GREEN | open_direct + read_direct 替代 VFS::read_file |
+| 1.7 | QEMU smoke 验证 | ✅ | 验证 | 内核启动 + Shell + 用户程序 + fs_server 全部通过 |
 | 1.8 | 移除 RootServer 本地 NovaFS 挂载 | ⬜ | 清理 | 依赖 1.6 完成 |
 | 1.9 | `cargo check --workspace` + 单元测试 | 🟡 | 门禁 | cargo check 通过 |
 

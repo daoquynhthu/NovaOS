@@ -271,7 +271,7 @@ pub fn handle_exit(ctx: &mut SyscallContext<'_>) {
             }
         }
 
-        let fs_service_slot_arg = alloc::format!("{}", ctx.fs_service_ep_cap);
+        let fs_service_slot_arg = alloc::format!("{}", fs_service_slot);
         let fs_args = [fs_service_slot_arg.as_str()];
         crate::spawn_boot_process(
             ctx.boot_info,

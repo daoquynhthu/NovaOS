@@ -208,10 +208,12 @@ pub(crate) fn spawn_boot_process(
         Ok(mut process) => {
             if process_name == "fs_server" {
                 process.fs_forwarding_enabled = false;
-                // P4.2: Install ATA I/O port capability into fs_server's independent CNode
+                // P4.2: Install ATA I/O port capability into fs_server's CNode.
+                // When using independent CNode, install at slots 1-2.
+                // When using root CNode fallback, allocate dynamic slots.
+                let cnode_depth = sel4_sys::seL4_WordBits as u8;
+                let ata_control = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapIOPortControl as sel4_sys::seL4_CPtr;
                 if process.cspace_cap != 0 {
-                    let ata_control = sel4_sys::seL4_RootCNodeCapSlots::seL4_CapIOPortControl as sel4_sys::seL4_CPtr;
-                    let cnode_depth = sel4_sys::CONFIG_ROOT_CNODE_SIZE_BITS;
                     let _ = libnova::arch::x86_64::port_io::issue_ioport_cap(
                         ata_control,
                         0x1F0,
@@ -228,6 +230,11 @@ pub(crate) fn spawn_boot_process(
                         2,
                         cnode_depth.into(),
                     );
+                } else {
+                    // Root CNode fallback: slots 1-2 are reserved.
+                    // ATA caps are installed by the caller (handlers/core.rs)
+                    // at dynamically allocated root CNode slots.
+                    // fs_server uses RemoteBlockDevice as fallback via syscall EP.
                 }
             }
             match get_process_manager().add_process_at(pid, process) {

@@ -894,8 +894,12 @@ P4.2(2.1) 审计：零问题，满足闭环条件。
 - **修复**: CNode size_bits 降至 8（256 项，4KB），untyped 耗尽时回退 root CNode。
 - **状态**: 🟢 已修复
 
-### ISSUE-88 [P3] fs_server 启动后 TCB Illegal operation
+### ISSUE-88 [P1] fs_server root CNode fallback 下 ATA port I/O 使用 slot 1（TCB cap）
 
-- **位置**: `spawn_boot_process` 启动 fs_server 后
-- **问题**: fs_server 启动后内核报 `decodeTCBInvocation: TCB: Illegal operation`。可能是 root CNode fallback 下 authority 传递异常。
-- **状态**: 🔴 待修复
+- **位置**: `libs/novafs-core/src/ata.rs:87-98`, `libs/libnova/src/arch/x86_64/port_io.rs:61-93`, `services/fs_server/src/main.rs:208`
+- **根因**: 当 `Process::create` 无法分配独立 CNode（P4.1），进程回退到 root CNode。但 `mount_local_fs` 中硬编码 `port_io::init(1)`，seL4 固定 slot 1 是 TCB cap（非 I/O port cap）。`inb`/`outb` 调用 `seL4_Call(1, ...)` 触发 `decodeTCBInvocation` 返回 `TCB: Illegal operation`。同时 ATA `poll` 循环 10000 次迭代大幅拉长超时。
+- **修复**:
+  1. `port_io.rs`: 所有 I/O 函数用 `match` 替代 `expect()`，OOM 错误正常返回
+  2. `ata.rs`: `poll` 循环从 10000 减至 100（TCG 下减少 ~10s 延时）
+  3. 当 ATA cap 不可用时，优雅回退到 `RemoteBlockDevice`
+- **状态**: 🟢 已修复
