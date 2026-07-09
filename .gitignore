@@ -66,3 +66,6 @@ output.txt
 
 # QEMU test output
 qemu_output*.txt
+
+# QEMU test output
+qemu_*.txt
