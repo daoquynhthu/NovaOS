@@ -4,7 +4,7 @@
 # NovaOS 权能模型
 
 > **定位**: 定义 NovaOS 当前已实现的权能（Capability）分配模型，涵盖 RootServer、fs_server、serial_server、user_app 的 CSpace 条目清单。  
-> **状态**: 草案 — 反映当前代码实现（2026-07-07），待 Phase 4 能力隔离时修订。  
+> **状态**: 草案 — 反映当前代码实现（2026-07-09），Phase 4 能力隔离完成，独立 CNode + ATA 直接持有已落地。  
 > **参考**: `ARCH-NOVAOS-PROPOSAL-001`（能力导向安全原则）、`libs/libnova/src/cap.rs`（CNode 操作）、`libs/libnova/src/allocator.rs`（SlotAllocator）。
 
 ---
@@ -90,17 +90,18 @@ RootServer 是初始用户态进程（PID 0），持有以下能力：
 
 ## 5. fs_server CSpace
 
-fs_server 通过 `sys_spawn` 启动，作为独立用户态进程（PID 通常为 2-3）。
+fs_server 通过 `sys_spawn` 启动，作为独立用户态进程（PID 通常为 2-3）。P4.2 已为其安装 ATA I/O 端口能力，P4.3 解除死锁后 fs_server 直接持有块设备。
 
 | 能力 | 分配方式 | 说明 |
 |------|----------|------|
 | Syscall endpoint | slot allocator | RootServer syscall 通信 |
 | 自身 IPC endpoint | slot allocator | 注册为 `fs.v1`，客户端直接调用 |
-| Block device endpoint | 动态分配 | 向 RootServer 转发块设备请求 |
-| NovaFS inode 操作 | 无直接持有 | 当前通过 RootServer syscall 间接操作（`sys_block_*`） |
-| Shared memory | SlotAllocator | 与 RootServer 共享块设备数据 |
+| ATA I/O 端口 (CMD) | 安装在独立 CNode slot 1 | `port_io::outb`/`inb` 直接操作 ATA 命令寄存器 |
+| ATA I/O 端口 (DATA) | 安装在独立 CNode slot 2 | `port_io::inw` 直接读取 ATA 数据端口 |
+| NovaFS inode 操作 | fs_server 内部持有 | 使用 `AtaBlockDevice` 在本地执行 |
+| Shared memory | SlotAllocator | 与 RootServer 共享块设备数据（备选） |
 
-**架构限制**：fs_server 当前为"持久代理"模式，**不直接持有** 块设备能力和 NovaFS 实例。真正的数据面仍由 RootServer 持有（`main.rs:65: FS_SYNC_FORWARD_ENABLED=false`）。
+**架构状态（P4.3 后）**：fs_server 直接持有块设备能力（ATA I/O 端口），本地运行 NovaFS 实例，不再向 RootServer 转发 I/O。`RemoteBlockDevice` 作为 ATA 能力不可用时的回退路径（`cspace_cap == 0` 根 CNode fallback 场景）。
 
 ---
 
@@ -199,12 +200,16 @@ Root CNode (size=12, 4096 槽)
 | 槽 | 能力 | 说明 |
 |----|------|------|
 | 0 | Syscall endpoint (badged) | 回调 RootServer |
-| 1 | TCB | 自身线程控制块 |
-| 2 | VSpace (Page Table) | 自身页目录 |
-| 3 | IPC buffer frame | 映射到 `0x3000_0000` |
-| 4–7 | 保留（前 4K 页） | ELF 加载 |
-| 8–127 | 动态帧映射 | mmap / heap / stack |
+| 1 | ATA I/O 端口 (CMD) | fs_server 直接操作 ATA 命令寄存器（仅 fs_server 使用） |
+| 2 | ATA I/O 端口 (DATA) | fs_server 直接读取 ATA 数据端口（仅 fs_server 使用） |
+| 3 | TCB | 自身线程控制块 |
+| 4 | VSpace (Page Table) | 自身页目录 |
+| 5 | IPC buffer frame | 映射到 `0x3000_0000` |
+| 6–9 | 保留（前 4K 页） | ELF 加载 |
+| 10–127 | 动态帧映射 | mmap / heap / stack |
 | 128–255 | 空闲槽 | 可动态分配 |
+
+> 注：非 fs_server 进程的 slot 1-2 用途可能不同（如 serial_server 可复用为串口 I/O 端口）。当 `cspace_cap == 0`（根 CNode fallback）时，slot 布局不适用，进程共享根 CNode。
 
 ### 10.4 创建流程
 
@@ -235,7 +240,13 @@ pub struct DerivedCNode {
 
 ---
 
-## 11. 未来计划（Phase 4 剩余）
+## 11. 修订记录
+
+| 日期 | 版本 | 变更 |
+|------|------|------|
+| 2026-07-09 | 1.1 | §5 更新为 fs_server 直接持有块设备；§10.3 slot 布局添加 ATA 端口 slot 1-2、TCB/VSpace/IPC buffer 顺延；添加 fallback 说明 |
+
+## 12. 未来计划（Phase 4 剩余）
 
 | 项 | 计划 |
 |----|------|

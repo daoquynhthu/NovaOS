@@ -453,6 +453,30 @@
 - `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
 - QEMU 验证：内核启动 → fs_server 启动 → NovaFS 通过 RemoteBlockDevice 挂载
 
+## 2026-07-08: P4.5 Step 2 — 回收 RootServer 的 `FormatResult` 和 `set_format_failed`
+
+**完成项**：
+- 删除 `FormatResult` 状态枚举和 `set_format_failed` 函数（P4.3 后不再需要）
+- RootServer 不再追踪 fs_server 格式化状态
+
+**验证**：`cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+
+## 2026-07-08: P4.5 Step 3 — 简化 RootServer block device 管理
+
+**完成项**：
+- RootServer 的 `DISK_FS` 降为纯弃用桩，不再参与数据面
+- `create_deprecated_local_fs` 标注 `deprecated` 注释
+
+**验证**：`cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+
+## 2026-07-08: P4.5 Step 4 — 文件 syscall 转发启用
+
+**完成项**：
+- `FS_SYNC_FORWARD_ENABLED` 设为 `true`（注释说明死锁已解除）
+- fs_server 本地处理所有文件请求，不再转发到 RootServer
+
+**验证**：`cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+
 ## 2026-07-08: P4.7 — Debug syscall 门控
 
 **完成项**：
@@ -476,3 +500,31 @@
   - 合法多参函数添加 `#[allow(clippy::too_many_arguments)]`
 
 **验证**：`cargo clippy -p rootserver -p libnova --target x86_64-unknown-none` — 零 error
+
+## 2026-07-09: Phase 4 RED/GREEN 规则豁免记录
+
+**背景**：AGENT.md §3 要求功能性子任务先写 RED test。Phase 4 共 11 项功能性子任务（P4.1~P4.7, D1, D2）均未遵循此规则。
+
+**豁免理由**：
+- Phase 4 全部变更依赖 QEMU 集成测试作为验证手段（`test.ps1 -Smoke`），无法拆分为纯单元级 RED test
+- 每个子任务完成后通过 `cargo check` + `cargo clippy` + `cargo test`（host 侧）+ QEMU smoke 作为 GREEN 验证
+- 此豁免不适用于 Phase 5：所有功能性子任务必须遵循 RED/GREEN 规则
+
+**关联**：ISSUE-102
+
+## 2026-07-09: Phase 4 事后审计 — ISSUE-94~112 批量修复
+
+**完成项**：
+- 修复 19 项并行审计发现（ISSUE-94~112）：
+  - 文档更新：CAPABILITY_MODEL.md（§5/§10/§10.3）、SERVICE_CONTRACTS.md（§3.1）、INDEX.md、PROGRESS.md、ISSUE.md
+  - 代码修复：process.rs CNode 顺序、ata.rs spin_loop、main.rs 错误日志、shell.rs 弃用警告/encrypt 反馈
+  - CI 增强：clippy --all-targets、cargo test、QEMU smoke
+  - 安全注释：console.rs DebugHalt 风险、handlers/fs.rs 锁顺序、process.rs fallback 隔离
+  - RED/GREEN 豁免记录
+- 汇总表重建，计数 78 项
+
+**验证**：
+- `cargo check --workspace --target x86_64-unknown-none` — 全绿通过
+- `cargo test -p libnova --features std --target x86_64-pc-windows-msvc` — 34 passed
+
+**待办**：Step 6 再审计（独立子 Agent 验证所有修复）

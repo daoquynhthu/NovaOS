@@ -1,3 +1,11 @@
+// Debug syscall gate:
+// - DebugPutChar (syscall -9) is gated by `nova_debug_console` feature (default on).
+// - DebugHalt (syscall -10) is NOT called by libnova, but user code can still invoke
+//   it via raw `syscall` instruction. There is no feature gate for DebugHalt because
+//   seL4 does not provide a capability-based guard for debug syscalls.
+//   Mitigation: seL4 kernel can be built with `KernelDebug` disabled to remove
+//   all debug syscall handlers entirely (including DebugHalt).
+
 use crate::syscall::sys_print;
 use core::fmt;
 use sel4_sys::seL4_CPtr;

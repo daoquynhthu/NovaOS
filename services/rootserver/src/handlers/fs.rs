@@ -4,6 +4,13 @@
 //! interface: open/read/write/close and the directory/permission helpers.
 //! They live in a dedicated module so the giant dispatch `match` in
 //! `main.rs` stays readable.
+//!
+//! LOCK ORDER (fixed, must not change):
+//!   1. `get_process_manager()` (outer)
+//!   2. `DISK_FS.lock()`       (inner)
+//! Any code that acquires locks in reverse order creates a deadlock risk.
+//! Currently single-threaded so this is latent, but the order is documented
+//! here as a hard constraint.
 
 use crate::handlers::SyscallContext;
 use crate::process::{get_process_manager, FileMode};

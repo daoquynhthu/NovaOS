@@ -134,11 +134,15 @@ fn create_deprecated_local_fs(ata: &Arc<crate::drivers::ata::AtaDriver>, size_se
     let bin = root.create("bin", novafs_core::FileType::Directory).ok()?;
     for file in crate::filesystem::FILES {
         if let Ok(inode) = bin.create(file.name, novafs_core::FileType::File) {
-            let _ = inode.write_at(0, file.data);
+            if let Err(e) = inode.write_at(0, file.data) {
+                println!("[KERNEL] Failed to write '{}': {:?}", file.name, e);
+            }
         }
     }
     drop(bin);
-    fs.sync().ok();
+    if let Err(e) = fs.sync() {
+        println!("[KERNEL] Deprecated local FS sync failed: {:?}", e);
+    }
     let fs_arc = Arc::new(fs);
     println!("[KERNEL] Deprecated local FS created ({} sectors, {} binaries).", sectors, crate::filesystem::FILES.len());
     Some(fs_arc)

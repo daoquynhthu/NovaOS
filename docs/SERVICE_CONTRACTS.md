@@ -121,8 +121,8 @@ MR0.. = 返回值
 
 ### 3.1 不变量
 
-- fs_server 不直接持有块设备能力；所有块 I/O 通过 RootServer syscall 转发（`FS_SYNC_FORWARD_ENABLED=false`）。
-- 每次请求前执行 `ensure_local_fs_fresh`，检查 RootServer 的 `FS_VIEW_EPOCH` 是否变更；若变则重新挂载 NovaFS（epoch-based lazy refresh）。
+- fs_server 直接持有块设备能力（ATA I/O 端口 CMD=slot 1, DATA=slot 2，见 `CAPABILITY_MODEL.md §10.3`）；本地运行 NovaFS 实例，不再向 RootServer 转发 I/O。
+- `RemoteBlockDevice` 保留为 ATA 能力不可用时的回退路径（`cspace_cap == 0` 根 CNode fallback）。
 - fd 表最大 32 项，与 RootServer 侧一一对应（`remote_fd` 字段同步）。
 - 路径最大长度：`FS_MAX_PATH_LEN = 255`。
 - 读写最大长度：`FS_MAX_RW_LEN = 900`（MR 限制）。
@@ -227,3 +227,4 @@ user_app (子) ──seL4_Call──▶ fs_server endpoint
 | 日期 | 版本 | 变更 |
 |------|------|------|
 | 2026-07-07 | 1.0 | 初始版本，基于当前代码实现 |
+| 2026-07-09 | 1.1 | §3.1 更新：fs_server 直接持有块设备，移除 `FS_SYNC_FORWARD_ENABLED=false` 引用 |

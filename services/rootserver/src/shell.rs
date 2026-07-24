@@ -356,6 +356,11 @@ impl Shell {
                 }
             }
         } else {
+            // NOTE: Tab completion reads from local VFS (deprecated stub) instead of
+            // fs_server IPC, because IPC would require a synchronous call during
+            // keyboard input processing which introduces latency/complexity.
+            // This means completed paths may be stale if fs_server has diverged.
+            // Full fix: buffer the listing on fs_server mount and query via IPC.
             if self.command_is("exec") {
                 if let Some(files) = novafs_core::VFS
                     .lock()
@@ -822,6 +827,7 @@ impl Shell {
         } else if self.word_eq(word_start, word_end, "pci") {
             crate::arch::pci::init();
         } else if self.word_eq(word_start, word_end, "disk_read") {
+            println!("[DEPRECATED] disk_read reads local ATA directly, bypassing fs_server. Use fs_server IPC via cat/ls instead.");
             let args_len = end - rest_start;
             if args_len == 0 {
                 println!("Usage: disk_read <lba> <sectors>");
@@ -878,6 +884,7 @@ impl Shell {
                 }
             }
         } else if self.word_eq(word_start, word_end, "disk_write") {
+            println!("[DEPRECATED] disk_write writes local ATA directly, bypassing fs_server. Use fs_server IPC via write/echo instead.");
             let args_len = end - rest_start;
             if args_len == 0 {
                 println!("Usage: disk_write <lba> <data_string>");
@@ -916,6 +923,7 @@ impl Shell {
                 }
             }
         } else if self.word_eq(word_start, word_end, "mkfs") {
+            println!("[DEPRECATED] mkfs formats local ATA directly, bypassing fs_server. Use fs_server for production.");
             let args_len = end - rest_start;
             if args_len == 0 {
                 println!("Usage: mkfs <total_blocks>");
@@ -941,6 +949,7 @@ impl Shell {
                 }
             }
         } else if self.word_eq(word_start, word_end, "mount") {
+            println!("[DEPRECATED] mount reads local ATA directly, bypassing fs_server. Use fs_server IPC instead.");
             println!("Mounting NovaFS...");
             let drv = alloc::sync::Arc::new(crate::drivers::ata::AtaDriver::new(0x1F0));
             match novafs_core::novafs::NovaFS::new(drv, 0) {
@@ -1334,7 +1343,8 @@ impl Shell {
                         e => println!("Failed to encrypt: {}", e),
                     }
                 }
-                if self.spawn_fs_helper("fs_encrypt", &path_str) {
+                if !self.spawn_fs_helper("fs_encrypt", &path_str) {
+                    println!("encrypt: filesystem not available");
                 }
             }
         } else if self.word_eq(word_start, word_end, "decrypt") {
@@ -1359,7 +1369,8 @@ impl Shell {
                         e => println!("Failed to decrypt: {}", e),
                     }
                 }
-                if self.spawn_fs_helper("fs_decrypt", &path_str) {
+                if !self.spawn_fs_helper("fs_decrypt", &path_str) {
+                    println!("decrypt: filesystem not available");
                 }
             }
         } else if self.word_eq(word_start, word_end, "history") {

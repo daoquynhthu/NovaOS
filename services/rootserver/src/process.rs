@@ -527,11 +527,26 @@ impl Process {
         let vspace = VSpace::new_from_scratch(allocator, slots, boot_info, asid_pool)
             .map_err(Error::from)?;
 
-        // 1b. Allocate independent CNode (CapTable) for this process's CSpace.
+        // 2. Create TCB (before CNode to avoid leaking CNode if TCB allocation fails)
+        let tcb_cap = allocator
+            .allocate(
+                boot_info,
+                api_object_seL4_TCBObject.into(),
+                seL4_TCBBits.into(),
+                slots,
+            )
+            .map_err(Error::from)?;
+
+        // 3. Allocate independent CNode (CapTable) for this process's CSpace.
         //     256 entries (size_bits=8, 4KB) is enough for any service.
         //     Each service needs only: syscall endpoint (slot 0),
         //     optional ATA ports (slots 1-2), and a few frame caps.
         //     Falls back to root CNode if untyped memory is exhausted.
+        //     SECURITY: When cspace_cap == 0 (root CNode fallback), the process
+        //     shares the global CNode and can potentially access caps of other
+        //     processes. This is a degraded isolation mode. Under seL4's capability
+        //     model, the process still cannot invoke caps it doesn't hold a badge
+        //     for, but the attack surface is larger. See CAPABILITY_MODEL.md §10.3.
         let cspace_cap = match allocator.allocate(
             boot_info,
             api_object_seL4_CapTableObject.into(),
@@ -541,22 +556,12 @@ impl Process {
             Ok(cap) => cap,
             Err(_) => {
                 println!(
-                    "[Process] Warning: Could not allocate independent CNode for '{}', using root CNode.",
+                    "[Process] Warning: Could not allocate independent CNode for '{}', using root CNode. Isolation degraded!",
                     name
                 );
                 0
             }
         };
-
-        // 2. Create TCB
-        let tcb_cap = allocator
-            .allocate(
-                boot_info,
-                api_object_seL4_TCBObject.into(),
-                seL4_TCBBits.into(),
-                slots,
-            )
-            .map_err(Error::from)?;
 
         println!(
             "[Process] Created Process: TCB={}, PML4={}, UID={}, GID={}",

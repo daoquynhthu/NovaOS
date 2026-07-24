@@ -66,7 +66,18 @@ jobs:
         run: cargo check --workspace --target x86_64-unknown-none
 
       - name: cargo clippy
-        run: cargo clippy --workspace --target x86_64-unknown-none
+        run: cargo clippy --workspace --all-targets --target x86_64-unknown-none
+
+      - name: cargo test (libnova)
+        run: cargo test -p libnova --features std --target x86_64-unknown-linux-gnu
+
+      - name: cargo test (novafs-core)
+        run: cargo test -p novafs-core --features std --target x86_64-unknown-linux-gnu
+
+      - name: QEMU smoke test
+        run: ./test.ps1 -Smoke
+        shell: pwsh
+        timeout-minutes: 5
 
   fmt-windows:
     name: Format check (Windows)
